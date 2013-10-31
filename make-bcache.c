@@ -169,7 +169,8 @@ static void write_sb(char *dev, unsigned block_size, unsigned bucket_size,
 		     bool writeback, bool discard,
 		     unsigned cache_replacement_policy,
 		     uint64_t data_offset,
-		     uuid_t set_uuid, bool bdev)
+		     uuid_t set_uuid, bool bdev,
+		     uint16_t nr_in_set, uint16_t nr_this_dev)
 {
 	int fd;
 	char uuid_str[40], set_uuid_str[40];
@@ -217,7 +218,8 @@ static void write_sb(char *dev, unsigned block_size, unsigned bucket_size,
 		       data_offset);
 	} else {
 		sb.nbuckets		= getblocks(fd) / sb.bucket_size;
-		sb.nr_in_set		= 1;
+		sb.nr_in_set		= nr_in_set;
+		sb.nr_this_dev		= nr_this_dev;
 		sb.first_bucket		= (23 / sb.bucket_size) + 1;
 
 		if (sb.nbuckets < 1 << 7) {
@@ -413,12 +415,14 @@ int main(int argc, char **argv)
 	for (i = 0; i < ncache_devices; i++)
 		write_sb(cache_devices[i], block_size, bucket_size,
 			 writeback, discard, cache_replacement_policy,
-			 data_offset, set_uuid, false);
+			 data_offset, set_uuid, false, 
+			 ncache_devices, i);
 
 	for (i = 0; i < nbacking_devices; i++)
 		write_sb(backing_devices[i], block_size, bucket_size,
 			 writeback, discard, cache_replacement_policy,
-			 data_offset, set_uuid, true);
+			 data_offset, set_uuid, true,
+			 nbacking_devices, i);
 
 	return 0;
 }
