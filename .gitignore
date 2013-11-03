@@ -3,3 +3,5 @@ make-bcache
 probe-bcache
 .*
 *.o
+tags
+cscope*
