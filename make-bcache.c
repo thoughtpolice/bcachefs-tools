@@ -169,9 +169,8 @@ const char * const cache_replacement_policies[] = {
 
 static void write_sb(char *dev, unsigned block_size, unsigned bucket_size,
 		     bool writeback, bool discard, bool wipe_bcache,
-		     unsigned cache_replacement_policy,
-		     uint64_t data_offset,
-		     uuid_t set_uuid, bool bdev,
+		     unsigned cache_replacement_policy, uint64_t data_offset,
+		     uuid_t set_uuid, unsigned tier, bool bdev,
 		     uint16_t nr_in_set, uint16_t nr_this_dev)
 {
 	int fd;
@@ -256,6 +255,7 @@ static void write_sb(char *dev, unsigned block_size, unsigned bucket_size,
 
 		SET_CACHE_DISCARD(&sb, discard);
 		SET_CACHE_REPLACEMENT(&sb, cache_replacement_policy);
+		SET_CACHE_TIER(&sb, tier);
 
 		printf("UUID:			%s\n"
 		       "Set UUID:		%s\n"
@@ -341,6 +341,8 @@ int main(int argc, char **argv)
 {
 	int c, bdev = -1;
 	unsigned i, ncache_devices = 0, nbacking_devices = 0;
+	unsigned long tier = 0;
+	unsigned cache_device_tier[argc];
 	char *cache_devices[argc];
 	char *backing_devices[argc];
 
@@ -363,6 +365,7 @@ int main(int argc, char **argv)
 		{ "cache_replacement_policy", 1, NULL, 'p' },
 		{ "data_offset",	1, NULL,	'o' },
 		{ "cset-uuid",		1, NULL,	'u' },
+		{ "tier",		1, NULL,	't' },
 		{ "help",		0, NULL,	'h' },
 		{ NULL,			0, NULL,	0 },
 	};
@@ -409,6 +412,13 @@ int main(int argc, char **argv)
 				exit(EXIT_FAILURE);
 			}
 			break;
+		case 't':
+			tier = strtoul(optarg, NULL, 10);
+			if (tier >= CACHE_TIERS) {
+				fprintf(stderr, "Invalid tier %lu\n", tier);
+				exit(EXIT_FAILURE);
+			}
+			break;
 		case 'h':
 			usage();
 			break;
@@ -418,10 +428,13 @@ int main(int argc, char **argv)
 				exit(EXIT_FAILURE);
 			}
 
-			if (bdev)
+			if (bdev) {
 				backing_devices[nbacking_devices++] = optarg;
-			else
+			} else {
+				cache_device_tier[ncache_devices] = tier;
 				cache_devices[ncache_devices++] = optarg;
+			}
+
 			break;
 		}
 
@@ -449,13 +462,14 @@ int main(int argc, char **argv)
 		write_sb(cache_devices[i], block_size, bucket_size,
 			 writeback, discard, wipe_bcache,
 			 cache_replacement_policy, data_offset,
-			 set_uuid, false, ncache_devices, i);
+			 set_uuid, cache_device_tier[i], false,
+			 ncache_devices, i);
 
 	for (i = 0; i < nbacking_devices; i++)
 		write_sb(backing_devices[i], block_size, bucket_size,
 			 writeback, discard, wipe_bcache,
 			 cache_replacement_policy, data_offset,
-			 set_uuid, true, nbacking_devices, i);
+			 set_uuid, 0, true, nbacking_devices, i);
 
 	return 0;
 }
