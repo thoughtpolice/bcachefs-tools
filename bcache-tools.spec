@@ -6,8 +6,8 @@ Source0: %{name}-%{version}.tar.gz
 License: GPL
 Group: tools
 BuildRoot: %{_tmppath}/%{name}-root
-Requires: libblkid1
-BuildRequires: pkg-config libblkid-dev
+Requires: libblkid
+BuildRequires: pkgconfig libblkid-devel
 
 %package dev
 
