@@ -155,7 +155,9 @@ void usage()
 //	       "	-U			UUID\n"
 	       "	    --writeback		enable writeback\n"
 	       "	    --discard		enable discards\n"
-	       "	    --cache_replacement_policy=(lru|fifo)\n"
+	       "	    --wipe-bcache	destroy existing bcache data if present\n"
+	       "	    --tier		set tier of subsequent cache devices\n"
+	       "	    --cache_replacement_policy=(lru|fifo|random)\n"
 	       "	-h, --help		display this help and exit\n");
 	exit(EXIT_FAILURE);
 }
