@@ -158,6 +158,7 @@ void usage()
 	       "	    --wipe-bcache	destroy existing bcache data if present\n"
 	       "	    --tier		set tier of subsequent cache devices\n"
 	       "	    --cache_replacement_policy=(lru|fifo|random)\n"
+	       "	-l, --label		label\n"
 	       "	-h, --help		display this help and exit\n");
 	exit(EXIT_FAILURE);
 }
@@ -173,7 +174,8 @@ static void write_sb(char *dev, unsigned block_size, unsigned bucket_size,
 		     bool writeback, bool discard, bool wipe_bcache,
 		     unsigned cache_replacement_policy, uint64_t data_offset,
 		     uuid_t set_uuid, unsigned tier, bool bdev,
-		     uint16_t nr_in_set, uint16_t nr_this_dev)
+		     uint16_t nr_in_set, uint16_t nr_this_dev,
+		     char *label)
 {
 	int fd;
 	char uuid_str[40], set_uuid_str[40], zeroes[SB_START] = {0};
@@ -224,6 +226,9 @@ static void write_sb(char *dev, unsigned block_size, unsigned bucket_size,
 
 	uuid_unparse(sb.uuid, uuid_str);
 	uuid_unparse(sb.set_uuid, set_uuid_str);
+	if (label) {
+		memcpy(sb.label, label, SB_LABEL_SIZE);
+	}
 
 	if (SB_IS_BDEV(&sb)) {
 		SET_BDEV_CACHE_MODE(
@@ -353,6 +358,7 @@ int main(int argc, char **argv)
 	unsigned cache_replacement_policy = 0;
 	uint64_t data_offset = BDEV_DATA_START_DEFAULT;
 	uuid_t set_uuid;
+	char *label = NULL;
 
 	uuid_generate(set_uuid);
 
@@ -368,12 +374,13 @@ int main(int argc, char **argv)
 		{ "data_offset",	1, NULL,	'o' },
 		{ "cset-uuid",		1, NULL,	'u' },
 		{ "tier",		1, NULL,	't' },
+		{ "label",		1, NULL,	'l' },
 		{ "help",		0, NULL,	'h' },
 		{ NULL,			0, NULL,	0 },
 	};
 
 	while ((c = getopt_long(argc, argv,
-				"-hCBU:w:b:",
+				"-hCBU:w:b:l:",
 				opts, NULL)) != -1)
 		switch (c) {
 		case 'C':
@@ -413,6 +420,9 @@ int main(int argc, char **argv)
 				fprintf(stderr, "Bad uuid\n");
 				exit(EXIT_FAILURE);
 			}
+			break;
+		case 'l':
+			label = optarg;
 			break;
 		case 't':
 			tier = strtoul(optarg, NULL, 10);
@@ -465,13 +475,13 @@ int main(int argc, char **argv)
 			 writeback, discard, wipe_bcache,
 			 cache_replacement_policy, data_offset,
 			 set_uuid, cache_device_tier[i], false,
-			 ncache_devices, i);
+			 ncache_devices, i, label);
 
 	for (i = 0; i < nbacking_devices; i++)
 		write_sb(backing_devices[i], block_size, bucket_size,
 			 writeback, discard, wipe_bcache,
 			 cache_replacement_policy, data_offset,
-			 set_uuid, 0, true, nbacking_devices, i);
+			 set_uuid, 0, true, nbacking_devices, i, label);
 
 	return 0;
 }

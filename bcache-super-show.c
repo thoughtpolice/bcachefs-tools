@@ -173,6 +173,7 @@ int main(int argc, char **argv)
 		       "dev.cache.ordered\t%s\n"
 		       "dev.cache.discard\t%s\n"
 		       "dev.cache.pos\t\t%u\n"
+		       "dev.cache.setsize\t\t%u\n"
 		       "dev.cache.replacement\t%ju",
 		       sb.bucket_size * sb.first_bucket,
 		       sb.bucket_size * (sb.nbuckets - sb.first_bucket),
@@ -180,6 +181,7 @@ int main(int argc, char **argv)
 		       CACHE_SYNC(&sb) ? "yes" : "no",
 		       CACHE_DISCARD(&sb) ? "yes" : "no",
 		       sb.nr_this_dev,
+		       sb.nr_in_set,
 			   CACHE_REPLACEMENT(&sb));
 		switch (CACHE_REPLACEMENT(&sb)) {
 			case CACHE_REPLACEMENT_LRU:
