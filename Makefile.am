@@ -7,7 +7,8 @@ AM_CFLAGS=-O2 -Wall -g -std=gnu99
 
 bin_PROGRAMS=make-bcache \
 	     probe-bcache \
-	     bcache-super-show
+	     bcache-super-show \
+	     bcachectl
 
 noinst_PROGRAMS=bcache-test
 
@@ -22,6 +23,8 @@ probe_bcache_CFLAGS=$(AM_CFLAGS) `pkg-config --cflags uuid blkid`
 bcache_super_show_SOURCES=bcache-super-show.c bcache.c
 bcache_super_show_LDFLAGS=`pkg-config --libs uuid`
 bcache_super_show_CFLAGS=$(AM_CFLAGS) `pkg-config --cflags uuid`
+
+bcachectl_SOURCES=bcachectl.c
 
 bcache_test_SOURCE=bcache-test.c
 bcache_test_LDFLAGS=-lm `pkg-config --libs openssl`

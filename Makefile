@@ -5,10 +5,10 @@ DRACUTLIBDIR=/lib/dracut
 INSTALL=install
 CFLAGS+=-O2 -Wall -g
 
-all: make-bcache probe-bcache bcache-super-show
+all: make-bcache probe-bcache bcache-super-show bcachectl
 
 install: make-bcache probe-bcache bcache-super-show
-	$(INSTALL) -m0755 make-bcache bcache-super-show	$(DESTDIR)${PREFIX}/sbin/
+	$(INSTALL) -m0755 make-bcache bcache-super-show bcachectl $(DESTDIR)${PREFIX}/sbin/
 	$(INSTALL) -m0755 probe-bcache bcache-register		$(DESTDIR)$(UDEVLIBDIR)/
 	$(INSTALL) -m0644 69-bcache.rules	$(DESTDIR)$(UDEVLIBDIR)/rules.d/
 	-$(INSTALL) -T -m0755 initramfs/hook	$(DESTDIR)/usr/share/initramfs-tools/hooks/bcache
@@ -19,7 +19,7 @@ install: make-bcache probe-bcache bcache-super-show
 #	$(INSTALL) -m0755 bcache-test $(DESTDIR)${PREFIX}/sbin/
 
 clean:
-	$(RM) -f make-bcache probe-bcache bcache-super-show bcache-test *.o
+	$(RM) -f make-bcache probe-bcache bcache-super-show bcache-test bcachectl *.o
 
 bcache-test: LDLIBS += `pkg-config --libs openssl`
 make-bcache: LDLIBS += `pkg-config --libs uuid blkid`
@@ -30,3 +30,4 @@ probe-bcache: CFLAGS += `pkg-config --cflags uuid blkid`
 bcache-super-show: LDLIBS += `pkg-config --libs uuid`
 bcache-super-show: CFLAGS += -std=gnu99
 bcache-super-show: bcache.o
+bcachectl: bcachectl.o
