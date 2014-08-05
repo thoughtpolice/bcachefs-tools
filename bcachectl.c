@@ -14,7 +14,6 @@ int bcachefd;
 static int register_devices(int argc, char *argv[])
 {
 	int ret;
-
 	ret = ioctl(bcachefd, BCH_IOCTL_REGISTER, argv);
 	if (ret < 0) {
 		fprintf(stderr, "ioctl error %d", ret);
@@ -25,21 +24,23 @@ static int register_devices(int argc, char *argv[])
 
 int main(int argc, char *argv[])
 {
-	char *ioctl = argv[2];
+	char *ioctl = argv[1];
 
 	if (argc < 3) {
-		fprintf(stderr, "Enter bcache device and an ioctl to issue\n");
+		fprintf(stderr, " <Usage> %s <action> <space separated list of devices>", argv[0]);
+		fprintf(stderr, "\n <Help>  Possible actions are: \n");
+		fprintf(stderr, "          \t 1. register_devices\n");
 		exit(EXIT_FAILURE);
 	}
 
-	bcachefd = open(argv[1], O_RDWR);
+	bcachefd = open("/dev/bcache", O_RDWR);
 	if (bcachefd < 0) {
 		perror("Can't open bcache device");
 		exit(EXIT_FAILURE);
 	}
 
-	argc -= 3;
-	argv += 3;
+	argc -= 2;
+	argv += 2;
 
 	if (!strcmp(ioctl, "register_devices"))
 		return register_devices(argc, argv);
@@ -47,5 +48,5 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "Unknown ioctl\n");
 		exit(EXIT_FAILURE);
 	}
+	return 0;
 }
-
