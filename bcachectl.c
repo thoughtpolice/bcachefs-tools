@@ -42,7 +42,7 @@ int main(int argc, char *argv[])
 	argc -= 2;
 	argv += 2;
 
-	if (!strcmp(ioctl, "register_devices"))
+	if (!strcmp(ioctl, "register"))
 		return register_devices(argc, argv);
 	else {
 		fprintf(stderr, "Unknown ioctl\n");
