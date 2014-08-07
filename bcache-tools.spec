@@ -7,7 +7,7 @@ License: GPL
 Group: tools
 BuildRoot: %{_tmppath}/%{name}-root
 Requires: libblkid
-BuildRequires: pkgconfig libblkid-devel
+BuildRequires: pkgconfig libblkid-devel linux-headers
 
 %package dev
 
