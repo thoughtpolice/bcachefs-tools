@@ -3,7 +3,7 @@ PREFIX=/usr
 UDEVLIBDIR=/lib/udev
 DRACUTLIBDIR=/lib/dracut
 INSTALL=install
-CFLAGS+=-O2 -Wall -g
+CFLAGS+=-O2 -Wall -Werror -g
 
 all: make-bcache probe-bcache bcache-super-show bcachectl
 

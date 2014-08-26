@@ -1,9 +1,121 @@
 #define _GNU_SOURCE
 
+#include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <unistd.h>
+
+#include "bcache.h"
+
+const char * const cache_state[] = {
+	"active",
+	"ro",
+	"failed",
+	"spare",
+	NULL
+};
+
+const char * const replacement_policies[] = {
+	"lru",
+	"fifo",
+	"random",
+	NULL
+};
+
+const char * const csum_types[] = {
+	"none",
+	"crc32c",
+	"crc64",
+	NULL
+};
+
+const char * const bdev_cache_mode[] = {
+	"writethrough",
+	"writeback",
+	"writearound",
+	"none",
+	NULL
+};
+
+const char * const bdev_state[] = {
+	"detached",
+	"clean",
+	"dirty",
+	"inconsistent",
+	NULL
+};
+
+char *skip_spaces(const char *str)
+{
+	while (isspace(*str))
+		++str;
+	return (char *)str;
+}
+
+char *strim(char *s)
+{
+	size_t size;
+	char *end;
+
+	s = skip_spaces(s);
+	size = strlen(s);
+	if (!size)
+		return s;
+
+	end = s + size - 1;
+	while (end >= s && isspace(*end))
+		end--;
+	*(end + 1) = '\0';
+
+	return s;
+}
+
+ssize_t read_string_list(const char *buf, const char * const list[])
+{
+	size_t i;
+	char *s, *d = strdup(buf);
+	if (!d)
+		return -ENOMEM;
+
+	s = strim(d);
+
+	for (i = 0; list[i]; i++)
+		if (!strcmp(list[i], s))
+			break;
+
+	free(d);
+
+	if (!list[i])
+		return -EINVAL;
+
+	return i;
+}
+
+ssize_t read_string_list_or_die(const char *opt, const char * const list[],
+				const char *msg)
+{
+	ssize_t v = read_string_list(opt, list);
+	if (v < 0) {
+		fprintf(stderr, "Bad %s %s\n", msg, opt);
+		exit(EXIT_FAILURE);
+
+	}
+
+	return v;
+}
+
+void print_string_list(const char * const list[], size_t selected)
+{
+	size_t i;
+
+	for (i = 0; list[i]; i++) {
+		if (i)
+			putchar(' ');
+		printf(i == selected ? "[%s] ": "%s", list[i]);
+	}
+}
 
 /*
  * Portions Copyright (c) 1996-2001, PostgreSQL Global Development Group (Any
@@ -115,9 +227,8 @@ static const uint64_t crc_table[256] = {
 	0x9AFCE626CE85B507ULL
 };
 
-uint64_t crc64(const void *_data, size_t len)
+static uint64_t bch_crc64_update(uint64_t crc, const void *_data, size_t len)
 {
-	uint64_t crc = 0xFFFFFFFFFFFFFFFFULL;
 	const unsigned char *data = _data;
 
 	while (len--) {
@@ -125,5 +236,27 @@ uint64_t crc64(const void *_data, size_t len)
 		crc = crc_table[i] ^ (crc << 8);
 	}
 
-	return crc ^ 0xFFFFFFFFFFFFFFFFULL;
+	return crc;
+}
+
+static uint64_t bch_checksum_update(unsigned type, uint64_t crc, const void *data, size_t len)
+{
+	switch (type) {
+	case BCH_CSUM_NONE:
+		return 0;
+	case BCH_CSUM_CRC64:
+		return bch_crc64_update(crc, data, len);
+	default:
+		fprintf(stderr, "Unknown checksum type %u\n", type);
+		exit(EXIT_FAILURE);
+	}
+}
+
+uint64_t bch_checksum(unsigned type, const void *data, size_t len)
+{
+	uint64_t crc = 0xffffffffffffffffULL;
+
+	crc = bch_checksum_update(type, crc, data, len);
+
+	return crc ^ 0xffffffffffffffffULL;
 }

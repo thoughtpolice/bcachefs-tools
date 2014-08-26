@@ -69,10 +69,10 @@ int main(int argc, char **argv)
 		if (pread(fd, &sb, sizeof(sb), SB_START) != sizeof(sb))
 			continue;
 
-		if (memcmp(sb.magic, bcache_magic, 16))
+		if (memcmp(&sb.magic, &BCACHE_MAGIC, sizeof(sb.magic)))
 			continue;
 
-		uuid_unparse(sb.uuid, uuid);
+		uuid_unparse(sb.uuid.b, uuid);
 
 		if (udev)
 			printf("ID_FS_UUID=%s\n"

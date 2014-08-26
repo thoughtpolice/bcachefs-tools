@@ -1,6 +1,7 @@
 bcache-super-show
 make-bcache
 probe-bcache
+bcachectl
 .*
 *.o
 tags
@@ -12,6 +13,7 @@ compile
 config.guess
 config.h.in
 config.sub
+config.type
 configure
 depcomp
 install-sh
