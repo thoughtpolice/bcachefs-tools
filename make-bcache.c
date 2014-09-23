@@ -59,7 +59,9 @@ int main(int argc, char **argv)
 	int c, bdev = -1;
 	size_t i, nr_backing_devices = 0;
 
-	unsigned block_size = 0, bucket_size = 1024;
+	unsigned block_size = 0;
+	unsigned bucket_sizes[argc];
+	int num_bucket_sizes = 0;
 	int writeback = 0, discard = 0, wipe_bcache = 0;
 	unsigned replication_set = 0, tier = 0, replacement_policy = 0;
 	uint64_t data_offset = BDEV_DATA_START_DEFAULT;
@@ -112,6 +114,7 @@ int main(int argc, char **argv)
 	SET_CACHE_PREFERRED_CSUM_TYPE(cache_set_sb, BCH_CSUM_CRC32C);
 	SET_CACHE_SET_META_REPLICAS_WANT(cache_set_sb, 1);
 	SET_CACHE_SET_DATA_REPLICAS_WANT(cache_set_sb, 1);
+	bucket_sizes[0] = 1024;
 
 	while ((c = getopt_long(argc, argv,
 				"-hCBU:w:b:l:",
@@ -142,7 +145,8 @@ int main(int argc, char **argv)
 			break;
 
 		case 'b':
-			bucket_size = hatoi_validate(optarg, "bucket size");
+			bucket_sizes[num_bucket_sizes] = hatoi_validate(optarg, "bucket size");
+			num_bucket_sizes++;
 			break;
 		case 'w':
 			block_size = hatoi_validate(optarg, "block size");
@@ -212,10 +216,14 @@ int main(int argc, char **argv)
 		usage();
 	}
 
-	if (bucket_size < block_size) {
-		fprintf(stderr, "Bucket size cannot be smaller than block size\n");
-		exit(EXIT_FAILURE);
-	}
+	i = 0;
+	do {
+		if (bucket_sizes[i] < block_size) {
+			fprintf(stderr, "Bucket size cannot be smaller than block size\n");
+			exit(EXIT_FAILURE);
+		}
+		i++;
+	} while (i < num_bucket_sizes);
 
 	if (!block_size) {
 		for (i = 0; i < cache_set_sb->nr_in_set; i++)
@@ -233,11 +241,12 @@ int main(int argc, char **argv)
 	for (i = 0; i < nr_backing_devices; i++)
 		backing_dev_fd[i] = dev_open(backing_devices[i], wipe_bcache);
 
-	write_cache_sbs(cache_dev_fd, cache_set_sb, block_size, bucket_size);
+	write_cache_sbs(cache_dev_fd, cache_set_sb, block_size,
+					bucket_sizes, num_bucket_sizes);
 
 	for (i = 0; i < nr_backing_devices; i++)
 		write_backingdev_sb(backing_dev_fd[i],
-				    block_size, bucket_size,
+				    block_size, bucket_sizes,
 				    writeback, data_offset,
 				    backing_dev_labels[i],
 				    cache_set_sb->set_uuid);
