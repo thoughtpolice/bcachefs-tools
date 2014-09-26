@@ -9,7 +9,8 @@ AM_LDFLAGS=`pkg-config --libs uuid blkid` -L$(top_builddir)
 bin_PROGRAMS=make-bcache \
 	     probe-bcache \
 	     bcache-super-show \
-	     bcachectl
+	     bcachectl \
+	     bcacheadm
 
 noinst_PROGRAMS=bcache-test
 
@@ -31,6 +32,11 @@ bcachectl_SOURCES=bcachectl.c
 bcache_test_SOURCES=bcache-test.c
 bcache_test_LDFLAGS=-lm `pkg-config --libs openssl`
 bcache_test_CFLAGS=$(AM_CFLAGS) `pkg-config --cflags openssl`
+
+bcacheadm_SOURCES=bcacheadm.c
+bcacheadm_LDFLAGS=$(AM_LDFLAGS) -lnih
+bcacheadm_LDADD=libbcache.a
+
 
 udevrule_DATA=69-bcache.rules
 udevruledir=$(prefix)/lib/udev/rules.d
