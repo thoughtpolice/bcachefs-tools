@@ -21,6 +21,14 @@ typedef __s64	s64;
 
 #define SB_START		(SB_SECTOR * 512)
 
+
+#define max(x, y) ({				\
+	typeof(x) _max1 = (x);			\
+	typeof(y) _max2 = (y);			\
+	(void) (&_max1 == &_max2);		\
+	_max1 > _max2 ? _max1 : _max2; })
+
+
 extern const char * const cache_state[];
 extern const char * const replacement_policies[];
 extern const char * const csum_types[];
@@ -33,6 +41,21 @@ ssize_t read_string_list_or_die(const char *, const char * const[],
 void print_string_list(const char * const[], size_t);
 
 uint64_t bch_checksum(unsigned, const void *, size_t);
+
+uint64_t getblocks(int);
+uint64_t hatoi(const char *);
+unsigned hatoi_validate(const char *, const char *);
+void write_backingdev_sb(int, unsigned, unsigned *,	bool, uint64_t,
+				const char *, uuid_le);
+int dev_open(const char *, bool);
+void write_cache_sbs(int *, struct cache_sb *, unsigned, unsigned *, int);
+void next_cache_device(struct cache_sb *, unsigned, unsigned, unsigned, bool);
+unsigned get_blocksize(const char *);
+long strtoul_or_die(const char *, size_t, const char *);
+
+void show_super_backingdev(struct cache_sb *, bool);
+void show_cache_member(struct cache_sb *, unsigned);
+void show_super_cache(struct cache_sb *, bool);
 
 #define csum_set(i, type)						\
 ({									\
