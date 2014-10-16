@@ -54,8 +54,15 @@ unsigned get_blocksize(const char *);
 long strtoul_or_die(const char *, size_t, const char *);
 
 void show_super_backingdev(struct cache_sb *, bool);
-void show_cache_member(struct cache_sb *, unsigned);
 void show_super_cache(struct cache_sb *, bool);
+
+void query_dev(char *dev, bool force_csum);
+int list_cachesets(char *cset_dir);
+char *parse_array_to_list(char *const *args);
+int register_bcache();
+int probe(char *dev, int udev);
+
+
 
 #define csum_set(i, type)						\
 ({									\

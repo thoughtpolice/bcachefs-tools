@@ -28,9 +28,6 @@
 #include <sys/stat.h>
 #include <uuid/uuid.h>
 #include <bcache.h> //libbcache
-#define __KERNEL__
-#include <linux/bcache-ioctl.h>
-#undef __KERNEL__
 
 #define PACKAGE_NAME "bcacheadm"
 #define PACKAGE_VERSION "1.0"
@@ -77,14 +74,12 @@ enum long_opts {
 
 /* super-show globals */
 bool force_csum = false;
-char *show_dev = NULL;
-
 
 /* probe globals */
 bool udev = false;
 
-/* register globals */
-int bcachefd;
+/* list globals */
+char *cset_dir = "/sys/fs/bcache";
 
 /* make-bcache option setters */
 static int set_CACHE_SET_UUID(NihOption *option, const char *arg)
@@ -178,7 +173,6 @@ static NihOption make_bcache_options[] = {
 	{'t', "tier",	N_("tier of subsequent devices"), NULL,NULL, &tier, NULL},
 	{'p', "cache_replacement_policy", N_("one of (lru|fifo|random)"), NULL,NULL, &replacement_policy, NULL},
 	{'o', "data_offset", N_("data offset in sectors"), NULL,NULL, &data_offset, NULL},
-	{'h', "help",	N_("display this help and exit"), NULL,NULL, NULL, NULL},
 
 	{0, "cset-uuid",	N_("UUID for the cache set"),		NULL,	NULL, NULL, set_CACHE_SET_UUID },
 	{0, "csum-type",	N_("One of (none|crc32c|crc64)"),		NULL,	NULL, NULL, set_CSUM_TYPE },
@@ -193,19 +187,22 @@ static NihOption make_bcache_options[] = {
 	NIH_OPTION_LAST
 };
 
-static NihOption super_show_options[] = {
-	{'f', "force_csum", N_("force_csum"), NULL, NULL, &force_csum, NULL},
-	{0, "dev", N_("dev"), NULL, NULL, &show_dev, NULL},
-	NIH_OPTION_LAST
-
-};
-
 static NihOption probe_bcache_options[] = {
 	{'o', "udev", N_("udev"), NULL, NULL, NULL, set_udev},
 	NIH_OPTION_LAST
 };
 
 static NihOption bcache_register_options[] = {
+	NIH_OPTION_LAST
+};
+
+static NihOption query_devs_options[] = {
+	{'f', "force_csum", N_("force_csum"), NULL, NULL, &force_csum, NULL},
+	NIH_OPTION_LAST
+};
+
+static NihOption list_cachesets_options[] = {
+	{'d', "dir", N_("directory"), NULL, NULL, &cset_dir, NULL},
 	NIH_OPTION_LAST
 };
 
@@ -280,80 +277,12 @@ int make_bcache (NihCommand *command, char *const *args)
 	return 0;
 }
 
-int super_show (NihCommand *command, char *const *args)
-{
-	struct cache_sb sb_stack, *sb = &sb_stack;
-	size_t bytes = sizeof(*sb);
-
-	int fd = open(show_dev, O_RDONLY);
-	if (fd < 0) {
-		printf("Can't open dev %s: %s\n", show_dev, strerror(errno));
-		exit(2);
-	}
-
-	if (pread(fd, sb, bytes, SB_START) != bytes) {
-		fprintf(stderr, "Couldn't read\n");
-		exit(2);
-	}
-
-	if (sb->keys) {
-		bytes = sizeof(*sb) + sb->keys * sizeof(uint64_t);
-		sb = malloc(bytes);
-
-		if (pread(fd, sb, bytes, SB_START) != bytes) {
-			fprintf(stderr, "Couldn't read\n");
-			exit(2);
-		}
-	}
-
-	if (!SB_IS_BDEV(sb))
-		show_super_cache(sb, force_csum);
-	else
-		show_super_backingdev(sb, force_csum);
-
-	return 0;
-}
-
 int probe_bcache (NihCommand *command, char *const *args)
 {
 	int i;
-	struct cache_sb sb;
-	char uuid[40];
-	blkid_probe pr;
 
-	for (i = 0; args[i]!=NULL; i++) {
-		int fd = open(args[i], O_RDONLY);
-		if (fd == -1)
-			continue;
-
-		if (!(pr = blkid_new_probe()))
-			continue;
-		if (blkid_probe_set_device(pr, fd, 0, 0))
-			continue;
-		/* probe partitions too */
-		if (blkid_probe_enable_partitions(pr, true))
-			continue;
-		/* bail if anything was found
-		 * probe-bcache isn't needed once blkid recognizes bcache */
-		if (!blkid_do_probe(pr)) {
-			continue;
-		}
-
-		if (pread(fd, &sb, sizeof(sb), SB_START) != sizeof(sb))
-			continue;
-
-		if (memcmp(&sb.magic, &BCACHE_MAGIC, sizeof(sb.magic)))
-			continue;
-
-		uuid_unparse(sb.uuid.b, uuid);
-
-		if (udev)
-			printf("ID_FS_UUID=%s\n"
-			       "ID_FS_UUID_ENC=%s\n"
-			       "ID_FS_TYPE=bcache\n",
-			       uuid, uuid);
-		else
-			printf("%s: UUID=\"\" TYPE=\"bcache\"\n", uuid);
+	for (i = 0; args[i] != NULL; i++) {
+		probe(args[i], udev);
 	}
 
 	return 0;
@@ -362,26 +291,36 @@ int probe_bcache (NihCommand *command, char *const *args)
 int bcache_register (NihCommand *command, char *const *args)
 {
 	int ret;
+	char *arg_list = parse_array_to_list(args);
 
-	bcachefd = open("/dev/bcache", O_RDWR);
-	if (bcachefd < 0) {
-		perror("Can't open bcache device");
-		exit(EXIT_FAILURE);
+	if(arg_list) {
+		ret = register_bcache(arg_list);
+		free(arg_list);
 	}
 
-	ret = ioctl(bcachefd, BCH_IOCTL_REGISTER, args);
-	if (ret < 0) {
-		fprintf(stderr, "ioctl error %d", ret);
-		exit(EXIT_FAILURE);
+	return ret;
+}
+
+int bcache_list_cachesets (NihCommand *command, char *const *args)
+{
+	return list_cachesets(cset_dir);
+}
+
+int bcache_query_devs (NihCommand *command, char *const *args)
+{
+	int i;
+
+	for (i = 0; args[i]!=NULL; i++) {
+		query_dev(args[i], false);
 	}
-	return 0;
 }
 
 static NihCommand commands[] = {
 	{"format", N_("format <list of drives>"), "Format one or a list of devices with bcache datastructures. You need to do this before you create a volume",  N_("format drive[s] with bcache"), NULL, make_bcache_options, make_bcache},
-	{"show-sb", N_("show-sb <list of drives>"), "View a superblock on one or a list of bcache formated devices",  N_("show superblock on each of the listed drive"), NULL, super_show_options, super_show},
-	{"probe", N_("probe <list of drives>"), NULL, NULL, NULL, probe_bcache_options, probe_bcache},
-	{"register", N_("register <list of devices>"), NULL, NULL, NULL, bcache_register_options, bcache_register},
+	{"probe", N_("probe <list of devices>"), "Does a blkid_probe on a device", N_("Does a blkid_probe on a device"), NULL, probe_bcache_options, probe_bcache},
+	{"register", N_("register <list of devices>"), "Registers a list of devices", N_("Registers a list of devices"), NULL, bcache_register_options, bcache_register},
+	{"list-cachesets", N_("list-cachesets"), "Lists cachesets in /sys/fs/bcache", N_("Lists cachesets in /sys/fs/bcache"), NULL, list_cachesets_options, bcache_list_cachesets},
+	{"query-devs", N_("query <list of devices>"), "Gives info about the superblock of a list of devices", N_("show superblock on each of the listed drive"), NULL, query_devs_options, bcache_query_devs},
 	NIH_COMMAND_LAST
 };
 

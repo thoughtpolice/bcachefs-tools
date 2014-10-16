@@ -15,11 +15,16 @@
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <unistd.h>
 #include <uuid/uuid.h>
 #include <blkid.h>
 
 #include "bcache.h"
+
+#define __KERNEL__
+#include <linux/bcache-ioctl.h>
+#undef __KERNEL__
 
 const char * const cache_state[] = {
 	"active",
@@ -802,7 +807,7 @@ void show_super_backingdev(struct cache_sb *sb, bool force_csum)
 	       bdev_state[BDEV_STATE(sb)]);
 }
 
-void show_cache_member(struct cache_sb *sb, unsigned i)
+static void show_cache_member(struct cache_sb *sb, unsigned i)
 {
 	struct cache_member *m = ((struct cache_member *) sb->d) + i;
 
@@ -845,3 +850,151 @@ void show_super_cache(struct cache_sb *sb, bool force_csum)
 
 	show_cache_member(sb, sb->nr_this_dev);
 }
+
+void query_dev(char *dev, bool force_csum)
+{
+	struct cache_sb sb_stack, *sb = &sb_stack;
+	size_t bytes = sizeof(*sb);
+
+	int fd = open(dev, O_RDONLY);
+	if (fd < 0) {
+		printf("Can't open dev %s: %s\n", dev, strerror(errno));
+		exit(2);
+	}
+
+	if (pread(fd, sb, bytes, SB_START) != bytes) {
+		fprintf(stderr, "Couldn't read\n");
+		exit(2);
+	}
+
+	if (sb->keys) {
+		bytes = sizeof(*sb) + sb->keys * sizeof(uint64_t);
+		sb = malloc(bytes);
+
+		if (pread(fd, sb, bytes, SB_START) != bytes) {
+			fprintf(stderr, "Couldn't read\n");
+			exit(2);
+		}
+	}
+
+	if (!SB_IS_BDEV(sb))
+		show_super_cache(sb, force_csum);
+	else
+		show_super_backingdev(sb, force_csum);
+}
+
+int list_cachesets(char *cset_dir)
+{
+	struct dirent *ent;
+	DIR *dir = opendir(cset_dir);
+	if (!dir) {
+		fprintf(stderr, "Failed to open dir %s\n", cset_dir);
+		return 1;
+	}
+
+	while ((ent = readdir(dir)) != NULL) {
+		struct stat statbuf;
+		char entry[100];
+
+		if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, ".."))
+			continue;
+
+		strcpy(entry, cset_dir);
+		strcat(entry, "/");
+		strcat(entry, ent->d_name);
+		if(stat(entry, &statbuf) == -1) {
+			fprintf(stderr, "Failed to stat %s\n", entry);
+			return 1;
+		}
+		if (S_ISDIR(statbuf.st_mode)) {
+			printf("%s\n", ent->d_name);
+		}
+	}
+
+	closedir(dir);
+
+	return 0;
+}
+
+char *parse_array_to_list(char *const *args)
+{
+	int i, len = 0;
+	char *space = " ";
+	for(i=0; args[i] != NULL; i++) {
+		len+=strlen(args[i]) + 1;
+	}
+
+	char *arg_list = (char*)malloc(sizeof(char)*len);
+	strcpy(arg_list, args[0]);
+	strcat(arg_list, space);
+
+	for(i=1; args[i] != NULL; i++) {
+		strcat(arg_list, args[i]);
+		strcat(arg_list, space);
+	}
+
+	return arg_list;
+}
+
+int register_bcache(char *devs)
+{
+	int ret, bcachefd;
+
+	bcachefd = open("/dev/bcache", O_RDWR);
+	if (bcachefd < 0) {
+		perror("Can't open bcache device");
+		exit(EXIT_FAILURE);
+	}
+
+	ret = ioctl(bcachefd, BCH_IOCTL_REGISTER, devs);
+	if (ret < 0) {
+		fprintf(stderr, "ioctl error %d", ret);
+		exit(EXIT_FAILURE);
+	}
+	return 0;
+
+}
+
+int probe(char *dev, int udev)
+{
+	struct cache_sb sb;
+	char uuid[40];
+	blkid_probe pr;
+
+	int fd = open(dev, O_RDONLY);
+	if (fd == -1)
+		return -1;
+
+	if (!(pr = blkid_new_probe()))
+		return -1;
+	if (blkid_probe_set_device(pr, fd, 0, 0))
+		return -1;
+	/* probe partitions too */
+	if (blkid_probe_enable_partitions(pr, true))
+		return -1;
+	/* bail if anything was found
+	 * probe-bcache isn't needed once blkid recognizes bcache */
+	if (!blkid_do_probe(pr)) {
+		return -1;
+	}
+
+	if (pread(fd, &sb, sizeof(sb), SB_START) != sizeof(sb))
+		return -1;
+
+	if (memcmp(&sb.magic, &BCACHE_MAGIC, sizeof(sb.magic)))
+		return -1;
+
+	uuid_unparse(sb.uuid.b, uuid);
+
+	if (udev)
+		printf("ID_FS_UUID=%s\n"
+		       "ID_FS_UUID_ENC=%s\n"
+		       "ID_FS_TYPE=bcache\n",
+		       uuid, uuid);
+	else
+		printf("%s: UUID=\"\" TYPE=\"bcache\"\n", uuid);
+
+	return 0;
+}
+
+
