@@ -56,12 +56,13 @@ long strtoul_or_die(const char *, size_t, const char *);
 void show_super_backingdev(struct cache_sb *, bool);
 void show_super_cache(struct cache_sb *, bool);
 
-void query_dev(char *dev, bool force_csum);
-int list_cachesets(char *cset_dir);
-char *parse_array_to_list(char *const *args);
+struct cache_sb *query_dev(char *, bool);
+int list_cachesets(char *);
+char *parse_array_to_list(char *const *);
 int register_bcache();
-int probe(char *dev, int udev);
-
+int probe(char *, int);
+void print_dev_info(struct cache_sb *, bool);
+void sb_state(struct cache_sb *, char *);
 
 
 #define csum_set(i, type)						\

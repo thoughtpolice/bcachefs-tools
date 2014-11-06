@@ -851,7 +851,7 @@ void show_super_cache(struct cache_sb *sb, bool force_csum)
 	show_cache_member(sb, sb->nr_this_dev);
 }
 
-void query_dev(char *dev, bool force_csum)
+struct cache_sb *query_dev(char *dev, bool force_csum)
 {
 	struct cache_sb sb_stack, *sb = &sb_stack;
 	size_t bytes = sizeof(*sb);
@@ -877,6 +877,11 @@ void query_dev(char *dev, bool force_csum)
 		}
 	}
 
+	return sb;
+}
+
+void print_dev_info(struct cache_sb *sb, bool force_csum)
+{
 	if (!SB_IS_BDEV(sb))
 		show_super_cache(sb, force_csum);
 	else
@@ -891,6 +896,7 @@ int list_cachesets(char *cset_dir)
 		fprintf(stderr, "Failed to open dir %s\n", cset_dir);
 		return 1;
 	}
+	printf("cachesets:\n");
 
 	while ((ent = readdir(dir)) != NULL) {
 		struct stat statbuf;
@@ -907,7 +913,7 @@ int list_cachesets(char *cset_dir)
 			return 1;
 		}
 		if (S_ISDIR(statbuf.st_mode)) {
-			printf("%s\n", ent->d_name);
+			printf("\t%s\n", ent->d_name);
 		}
 	}
 
@@ -997,4 +1003,14 @@ int probe(char *dev, int udev)
 	return 0;
 }
 
+void sb_state(struct cache_sb *sb, char *dev)
+{
+	struct cache_member *m = ((struct cache_member *) sb->d) +
+		sb->nr_this_dev;
 
+	printf("device %s\n", dev);
+	printf("\tcache state\t%s\n",	cache_state[CACHE_STATE(m)]);
+	printf("\tcache_tier\t%llu\n", CACHE_TIER(m));
+	printf("\tseq#: \t%llu\n", sb->seq);
+
+}

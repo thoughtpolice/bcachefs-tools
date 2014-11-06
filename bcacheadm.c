@@ -33,9 +33,7 @@
 #define PACKAGE_VERSION "1.0"
 #define PACKAGE_BUGREPORT "bugreport"
 
-//What is the actual max?
-#define MAX_DEVS 64
-
+#define MAX_DEVS MAX_CACHES_PER_SET
 
 
 /* bcacheadm globals */
@@ -206,6 +204,10 @@ static NihOption list_cachesets_options[] = {
 	NIH_OPTION_LAST
 };
 
+static NihOption status_options[] = {
+	NIH_OPTION_LAST
+};
+
 static NihOption options[] = {
 	NIH_OPTION_LAST
 };
@@ -310,17 +312,65 @@ int bcache_query_devs (NihCommand *command, char *const *args)
 {
 	int i;
 
-	for (i = 0; args[i]!=NULL; i++) {
-		query_dev(args[i], false);
+	for (i = 0; args[i] != NULL; i++) {
+		struct cache_sb *sb = query_dev(args[i], false);
+		print_dev_info(sb, force_csum);
 	}
 }
 
+int bcache_status (NihCommand *command, char *const *args)
+{
+	int i;
+	struct cache_sb *sb_tier0 = NULL, *sb_tier1 = NULL;
+	char *dev0 = NULL, *dev1 = NULL;
+
+	for (i = 0; args[i] != NULL; i++) {
+		struct cache_sb *sb = query_dev(args[i], false);
+		struct cache_member *m = ((struct cache_member *) sb->d) +
+			sb->nr_this_dev;
+		long long unsigned cache_tier = CACHE_TIER(m);
+
+		if (!cache_tier)
+			if (!sb_tier0 || sb->seq > sb_tier0->seq) {
+				sb_tier0 = sb;
+				dev0 = args[i];
+			}
+		else if (cache_tier == 1)
+			if (!sb_tier1 || sb->seq > sb_tier1->seq) {
+				sb_tier1 = sb;
+				dev1 = args[i];
+			}
+	}
+	if (sb_tier0) sb_state(sb_tier0, dev0);
+	if (sb_tier1) sb_state(sb_tier1, dev1);
+}
+
 static NihCommand commands[] = {
-	{"format", N_("format <list of drives>"), "Format one or a list of devices with bcache datastructures. You need to do this before you create a volume",  N_("format drive[s] with bcache"), NULL, make_bcache_options, make_bcache},
-	{"probe", N_("probe <list of devices>"), "Does a blkid_probe on a device", N_("Does a blkid_probe on a device"), NULL, probe_bcache_options, probe_bcache},
-	{"register", N_("register <list of devices>"), "Registers a list of devices", N_("Registers a list of devices"), NULL, bcache_register_options, bcache_register},
-	{"list-cachesets", N_("list-cachesets"), "Lists cachesets in /sys/fs/bcache", N_("Lists cachesets in /sys/fs/bcache"), NULL, list_cachesets_options, bcache_list_cachesets},
-	{"query-devs", N_("query <list of devices>"), "Gives info about the superblock of a list of devices", N_("show superblock on each of the listed drive"), NULL, query_devs_options, bcache_query_devs},
+	{"format", N_("format <list of drives>"),
+		  "Format one or a list of devices with bcache datastructures."
+		  " You need to do this before you create a volume",
+		  N_("format drive[s] with bcache"),
+		  NULL, make_bcache_options, make_bcache},
+	{"probe", N_("probe <list of devices>"),
+		  "Does a blkid_probe on a device",
+		  N_("Does a blkid_probe on a device"),
+		  NULL, probe_bcache_options, probe_bcache},
+	{"register", N_("register <list of devices>"),
+		     "Registers a list of devices",
+		     N_("Registers a list of devices"),
+		     NULL, bcache_register_options, bcache_register},
+	{"list-cachesets", N_("list-cachesets"),
+			   "Lists cachesets in /sys/fs/bcache",
+			   N_("Lists cachesets in /sys/fs/bcache"),
+			   NULL, list_cachesets_options, bcache_list_cachesets},
+	{"query-devs", N_("query <list of devices>"),
+		       "Gives info about the superblock of a list of devices",
+		       N_("show superblock on each of the listed drive"),
+		       NULL, query_devs_options, bcache_query_devs},
+	{"status", N_("status <list of devices>"),
+		   "Finds the status of the most up to date superblock",
+		   N_("Finds the status of the most up to date superblock"),
+		   NULL, status_options, bcache_status},
 	NIH_COMMAND_LAST
 };
 
