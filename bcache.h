@@ -8,6 +8,7 @@
 #define _BCACHE_H
 
 #include <linux/bcache.h>
+#include <dirent.h>
 
 typedef __u8	u8;
 typedef __u16	u16;
@@ -63,6 +64,7 @@ int register_bcache();
 int probe(char *, int);
 void print_dev_info(struct cache_sb *, bool);
 void sb_state(struct cache_sb *, char *);
+void read_stat_dir(DIR *, char *, char *, bool);
 
 
 #define csum_set(i, type)						\

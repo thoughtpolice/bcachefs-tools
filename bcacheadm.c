@@ -27,6 +27,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <uuid/uuid.h>
+#include <dirent.h>
 #include <bcache.h> //libbcache
 
 #define PACKAGE_NAME "bcacheadm"
@@ -60,7 +61,7 @@ int writeback = 0, discard = 0, wipe_bcache = 0;
 unsigned replication_set = 0, tier = 0, replacement_policy = 0;
 uint64_t data_offset = BDEV_DATA_START_DEFAULT;
 char *label = NULL;
-struct cache_sb *cache_set_sb;
+struct cache_sb *cache_set_sb = NULL;
 enum long_opts {
 	CACHE_SET_UUID = 256,
 	CSUM_TYPE,
@@ -78,6 +79,14 @@ bool udev = false;
 
 /* list globals */
 char *cset_dir = "/sys/fs/bcache";
+
+/* status globals */
+bool status_all = false;
+
+/* stats globals */
+bool stats_all = false;
+bool stats_list = false;
+static const char *stats_uuid = NULL;
 
 /* make-bcache option setters */
 static int set_CACHE_SET_UUID(NihOption *option, const char *arg)
@@ -145,7 +154,6 @@ static int set_bucket_sizes(NihOption *option, const char *arg)
 	return 0;
 }
 
-
 /* probe setters */
 static int set_udev(NihOption *option, const char *arg)
 {
@@ -205,6 +213,14 @@ static NihOption list_cachesets_options[] = {
 };
 
 static NihOption status_options[] = {
+	{'a', "all", N_("all"), NULL, NULL, &status_all, NULL},
+	NIH_OPTION_LAST
+};
+
+static NihOption stats_options[] = {
+	{'a', "all", N_("all"), NULL, NULL, &stats_all, NULL},
+	{'l', "list", N_("list"), NULL, NULL, &stats_list, NULL},
+	{'u', "uuid", N_("cache_set UUID"), NULL, "UUID", &stats_uuid, NULL},
 	NIH_OPTION_LAST
 };
 
@@ -345,6 +361,49 @@ int bcache_status (NihCommand *command, char *const *args)
 	if (sb_tier1) sb_state(sb_tier1, dev1);
 }
 
+int bcache_stats (NihCommand *command, char *const *args)
+{
+	/* all prints out a STAT:\tVALUE table
+	 * list prints out a list of all STATS
+	 * args contains a list of STAT, and prints their VALUE
+	 */
+	int i;
+	char *stats_dir = NULL;
+	DIR *dir = NULL;
+	struct dirent *ent = NULL;
+
+	if (stats_uuid) {
+		/*
+		 * dev or uuid must be passed in
+		 * check that the given has an existing STAT directory
+		 */
+		stats_dir = (char*)malloc(sizeof(char)*
+				(strlen(cset_dir) +
+				 strlen(stats_uuid) + 2));
+		strcpy(stats_dir, cset_dir);
+		strcat(stats_dir, "/");
+		strcat(stats_dir, stats_uuid);
+
+		dir = opendir(stats_dir);
+		if (!dir) {
+			fprintf(stderr, "Failed to open dir %s\n", cset_dir);
+			return 1;
+		}
+	} else {
+		printf("Must provide a cacheset uuid\n");
+		exit(EXIT_FAILURE);
+	}
+
+	if(stats_list || stats_all)
+		while ((ent = readdir(dir)) != NULL)
+			read_stat_dir(dir, stats_dir, ent->d_name, stats_all);
+
+	for (i = 0; args[i] != NULL; i++)
+		read_stat_dir(dir, stats_dir, args[i], true);
+
+	closedir(dir);
+}
+
 static NihCommand commands[] = {
 	{"format", N_("format <list of drives>"),
 		  "Format one or a list of devices with bcache datastructures."
@@ -371,6 +430,10 @@ static NihCommand commands[] = {
 		   "Finds the status of the most up to date superblock",
 		   N_("Finds the status of the most up to date superblock"),
 		   NULL, status_options, bcache_status},
+	{"stats", N_("stats <list of devices>"),
+		  "List various bcache statistics",
+		  N_("List various bcache statistics"),
+		  NULL, stats_options, bcache_stats},
 	NIH_COMMAND_LAST
 };
 

@@ -896,7 +896,6 @@ int list_cachesets(char *cset_dir)
 		fprintf(stderr, "Failed to open dir %s\n", cset_dir);
 		return 1;
 	}
-	printf("cachesets:\n");
 
 	while ((ent = readdir(dir)) != NULL) {
 		struct stat statbuf;
@@ -913,7 +912,7 @@ int list_cachesets(char *cset_dir)
 			return 1;
 		}
 		if (S_ISDIR(statbuf.st_mode)) {
-			printf("\t%s\n", ent->d_name);
+			printf("%s\n", ent->d_name);
 		}
 	}
 
@@ -1013,4 +1012,38 @@ void sb_state(struct cache_sb *sb, char *dev)
 	printf("\tcache_tier\t%llu\n", CACHE_TIER(m));
 	printf("\tseq#: \t%llu\n", sb->seq);
 
+}
+
+void read_stat_dir(DIR *dir, char *stats_dir, char *stat_name, bool print_val)
+{
+	struct stat statbuf;
+	char entry[150];
+
+	strcpy(entry, stats_dir);
+	strcat(entry, "/");
+	strcat(entry, stat_name);
+	if(stat(entry, &statbuf) == -1) {
+		fprintf(stderr, "Failed to stat %s\n", entry);
+		return;
+	}
+
+	if (S_ISREG(statbuf.st_mode)) {
+		char buf[100];
+		FILE *fp = NULL;
+
+		fp = fopen(entry, "r");
+		if(!fp) {
+			/* If we can't open the file, this is probably because
+			 * of permissions, just move to the next file */
+			return;
+		}
+
+		while(fgets(buf, 100, fp));
+
+		if(print_val)
+			printf("%s\t%s", stat_name, buf);
+		else
+			printf("%s\n", stat_name);
+		fclose(fp);
+	}
 }
