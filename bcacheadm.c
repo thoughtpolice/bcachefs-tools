@@ -87,6 +87,11 @@ bool status_all = false;
 bool stats_all = false;
 bool stats_list = false;
 static const char *stats_uuid = NULL;
+static const char *stats_cache_num = NULL;
+bool stats_five_min = false;
+bool stats_hour = false;
+bool stats_day = false;
+bool stats_total = false;
 
 /* make-bcache option setters */
 static int set_CACHE_SET_UUID(NihOption *option, const char *arg)
@@ -221,6 +226,11 @@ static NihOption stats_options[] = {
 	{'a', "all", N_("all"), NULL, NULL, &stats_all, NULL},
 	{'l', "list", N_("list"), NULL, NULL, &stats_list, NULL},
 	{'u', "uuid", N_("cache_set UUID"), NULL, "UUID", &stats_uuid, NULL},
+	{'c', "cache", N_("cache number (starts from 0)"), NULL, "CACHE#", &stats_cache_num, NULL},
+	{0, "five-min-stats", N_("stats accumulated in last 5 minutes"), NULL, NULL, &stats_five_min, NULL},
+	{0, "hour-stats", N_("stats accumulated in last hour"), NULL, NULL, &stats_hour, NULL},
+	{0, "day-stats", N_("stats accumulated in last day"), NULL, NULL, &stats_day, NULL},
+	{0, "total-stats", N_("stats accumulated in total"), NULL, NULL, &stats_total, NULL},
 	NIH_OPTION_LAST
 };
 
@@ -361,29 +371,38 @@ int bcache_status (NihCommand *command, char *const *args)
 	if (sb_tier1) sb_state(sb_tier1, dev1);
 }
 
+static void stats_subdir(char* stats_dir)
+{
+	char tmp[50] = "/";
+	if(stats_cache_num) {
+		strcat(tmp, "cache");
+		strcat(tmp, stats_cache_num);
+	} else if (stats_five_min)
+		strcat(tmp, "stats_five_minute");
+	else if (stats_hour)
+		strcat(tmp, "stats_hour");
+	else if (stats_day)
+		strcat(tmp, "stats_day");
+	else if (stats_total)
+		strcat(tmp, "stats_total");
+	else
+		return;
+
+	strcat(stats_dir, tmp);
+}
+
 int bcache_stats (NihCommand *command, char *const *args)
 {
-	/* all prints out a STAT:\tVALUE table
-	 * list prints out a list of all STATS
-	 * args contains a list of STAT, and prints their VALUE
-	 */
 	int i;
-	char *stats_dir = NULL;
+	char stats_dir[200];
 	DIR *dir = NULL;
 	struct dirent *ent = NULL;
 
 	if (stats_uuid) {
-		/*
-		 * dev or uuid must be passed in
-		 * check that the given has an existing STAT directory
-		 */
-		stats_dir = (char*)malloc(sizeof(char)*
-				(strlen(cset_dir) +
-				 strlen(stats_uuid) + 2));
 		strcpy(stats_dir, cset_dir);
 		strcat(stats_dir, "/");
 		strcat(stats_dir, stats_uuid);
-
+		stats_subdir(stats_dir);
 		dir = opendir(stats_dir);
 		if (!dir) {
 			fprintf(stderr, "Failed to open dir %s\n", cset_dir);
@@ -397,6 +416,7 @@ int bcache_stats (NihCommand *command, char *const *args)
 	if(stats_list || stats_all)
 		while ((ent = readdir(dir)) != NULL)
 			read_stat_dir(dir, stats_dir, ent->d_name, stats_all);
+
 
 	for (i = 0; args[i] != NULL; i++)
 		read_stat_dir(dir, stats_dir, args[i], true);
