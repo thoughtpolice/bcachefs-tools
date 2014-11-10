@@ -374,13 +374,13 @@ uint64_t getblocks(int fd)
 	uint64_t ret;
 	struct stat statbuf;
 	if (fstat(fd, &statbuf)) {
-		perror("stat error\n");
+		perror("getblocks: stat error\n");
 		exit(EXIT_FAILURE);
 	}
 	ret = statbuf.st_size / 512;
 	if (S_ISBLK(statbuf.st_mode))
 		if (ioctl(fd, BLKGETSIZE, &ret)) {
-			perror("ioctl error");
+			perror("ioctl error getting blksize");
 			exit(EXIT_FAILURE);
 		}
 	return ret;
@@ -438,12 +438,12 @@ static void do_write_sb(int fd, struct cache_sb *sb)
 
 	/* Zero start of disk */
 	if (pwrite(fd, zeroes, SB_START, 0) != SB_START) {
-		perror("write error\n");
+		perror("write error trying to zero start of disk\n");
 		exit(EXIT_FAILURE);
 	}
 	/* Write superblock */
 	if (pwrite(fd, sb, bytes, SB_START) != bytes) {
-		perror("write error\n");
+		perror("write error trying to write superblock\n");
 		exit(EXIT_FAILURE);
 	}
 
@@ -503,36 +503,49 @@ int dev_open(const char *dev, bool wipe_bcache)
 	struct cache_sb sb;
 	blkid_probe pr;
 	int fd;
+	char err[256];
 
 	if ((fd = open(dev, O_RDWR|O_EXCL)) == -1) {
-		fprintf(stderr, "Can't open dev %s: %s\n", dev, strerror(errno));
-		exit(EXIT_FAILURE);
+		sprintf(err, "Can't open dev %s: %s\n", dev, strerror(errno));
+		goto err;
 	}
 
-	if (pread(fd, &sb, sizeof(sb), SB_START) != sizeof(sb))
-		exit(EXIT_FAILURE);
+	if (pread(fd, &sb, sizeof(sb), SB_START) != sizeof(sb)) {
+		sprintf(err, "Failed to read superblock");
+		goto err;
+	}
 
 	if (!memcmp(&sb.magic, &BCACHE_MAGIC, 16) && !wipe_bcache) {
-		fprintf(stderr, "Already a bcache device on %s, "
+		sprintf(err, "Already a bcache device on %s, "
 			"overwrite with --wipe-bcache\n", dev);
-		exit(EXIT_FAILURE);
+		goto err;
 	}
 
-	if (!(pr = blkid_new_probe()))
-		exit(EXIT_FAILURE);
-	if (blkid_probe_set_device(pr, fd, 0, 0))
-		exit(EXIT_FAILURE);
+	if (!(pr = blkid_new_probe())) {
+		sprintf(err, "Failed to create a new probe");
+		goto err;
+	}
+	if (blkid_probe_set_device(pr, fd, 0, 0)) {
+		sprintf(err, "failed to set probe to device");
+		goto err;
+	}
 	/* enable ptable probing; superblock probing is enabled by default */
-	if (blkid_probe_enable_partitions(pr, true))
-		exit(EXIT_FAILURE);
+	if (blkid_probe_enable_partitions(pr, true)) {
+		sprintf(err, "Failed to enable partitions on probe");
+		goto err;
+	}
 	if (!blkid_do_probe(pr)) {
 		/* XXX wipefs doesn't know how to remove partition tables */
-		fprintf(stderr, "Device %s already has a non-bcache superblock, "
-				"remove it using wipefs and wipefs -a\n", dev);
-		exit(EXIT_FAILURE);
+		sprintf(err, "Device %s already has a non-bcache superblock, "
+			"remove it using wipefs and wipefs -a\n", dev);
+		goto err;
 	}
 
 	return fd;
+
+	err:
+		fprintf(stderr, "dev_open failed with: %s", err);
+		exit(EXIT_FAILURE);
 }
 
 static unsigned min_bucket_size(int num_bucket_sizes, unsigned *bucket_sizes)
@@ -953,7 +966,7 @@ int register_bcache(char *devs)
 
 	ret = ioctl(bcachefd, BCH_IOCTL_REGISTER, devs);
 	if (ret < 0) {
-		fprintf(stderr, "ioctl error %d", ret);
+		fprintf(stderr, "ioctl register error: %s", strerror(ret));
 		exit(EXIT_FAILURE);
 	}
 	return 0;
@@ -965,29 +978,46 @@ int probe(char *dev, int udev)
 	struct cache_sb sb;
 	char uuid[40];
 	blkid_probe pr;
+	char *err = NULL;
 
 	int fd = open(dev, O_RDONLY);
-	if (fd == -1)
-		return -1;
+	if (fd == -1) {
+		err = "Got file descriptor -1 trying to open dev";
+		goto err;
+	}
 
-	if (!(pr = blkid_new_probe()))
-		return -1;
-	if (blkid_probe_set_device(pr, fd, 0, 0))
-		return -1;
+	if (!(pr = blkid_new_probe())) {
+		err = "Failed trying to get a blkid for new probe";
+		goto err;
+	}
+
+	if (blkid_probe_set_device(pr, fd, 0, 0)) {
+		err = "Failed blkid probe set device";
+		goto err;
+	}
+
 	/* probe partitions too */
-	if (blkid_probe_enable_partitions(pr, true))
-		return -1;
+	if (blkid_probe_enable_partitions(pr, true)) {
+		err = "Enable probe partitions";
+		goto err;
+	}
+
 	/* bail if anything was found
 	 * probe-bcache isn't needed once blkid recognizes bcache */
 	if (!blkid_do_probe(pr)) {
-		return -1;
+		err = "blkid recognizes bcache";
+		goto err;
 	}
 
-	if (pread(fd, &sb, sizeof(sb), SB_START) != sizeof(sb))
-		return -1;
+	if (pread(fd, &sb, sizeof(sb), SB_START) != sizeof(sb)) {
+		err = "Failed to read superblock";
+		goto err;
+	}
 
-	if (memcmp(&sb.magic, &BCACHE_MAGIC, sizeof(sb.magic)))
-		return -1;
+	if (memcmp(&sb.magic, &BCACHE_MAGIC, sizeof(sb.magic))) {
+		err = "Bcache magic incorrect";
+		goto err;
+	}
 
 	uuid_unparse(sb.uuid.b, uuid);
 
@@ -1000,6 +1030,10 @@ int probe(char *dev, int udev)
 		printf("%s: UUID=\"\" TYPE=\"bcache\"\n", uuid);
 
 	return 0;
+
+	err:
+		fprintf(stderr, "Probe exit with error: %s", err);
+		return -1;
 }
 
 void sb_state(struct cache_sb *sb, char *dev)
