@@ -1,0 +1,153 @@
+.TH bcacheadm 8
+.SH NAME
+bcacheadm \- manage bcache devices
+
+.SH  SYNOPSIS
+.B bcacheadm
+[\fIoptions\fR]
+.B COMMAND
+[\fIoptions\fR]
+
+.SH COMMANDS
+.TP
+.BR format
+.RS
+Format one or a list of devices with bcache data structures. You need to do this before you create a volume.
+.RE
+
+.BR register
+.RS
+Register a list of devices.
+.RE
+
+.BR list-cachesets
+.RS
+List cachesets on this system. This just searches /sys/fs/bcache.
+.RE
+
+.BR query-devs
+.RS
+Gives info about the superblock for a list of devices.
+.RE
+
+.BR status
+.RS
+Finds the status of the most up to date superblock in each tier. Pass in a list of devices.
+.RE
+
+.BR stats
+.RS
+List bcache specific statistics. Use --list to find out exactly what these are. To list stats for a cacheset, just give the cacheset uuid. To target a cache within the cacheset, use the -c option. To get time interval stats, use the hour, day, etc, options.
+.RE
+
+.BR probe
+.RS
+Return UUID if device identified as bcache-formatted.
+.PP
+Only necessary until support for the bcache superblock is included
+in blkid; in the meantime, provides just enough functionality for a udev script
+to create the /dev/disk/by-uuid symlink.
+.RE
+
+.BR help
+.RS
+List the bcacheadm commands
+.RE
+
+.SH OPTIONS
+.SH Options for bcacheadm
+.TP
+.BR \--help
+
+
+.SH Options for format
+.TP
+.BR \-C
+Create a cache
+.TP
+.BR \-B
+Create a backing device
+.TP
+.BR \-b\ --bucket-size=
+Specifies the bucket size. Allocation is done in terms of buckets, and cache
+hits are counted per bucket; thus a smaller bucket size will give better cache
+utilization, but poorer write performance. The bucket size is intended to be
+equal to the size of your SSD's erase blocks, which seems to be 128k-512k for
+most SSDs. Must be a power of two; accepts human readable units. Defaults to
+128k.
+.TP
+.BR \-l\ --label=
+label
+.TP
+.BR \-w,\ --block=
+block size (hard sector size of SSD, often 2k
+.TP
+.BR \-t,\ --tier=
+tier of subsequent devices
+.TP
+.BR \--cache-replacement-policy=
+one of lru, fifo, or random
+.TP
+.BR \-o,\ --data_offset=
+data offset in sectors
+.TP
+.BR \--cset-uuid=
+Create a cache device with the specified UUID
+.TP
+.BR \--csum_type=
+One of none, csc32c, or csc64
+.TP
+.BR \--meta-replicas=
+Number of metadata replicas
+.TP
+.BR \--data-replicas=
+Number of data replicas
+.TP
+.BR \--wipe-bcache
+Destroy existing bcache data if present
+.TP
+.BR \--discard
+Enable discards
+.TP
+.BR \--writeback
+Enable writeback
+
+.SH Options for register
+
+.SH Options for list-cachesets
+.TP
+.BR \-d,\ --dir=
+Provide a directory other than /sys/fs/bcache
+
+.SH Options for query-devs
+.TP
+.BR \-f,\ --force-csum
+Enables bcacheadm to going even if the superblock crc is invalid
+
+.SH Options for status
+
+.SH Options for stats
+.TP
+.BR \-a,\ --all
+List all stats and their values for the given device.
+.TP
+.BR \-l,\ --list
+List the names of the different stats for the given device.
+.TP
+.BR \-u,\ --uuid=
+UUID for the cacheset
+.TP
+.BR \-c,\ --cache=
+Cache number, starts from 0
+.TP
+.BR \--five-min-stats
+stats accumulated in the last 5 minutes
+.TP
+.BR \--hour-stats
+stats accumulated in the last hour
+.TP
+.BR \--day-stats
+stats accumulated in the last day
+.TP
+.BR \--total-stats
+stats accumulated in total
