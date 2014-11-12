@@ -699,7 +699,7 @@ unsigned get_blocksize(const char *path)
 long strtoul_or_die(const char *p, size_t max, const char *msg)
 {
 	errno = 0;
-	long v = strtol(optarg, NULL, 10);
+	long v = strtol(p, NULL, 10);
 	if (errno || v < 0 || v >= max) {
 		fprintf(stderr, "Invalid %s %zi\n", msg, v);
 		exit(EXIT_FAILURE);

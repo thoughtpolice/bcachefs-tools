@@ -34,6 +34,7 @@ bcache_test_LDFLAGS=-lm `pkg-config --libs openssl`
 bcache_test_CFLAGS=$(AM_CFLAGS) `pkg-config --cflags openssl`
 
 bcacheadm_SOURCES=bcacheadm.c
+bcacheadm_CFLAGS=$(AM_CFLAGS) -g
 bcacheadm_LDFLAGS=$(AM_LDFLAGS) -lnih
 bcacheadm_LDADD=libbcache.a
 

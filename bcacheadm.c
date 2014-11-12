@@ -50,15 +50,16 @@ enum exit {
 /* make-bcache globals */
 int bdev = -1;
 int devs = 0;
-const char *cache_devices[MAX_DEVS];
-const char *backing_devices[MAX_DEVS];
-const char *backing_dev_labels[MAX_DEVS];
-size_t i, nr_backing_devices = 0;
+char *cache_devices[MAX_DEVS];
+unsigned tier_mapping[MAX_DEVS];
+char *backing_devices[MAX_DEVS];
+char *backing_dev_labels[MAX_DEVS];
+size_t i, nr_backing_devices = 0, nr_cache_devices = 0;
 unsigned block_size = 0;
 unsigned bucket_sizes[MAX_DEVS];
 int num_bucket_sizes = 0;
 int writeback = 0, discard = 0, wipe_bcache = 0;
-unsigned replication_set = 0, tier = 0, replacement_policy = 0;
+unsigned replication_set = 0, replacement_policy = 0;
 uint64_t data_offset = BDEV_DATA_START_DEFAULT;
 char *label = NULL;
 struct cache_sb *cache_set_sb = NULL;
@@ -69,6 +70,11 @@ enum long_opts {
 	META_REPLICAS,
 	DATA_REPLICAS,
 };
+const char *cache_set_uuid = 0;
+const char *csum_type = 0;
+char *metadata_replicas = 0;
+char *data_replicas = 0;
+unsigned tier = 0;
 
 
 /* super-show globals */
@@ -94,64 +100,42 @@ bool stats_day = false;
 bool stats_total = false;
 
 /* make-bcache option setters */
-static int set_CACHE_SET_UUID(NihOption *option, const char *arg)
+static int set_block_size(NihOption *option, const char *arg)
 {
-	if(uuid_parse(arg, cache_set_sb->set_uuid.b)){
-		fprintf(stderr, "Bad uuid\n");
-		return -1;
-	}
+	block_size = hatoi_validate(arg, "block size");
 	return 0;
 }
-static int set_CSUM_TYPE(NihOption *option, const char *arg)
-{
-	SET_CACHE_PREFERRED_CSUM_TYPE(cache_set_sb,
-			read_string_list_or_die(arg, csum_types,
-				"csum type"));
-	return 0;
-}
-static int set_REPLICATION_SET(NihOption *option, const char *arg)
-{
-	replication_set = strtoul_or_die(arg,
-						CACHE_REPLICATION_SET_MAX,
-						"replication set");
-	return 0;
-}
-static int set_META_REPLICAS(NihOption *option, const char *arg)
-{
-	SET_CACHE_SET_META_REPLICAS_WANT(cache_set_sb,
-			strtoul_or_die(arg,
-						CACHE_SET_META_REPLICAS_WANT_MAX,
-						"meta replicas"));
-	return 0;
-}
-static int set_DATA_REPLICAS(NihOption *option, const char *arg)
-{
-	SET_CACHE_SET_DATA_REPLICAS_WANT(cache_set_sb,
-				strtoul_or_die(arg,
-						CACHE_SET_DATA_REPLICAS_WANT_MAX,
-						"data replicas"));
-	return 0;
-}
+
 static int set_cache(NihOption *option, const char *arg)
 {
-	bdev=0;
-	cache_devices[cache_set_sb->nr_in_set] = arg;
-	next_cache_device(cache_set_sb,
-			  replication_set,
-			  tier,
-			  replacement_policy,
-			  discard);
+	bdev = 0;
+	cache_devices[nr_cache_devices] = (char *)malloc(sizeof(char *) *
+			strlen(arg) + 1);
+	strcpy(cache_devices[nr_cache_devices], arg);
+	tier_mapping[nr_cache_devices] = tier;
+
 	devs++;
-	return 0;
+	nr_cache_devices++;
 }
+
 static int set_bdev(NihOption *option, const char *arg)
 {
-	bdev=1;
-	backing_dev_labels[nr_backing_devices]=label;
-	backing_devices[nr_backing_devices++]=arg;
+	bdev = 1;
+
+	backing_dev_labels[nr_backing_devices] = (char *)malloc(sizeof(char *) *
+			strlen(label) + 1);
+	strcpy(backing_dev_labels[nr_backing_devices], label);
+
+	backing_devices[nr_backing_devices] = (char *)malloc(sizeof(char *) *
+			strlen(arg) + 1);
+	strcpy(backing_devices[nr_backing_devices], arg);
+
+	nr_backing_devices++;
 	devs++;
+
 	return 0;
 }
+
 static int set_bucket_sizes(NihOption *option, const char *arg)
 {
 	bucket_sizes[num_bucket_sizes]=hatoi_validate(arg, "bucket size");
@@ -174,22 +158,22 @@ static int set_udev(NihOption *option, const char *arg)
 /* options */
 static NihOption make_bcache_options[] = {
 //	{int shortoption, char* longoption, char* help, NihOptionGroup, char* argname, void *value, NihOptionSetter}
-	{'C', "cache",	N_("Format a cache device"), NULL, NULL, NULL, set_cache},
-	{'B', "bdev",	N_("Format a backing device"), NULL, NULL, NULL, set_bdev},
-	{'l', "label",	N_("label"), NULL, NULL, &label, NULL},
+	{'C', "cache",	N_("Format a cache device"), NULL, "dev", NULL, set_cache},
+	{'B', "bdev",	N_("Format a backing device"), NULL, "dev", NULL, set_bdev},
+	{'l', "label",	N_("label"), NULL, "label", &label, NULL},
 	//Only one bucket_size supported until a list of bucket sizes is parsed correctly
-	{'b', "bucket",	N_("bucket size"), NULL, NULL, NULL, set_bucket_sizes},
+	{'b', "bucket",	N_("bucket size"), NULL, "size", NULL, set_bucket_sizes},
 	//Does the default setter automatically convert strings to an int?
-	{'w', "block",	N_("block size (hard sector size of SSD, often 2k"), NULL,NULL,	&block_size, NULL},
-	{'t', "tier",	N_("tier of subsequent devices"), NULL,NULL, &tier, NULL},
-	{'p', "cache_replacement_policy", N_("one of (lru|fifo|random)"), NULL,NULL, &replacement_policy, NULL},
-	{'o', "data_offset", N_("data offset in sectors"), NULL,NULL, &data_offset, NULL},
+	{'w', "block",	N_("block size (hard sector size of SSD, often 2k"), NULL,"size", NULL, set_block_size},
+	{'t', "tier",	N_("tier of subsequent devices"), NULL,"#", &tier, NULL},
+	{'p', "cache_replacement_policy", N_("one of (lru|fifo|random)"), NULL,"policy", &replacement_policy, NULL},
+	{'o', "data_offset", N_("data offset in sectors"), NULL,"offset", &data_offset, NULL},
 
-	{0, "cset-uuid",	N_("UUID for the cache set"),		NULL,	NULL, NULL, set_CACHE_SET_UUID },
-	{0, "csum-type",	N_("One of (none|crc32c|crc64)"),		NULL,	NULL, NULL, set_CSUM_TYPE },
-	{0, "replication-set",N_("replication set of subsequent devices"),	NULL,	NULL, NULL, set_REPLICATION_SET },
-	{0, "meta-replicas",N_("number of metadata replicas"),		NULL,	NULL, NULL, set_META_REPLICAS},
-	{0, "data-replicas",N_("number of data replicas"),		NULL,	NULL, NULL, set_DATA_REPLICAS },
+	{0, "cset-uuid",	N_("UUID for the cache set"),		NULL,	"uuid", &cache_set_uuid, NULL},
+	{0, "csum-type",	N_("One of (none|crc32c|crc64)"),		NULL,	"type", &csum_type, NULL },
+	{0, "replication-set",N_("replication set of subsequent devices"),	NULL,	NULL, &replication_set, NULL },
+	{0, "meta-replicas",N_("number of metadata replicas"),		NULL,	"#", &metadata_replicas, NULL},
+	{0, "data-replicas",N_("number of data replicas"),		NULL,	"#", &data_replicas, NULL },
 
 	{0, "wipe-bcache",	N_("destroy existing bcache data if present"),		NULL, NULL, &wipe_bcache, NULL},
 	{0, "discard",		N_("enable discards"),		NULL, NULL, &discard,		NULL},
@@ -245,21 +229,60 @@ int make_bcache (NihCommand *command, char *const *args)
 	int cache_dev_fd[devs];
 
 	int backing_dev_fd[devs];
+	printf("meta: %s, data: %s", metadata_replicas, data_replicas);
 
 	cache_set_sb = calloc(1, sizeof(*cache_set_sb) +
 				     sizeof(struct cache_member) * devs);
 
-	uuid_generate(cache_set_sb->set_uuid.b);
-	SET_CACHE_PREFERRED_CSUM_TYPE(cache_set_sb, BCH_CSUM_CRC32C);
-	SET_CACHE_SET_META_REPLICAS_WANT(cache_set_sb, 1);
-	SET_CACHE_SET_DATA_REPLICAS_WANT(cache_set_sb, 1);
+	if (cache_set_uuid) {
+		if(uuid_parse(cache_set_uuid, cache_set_sb->set_uuid.b)) {
+			fprintf(stderr, "Bad uuid\n");
+			return -1;
+		}
+	} else {
+		uuid_generate(cache_set_sb->set_uuid.b);
+	}
 
-	if(!bucket_sizes[0]) bucket_sizes[0] = 1024;
+	if (csum_type) {
+		SET_CACHE_PREFERRED_CSUM_TYPE(cache_set_sb,
+				read_string_list_or_die(csum_type, csum_types,
+					"csum type"));
+	} else {
+		SET_CACHE_PREFERRED_CSUM_TYPE(cache_set_sb, BCH_CSUM_CRC32C);
+	}
+
+	if (metadata_replicas) {
+		SET_CACHE_SET_META_REPLICAS_WANT(cache_set_sb,
+				strtoul_or_die(metadata_replicas,
+					CACHE_SET_META_REPLICAS_WANT_MAX,
+					"meta replicas"));
+	} else {
+		SET_CACHE_SET_META_REPLICAS_WANT(cache_set_sb, 1);
+	}
+
+	if (data_replicas) {
+		SET_CACHE_SET_DATA_REPLICAS_WANT(cache_set_sb,
+			strtoul_or_die(data_replicas,
+				CACHE_SET_DATA_REPLICAS_WANT_MAX,
+				"data replicas"));
+	} else {
+		SET_CACHE_SET_DATA_REPLICAS_WANT(cache_set_sb, 1);
+	}
 
 	if (bdev == -1) {
 		fprintf(stderr, "Please specify -C or -B\n");
 		exit(EXIT_FAILURE);
 	}
+
+	if(!bucket_sizes[0]) bucket_sizes[0] = 1024;
+
+
+	for(i = 0; i < nr_cache_devices; i++)
+		next_cache_device(cache_set_sb,
+				  replication_set,
+				  tier_mapping[i],
+				  replacement_policy,
+				  discard);
 
 	if (!cache_set_sb->nr_in_set && !nr_backing_devices) {
 		fprintf(stderr, "Please supply a device\n");
@@ -269,7 +292,8 @@ int make_bcache (NihCommand *command, char *const *args)
 	i = 0;
 	do {
 		if (bucket_sizes[i] < block_size) {
-			fprintf(stderr, "Bucket size cannot be smaller than block size\n");
+			fprintf(stderr,
+			"Bucket size cannot be smaller than block size\n");
 			exit(EXIT_FAILURE);
 		}
 		i++;
@@ -338,7 +362,9 @@ int bcache_query_devs (NihCommand *command, char *const *args)
 {
 	int i;
 
+
 	for (i = 0; args[i] != NULL; i++) {
+		printf("query-devs on :%s\n", args[i]);
 		struct cache_sb *sb = query_dev(args[i], false);
 		print_dev_info(sb, force_csum);
 	}
