@@ -345,13 +345,7 @@ int probe_bcache (NihCommand *command, char *const *args)
 
 int bcache_register (NihCommand *command, char *const *args)
 {
-	int ret;
-	char *arg_list = parse_array_to_list(args);
-
-	if(arg_list) {
-		ret = register_bcache(arg_list);
-		free(arg_list);
-	}
+	int ret = register_bcache(args);
 
 	return ret;
 }

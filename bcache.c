@@ -934,39 +934,19 @@ int list_cachesets(char *cset_dir)
 	return 0;
 }
 
-char *parse_array_to_list(char *const *args)
-{
-	int i, len = 0;
-	char *space = " ";
-	for(i=0; args[i] != NULL; i++) {
-		len+=strlen(args[i]) + 1;
-	}
-
-	char *arg_list = (char*)malloc(sizeof(char)*len);
-	strcpy(arg_list, args[0]);
-	strcat(arg_list, space);
-
-	for(i=1; args[i] != NULL; i++) {
-		strcat(arg_list, args[i]);
-		strcat(arg_list, space);
-	}
-
-	return arg_list;
-}
-
 int register_bcache(char *devs)
 {
 	int ret, bcachefd;
 
 	bcachefd = open("/dev/bcache", O_RDWR);
 	if (bcachefd < 0) {
-		perror("Can't open bcache device");
+		perror("Can't open bcache device\n");
 		exit(EXIT_FAILURE);
 	}
 
 	ret = ioctl(bcachefd, BCH_IOCTL_REGISTER, devs);
 	if (ret < 0) {
-		fprintf(stderr, "ioctl register error: %s", strerror(ret));
+		fprintf(stderr, "ioctl register error: %s\n", strerror(ret));
 		exit(EXIT_FAILURE);
 	}
 	return 0;
