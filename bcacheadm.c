@@ -51,7 +51,7 @@ enum exit {
 int bdev = -1;
 int devs = 0;
 char *cache_devices[MAX_DEVS];
-unsigned tier_mapping[MAX_DEVS];
+int tier_mapping[MAX_DEVS];
 char *backing_devices[MAX_DEVS];
 char *backing_dev_labels[MAX_DEVS];
 size_t i, nr_backing_devices = 0, nr_cache_devices = 0;
@@ -74,7 +74,7 @@ const char *cache_set_uuid = 0;
 const char *csum_type = 0;
 char *metadata_replicas = 0;
 char *data_replicas = 0;
-unsigned tier = 0;
+char *tier = 0;
 
 
 /* super-show globals */
@@ -112,7 +112,10 @@ static int set_cache(NihOption *option, const char *arg)
 	cache_devices[nr_cache_devices] = (char *)malloc(sizeof(char *) *
 			strlen(arg) + 1);
 	strcpy(cache_devices[nr_cache_devices], arg);
-	tier_mapping[nr_cache_devices] = tier;
+	if(!tier)
+		tier_mapping[nr_cache_devices] = 0;
+	else
+		tier_mapping[nr_cache_devices] = atoi(tier);
 
 	devs++;
 	nr_cache_devices++;
@@ -122,9 +125,11 @@ static int set_bdev(NihOption *option, const char *arg)
 {
 	bdev = 1;
 
-	backing_dev_labels[nr_backing_devices] = (char *)malloc(sizeof(char *) *
-			strlen(label) + 1);
-	strcpy(backing_dev_labels[nr_backing_devices], label);
+	if(label) {
+		backing_dev_labels[nr_backing_devices] =
+			(char *)malloc(sizeof(char *) * strlen(label) + 1);
+		strcpy(backing_dev_labels[nr_backing_devices], label);
+	}
 
 	backing_devices[nr_backing_devices] = (char *)malloc(sizeof(char *) *
 			strlen(arg) + 1);
@@ -229,7 +234,6 @@ int make_bcache (NihCommand *command, char *const *args)
 	int cache_dev_fd[devs];
 
 	int backing_dev_fd[devs];
-	printf("meta: %s, data: %s", metadata_replicas, data_replicas);
 
 	cache_set_sb = calloc(1, sizeof(*cache_set_sb) +
 				     sizeof(struct cache_member) * devs);
@@ -275,7 +279,6 @@ int make_bcache (NihCommand *command, char *const *args)
 	}
 
 	if(!bucket_sizes[0]) bucket_sizes[0] = 1024;
-
 
 	for(i = 0; i < nr_cache_devices; i++)
 		next_cache_device(cache_set_sb,

@@ -637,7 +637,7 @@ void write_cache_sbs(int *fds, struct cache_sb *sb,
 
 void next_cache_device(struct cache_sb *sb,
 			      unsigned replication_set,
-			      unsigned tier,
+			      int tier,
 			      unsigned replacement_policy,
 			      bool discard)
 {

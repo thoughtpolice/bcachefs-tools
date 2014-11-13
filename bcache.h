@@ -50,7 +50,7 @@ void write_backingdev_sb(int, unsigned, unsigned *,	bool, uint64_t,
 				const char *, uuid_le);
 int dev_open(const char *, bool);
 void write_cache_sbs(int *, struct cache_sb *, unsigned, unsigned *, int);
-void next_cache_device(struct cache_sb *, unsigned, unsigned, unsigned, bool);
+void next_cache_device(struct cache_sb *, unsigned, int, unsigned, bool);
 unsigned get_blocksize(const char *);
 long strtoul_or_die(const char *, size_t, const char *);
 
