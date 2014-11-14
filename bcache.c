@@ -912,7 +912,24 @@ struct cache_sb *query_dev(char *dev, bool force_csum,
 	return sb;
 }
 
-static void list_cacheset_devs(char *cset_dir, char *cset_name) {
+static void dev_name(char *ugly_path) {
+	char buf[32];
+	int i, end = strlen(ugly_path);
+
+	//Chop off "/bcache", then look for the next '/' from the end
+	for (i = end - 8; ; i--)
+		if(ugly_path[i] == '/')
+			break;
+
+	strcpy(buf, ugly_path + i);
+	buf[end - i - 7] = 0;
+
+	// Is the dev guaranteed to be in /dev?
+	// This is needed for finding the superblock with a query-dev
+	printf("/dev%s\n", buf);
+}
+
+static void list_cacheset_devs(char *cset_dir, char *cset_name, bool parse_dev_name) {
 	int i = 0;
 	DIR *cachedir;
 	struct stat cache_stat;
@@ -937,7 +954,10 @@ static void list_cacheset_devs(char *cset_dir, char *cset_name) {
 
 		if((len = readlink(entry, buf, sizeof(buf) - 1)) != -1) {
 			buf[len] = '\0';
-			printf("\t%s\n", buf);
+			if(parse_dev_name)
+				dev_name(buf);
+			else
+				printf("\t%s\n", buf);
 		}
 
 		/* remove i from end and append i++ */
@@ -978,7 +998,7 @@ int list_cachesets(char *cset_dir, bool list_devs)
 			printf("%s\n", ent->d_name);
 
 			if(list_devs) {
-				list_cacheset_devs(cset_dir, ent->d_name);
+				list_cacheset_devs(cset_dir, ent->d_name, true);
 			}
 		}
 	}
