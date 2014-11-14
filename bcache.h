@@ -58,7 +58,7 @@ void show_super_backingdev(struct cache_sb *, bool);
 void show_super_cache(struct cache_sb *, bool);
 
 struct cache_sb *query_dev(char *, bool);
-int list_cachesets(char *);
+int list_cachesets(char *, bool);
 char *parse_array_to_list(char *const *);
 int register_bcache();
 int probe(char *, int);

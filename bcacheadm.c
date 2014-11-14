@@ -85,6 +85,7 @@ bool udev = false;
 
 /* list globals */
 char *cset_dir = "/sys/fs/bcache";
+bool list_devs = false;
 
 /* status globals */
 bool status_all = false;
@@ -203,6 +204,7 @@ static NihOption query_devs_options[] = {
 
 static NihOption list_cachesets_options[] = {
 	{'d', "dir", N_("directory"), NULL, NULL, &cset_dir, NULL},
+	{0, "list-devs", N_("list all devices in the cache sets as well"), NULL, NULL, &list_devs, NULL},
 	NIH_OPTION_LAST
 };
 
@@ -352,7 +354,7 @@ int bcache_register (NihCommand *command, char *const *args)
 
 int bcache_list_cachesets (NihCommand *command, char *const *args)
 {
-	return list_cachesets(cset_dir);
+	return list_cachesets(cset_dir, list_devs);
 }
 
 int bcache_query_devs (NihCommand *command, char *const *args)
@@ -361,7 +363,7 @@ int bcache_query_devs (NihCommand *command, char *const *args)
 
 
 	for (i = 0; args[i] != NULL; i++) {
-		printf("query-devs on :%s\n", args[i]);
+		printf("query-devs on: %s\n", args[i]);
 		struct cache_sb *sb = query_dev(args[i], false);
 		print_dev_info(sb, force_csum);
 	}

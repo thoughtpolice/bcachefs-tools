@@ -901,7 +901,43 @@ void print_dev_info(struct cache_sb *sb, bool force_csum)
 		show_super_backingdev(sb, force_csum);
 }
 
-int list_cachesets(char *cset_dir)
+static void list_cacheset_devs(char *cset_dir, char *cset_name) {
+	int i = 0;
+	DIR *cachedir;
+	struct stat cache_stat;
+	char intbuf[4];
+	char entry[256];
+
+	strcpy(entry, cset_dir);
+	strcat(entry, "/");
+	strcat(entry, cset_name);
+	strcat(entry, "/cache0");
+	snprintf(intbuf, 4, "%d", i);
+
+	while(true) {
+		char buf[256];
+		int len;
+
+		if((cachedir = opendir(entry)) == NULL)
+			break;
+
+		if(stat(entry, &cache_stat))
+			break;
+
+		if((len = readlink(entry, buf, sizeof(buf) - 1)) != -1) {
+			buf[len] = '\0';
+			printf("\t%s\n", buf);
+		}
+
+		/* remove i from end and append i++ */
+		entry[strlen(entry)-strlen(intbuf)] = 0;
+		i++;
+		snprintf(intbuf, 4, "%d", i);
+		strcat(entry, intbuf);
+	}
+}
+
+int list_cachesets(char *cset_dir, bool list_devs)
 {
 	struct dirent *ent;
 	DIR *dir = opendir(cset_dir);
@@ -912,7 +948,8 @@ int list_cachesets(char *cset_dir)
 
 	while ((ent = readdir(dir)) != NULL) {
 		struct stat statbuf;
-		char entry[100];
+		char entry[256];
+		struct dirent *cache_ent;
 
 		if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, ".."))
 			continue;
@@ -920,12 +957,18 @@ int list_cachesets(char *cset_dir)
 		strcpy(entry, cset_dir);
 		strcat(entry, "/");
 		strcat(entry, ent->d_name);
+
 		if(stat(entry, &statbuf) == -1) {
 			fprintf(stderr, "Failed to stat %s\n", entry);
 			return 1;
 		}
+
 		if (S_ISDIR(statbuf.st_mode)) {
 			printf("%s\n", ent->d_name);
+
+			if(list_devs) {
+				list_cacheset_devs(cset_dir, ent->d_name);
+			}
 		}
 	}
 
