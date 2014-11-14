@@ -864,7 +864,7 @@ void show_super_cache(struct cache_sb *sb, bool force_csum)
 	show_cache_member(sb, sb->nr_this_dev);
 }
 
-struct cache_sb *query_dev(char *dev, bool force_csum)
+struct cache_sb *query_dev(char *dev, bool force_csum, bool print_sb)
 {
 	struct cache_sb sb_stack, *sb = &sb_stack;
 	size_t bytes = sizeof(*sb);
@@ -890,15 +890,14 @@ struct cache_sb *query_dev(char *dev, bool force_csum)
 		}
 	}
 
-	return sb;
-}
+	if(print_sb) {
+		if (!SB_IS_BDEV(sb))
+			show_super_cache(sb, force_csum);
+		else
+			show_super_backingdev(sb, force_csum);
+	}
 
-void print_dev_info(struct cache_sb *sb, bool force_csum)
-{
-	if (!SB_IS_BDEV(sb))
-		show_super_cache(sb, force_csum);
-	else
-		show_super_backingdev(sb, force_csum);
+	return sb;
 }
 
 static void list_cacheset_devs(char *cset_dir, char *cset_name) {

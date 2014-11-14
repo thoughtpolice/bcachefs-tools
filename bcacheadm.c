@@ -362,11 +362,8 @@ int bcache_query_devs (NihCommand *command, char *const *args)
 	int i;
 
 
-	for (i = 0; args[i] != NULL; i++) {
-		printf("query-devs on: %s\n", args[i]);
-		struct cache_sb *sb = query_dev(args[i], false);
-		print_dev_info(sb, force_csum);
-	}
+	for (i = 0; args[i] != NULL; i++)
+		query_dev(args[i], force_csum, true);
 }
 
 int bcache_status (NihCommand *command, char *const *args)
@@ -376,7 +373,7 @@ int bcache_status (NihCommand *command, char *const *args)
 	char *dev0 = NULL, *dev1 = NULL;
 
 	for (i = 0; args[i] != NULL; i++) {
-		struct cache_sb *sb = query_dev(args[i], false);
+		struct cache_sb *sb = query_dev(args[i], false, false);
 		struct cache_member *m = ((struct cache_member *) sb->d) +
 			sb->nr_this_dev;
 		long long unsigned cache_tier = CACHE_TIER(m);

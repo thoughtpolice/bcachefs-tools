@@ -57,12 +57,11 @@ long strtoul_or_die(const char *, size_t, const char *);
 void show_super_backingdev(struct cache_sb *, bool);
 void show_super_cache(struct cache_sb *, bool);
 
-struct cache_sb *query_dev(char *, bool);
+struct cache_sb *query_dev(char *, bool, bool);
 int list_cachesets(char *, bool);
 char *parse_array_to_list(char *const *);
 int register_bcache();
 int probe(char *, int);
-void print_dev_info(struct cache_sb *, bool);
 void sb_state(struct cache_sb *, char *);
 void read_stat_dir(DIR *, char *, char *, bool);
 
