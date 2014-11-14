@@ -57,7 +57,7 @@ long strtoul_or_die(const char *, size_t, const char *);
 void show_super_backingdev(struct cache_sb *, bool);
 void show_super_cache(struct cache_sb *, bool);
 
-struct cache_sb *query_dev(char *, bool, bool);
+struct cache_sb *query_dev(char *, bool, bool, bool);
 int list_cachesets(char *, bool);
 char *parse_array_to_list(char *const *);
 int register_bcache();

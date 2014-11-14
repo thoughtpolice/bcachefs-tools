@@ -718,6 +718,12 @@ static void print_encode(char *in)
 			printf("%%%x", *pos);
 }
 
+static void show_uuid_only(struct cache_sb *sb) {
+	char uuid[40];
+	uuid_unparse(sb->uuid.b, uuid);
+	printf("%s\n", uuid);
+}
+
 static void show_super_common(struct cache_sb *sb, bool force_csum)
 {
 	char uuid[40];
@@ -864,7 +870,8 @@ void show_super_cache(struct cache_sb *sb, bool force_csum)
 	show_cache_member(sb, sb->nr_this_dev);
 }
 
-struct cache_sb *query_dev(char *dev, bool force_csum, bool print_sb)
+struct cache_sb *query_dev(char *dev, bool force_csum,
+		bool print_sb, bool uuid_only)
 {
 	struct cache_sb sb_stack, *sb = &sb_stack;
 	size_t bytes = sizeof(*sb);
@@ -888,6 +895,11 @@ struct cache_sb *query_dev(char *dev, bool force_csum, bool print_sb)
 			fprintf(stderr, "Couldn't read\n");
 			exit(2);
 		}
+	}
+
+	if(uuid_only) {
+		show_uuid_only(sb);
+		return sb;
 	}
 
 	if(print_sb) {

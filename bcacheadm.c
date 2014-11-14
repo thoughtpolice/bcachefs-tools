@@ -77,8 +77,9 @@ char *data_replicas = 0;
 char *tier = 0;
 
 
-/* super-show globals */
+/* query-dev globals */
 bool force_csum = false;
+bool uuid_only = false;
 
 /* probe globals */
 bool udev = false;
@@ -199,6 +200,7 @@ static NihOption bcache_register_options[] = {
 
 static NihOption query_devs_options[] = {
 	{'f', "force_csum", N_("force_csum"), NULL, NULL, &force_csum, NULL},
+	{'u', "uuid-only", N_("only print out the uuid for the devices, not the whole superblock"), NULL, NULL, &uuid_only, NULL},
 	NIH_OPTION_LAST
 };
 
@@ -363,7 +365,7 @@ int bcache_query_devs (NihCommand *command, char *const *args)
 
 
 	for (i = 0; args[i] != NULL; i++)
-		query_dev(args[i], force_csum, true);
+		query_dev(args[i], force_csum, true, uuid_only);
 }
 
 int bcache_status (NihCommand *command, char *const *args)
@@ -373,7 +375,7 @@ int bcache_status (NihCommand *command, char *const *args)
 	char *dev0 = NULL, *dev1 = NULL;
 
 	for (i = 0; args[i] != NULL; i++) {
-		struct cache_sb *sb = query_dev(args[i], false, false);
+		struct cache_sb *sb = query_dev(args[i], false, false, false);
 		struct cache_member *m = ((struct cache_member *) sb->d) +
 			sb->nr_this_dev;
 		long long unsigned cache_tier = CACHE_TIER(m);
