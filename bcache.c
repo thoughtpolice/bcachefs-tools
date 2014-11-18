@@ -718,10 +718,8 @@ static void print_encode(char *in)
 			printf("%%%x", *pos);
 }
 
-static void show_uuid_only(struct cache_sb *sb) {
-	char uuid[40];
-	uuid_unparse(sb->uuid.b, uuid);
-	printf("%s\n", uuid);
+static void show_uuid_only(struct cache_sb *sb, char *dev_uuid) {
+	uuid_unparse(sb->uuid.b, dev_uuid);
 }
 
 static void show_super_common(struct cache_sb *sb, bool force_csum)
@@ -871,7 +869,7 @@ void show_super_cache(struct cache_sb *sb, bool force_csum)
 }
 
 struct cache_sb *query_dev(char *dev, bool force_csum,
-		bool print_sb, bool uuid_only)
+		bool print_sb, bool uuid_only, char *dev_uuid)
 {
 	struct cache_sb sb_stack, *sb = &sb_stack;
 	size_t bytes = sizeof(*sb);
@@ -898,7 +896,7 @@ struct cache_sb *query_dev(char *dev, bool force_csum,
 	}
 
 	if(uuid_only) {
-		show_uuid_only(sb);
+		show_uuid_only(sb, dev_uuid);
 		return sb;
 	}
 
@@ -966,6 +964,70 @@ static void list_cacheset_devs(char *cset_dir, char *cset_name, bool parse_dev_n
 		snprintf(intbuf, 4, "%d", i);
 		strcat(entry, intbuf);
 	}
+}
+
+void find_matching_uuid(char *stats_dir, char *subdir, const char *stats_dev_uuid) {
+	/* Do a query-dev --uuid only to get the uuid
+	 * repeat on each dev until we find a matching one
+	 * append that cache# to subdir and return
+	 */
+
+	int i = 0;
+	DIR *cachedir;
+	struct stat cache_stat;
+	char intbuf[4];
+	char entry[256];
+
+	strcpy(entry, stats_dir);
+	strcat(entry, subdir);
+	snprintf(intbuf, 4, "%d", i);
+	strcat(entry, intbuf);
+
+	while(true) {
+		char buf[256];
+		int len;
+
+		if((cachedir = opendir(entry)) == NULL)
+			break;
+
+		if(stat(entry, &cache_stat))
+			break;
+
+		if((len = readlink(entry, buf, sizeof(buf) - 1)) != -1) {
+			char dev_uuid[40];
+			buf[len] = '\0';
+			int i, end = strlen(buf);
+			char tmp[32], devname[32];
+
+			/* Chop off "/bcache", then look for the
+			 * next '/' from the end
+			 */
+			for (i = end - 8; ; i--)
+				if(buf[i] == '/')
+					break;
+
+			strcpy(tmp, buf + i);
+			tmp[end - i - 7] = 0;
+			strcpy(devname, "/dev");
+			strcat(devname, tmp);
+
+			query_dev(devname, false, false, true, dev_uuid);
+			if(!strcmp(stats_dev_uuid, dev_uuid)) {
+				strcat(subdir, intbuf);
+				return;
+			}
+		}
+
+		/* remove i from end and append i++ */
+		entry[strlen(entry)-strlen(intbuf)] = 0;
+		i++;
+		snprintf(intbuf, 4, "%d", i);
+		strcat(entry, intbuf);
+	}
+
+
+	printf("dev uuid doesn't exist in cache_set\n");
+	exit(1);
 }
 
 int list_cachesets(char *cset_dir, bool list_devs)
@@ -1129,7 +1191,7 @@ void read_stat_dir(DIR *dir, char *stats_dir, char *stat_name, bool print_val)
 		while(fgets(buf, 100, fp));
 
 		if(print_val)
-			printf("%s\t%s", stat_name, buf);
+			printf("%s\n", buf);
 		else
 			printf("%s\n", stat_name);
 		fclose(fp);

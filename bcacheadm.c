@@ -95,6 +95,7 @@ bool status_all = false;
 bool stats_all = false;
 bool stats_list = false;
 static const char *stats_uuid = NULL;
+static const char *stats_dev_uuid = NULL;
 static const char *stats_cache_num = NULL;
 bool stats_five_min = false;
 bool stats_hour = false;
@@ -218,7 +219,8 @@ static NihOption status_options[] = {
 static NihOption stats_options[] = {
 	{'a', "all", N_("all"), NULL, NULL, &stats_all, NULL},
 	{'l', "list", N_("list"), NULL, NULL, &stats_list, NULL},
-	{'u', "uuid", N_("cache_set UUID"), NULL, "UUID", &stats_uuid, NULL},
+	{'u', "set", N_("cache_set UUID"), NULL, "UUID", &stats_uuid, NULL},
+	{'d', "dev", N_("dev UUID"), NULL, "UUID", &stats_dev_uuid, NULL},
 	{'c', "cache", N_("cache number (starts from 0)"), NULL, "CACHE#", &stats_cache_num, NULL},
 	{0, "five-min-stats", N_("stats accumulated in last 5 minutes"), NULL, NULL, &stats_five_min, NULL},
 	{0, "hour-stats", N_("stats accumulated in last hour"), NULL, NULL, &stats_hour, NULL},
@@ -363,9 +365,12 @@ int bcache_query_devs (NihCommand *command, char *const *args)
 {
 	int i;
 
-
-	for (i = 0; args[i] != NULL; i++)
-		query_dev(args[i], force_csum, true, uuid_only);
+	for (i = 0; args[i] != NULL; i++){
+		char dev_uuid[40];
+		query_dev(args[i], force_csum, true, uuid_only, dev_uuid);
+		if(uuid_only)
+			printf("%s\n", dev_uuid);
+	}
 }
 
 int bcache_status (NihCommand *command, char *const *args)
@@ -375,7 +380,7 @@ int bcache_status (NihCommand *command, char *const *args)
 	char *dev0 = NULL, *dev1 = NULL;
 
 	for (i = 0; args[i] != NULL; i++) {
-		struct cache_sb *sb = query_dev(args[i], false, false, false);
+		struct cache_sb *sb = query_dev(args[i], false, false, false, NULL);
 		struct cache_member *m = ((struct cache_member *) sb->d) +
 			sb->nr_this_dev;
 		long long unsigned cache_tier = CACHE_TIER(m);
@@ -398,7 +403,10 @@ int bcache_status (NihCommand *command, char *const *args)
 static void stats_subdir(char* stats_dir)
 {
 	char tmp[50] = "/";
-	if(stats_cache_num) {
+	if(stats_dev_uuid) {
+		strcat(tmp, "cache");
+		find_matching_uuid(stats_dir, tmp, stats_dev_uuid);
+	} else if(stats_cache_num) {
 		strcat(tmp, "cache");
 		strcat(tmp, stats_cache_num);
 	} else if (stats_five_min)
