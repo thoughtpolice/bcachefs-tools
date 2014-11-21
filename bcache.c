@@ -1070,15 +1070,21 @@ int list_cachesets(char *cset_dir, bool list_devs)
 	return 0;
 }
 
-int register_bcache(char *devs)
+static int get_bcache_fd()
 {
-	int ret, bcachefd;
-
-	bcachefd = open("/dev/bcache", O_RDWR);
+	int bcachefd = open("/dev/bcache", O_RDWR);
 	if (bcachefd < 0) {
 		perror("Can't open bcache device\n");
 		exit(EXIT_FAILURE);
 	}
+	return bcachefd;
+}
+
+int register_bcache(char *const *devs)
+{
+	int ret, bcachefd;
+
+	bcachefd = get_bcache_fd();
 
 	ret = ioctl(bcachefd, BCH_IOCTL_REGISTER, devs);
 	if (ret < 0) {
@@ -1086,7 +1092,20 @@ int register_bcache(char *devs)
 		exit(EXIT_FAILURE);
 	}
 	return 0;
+}
 
+int unregister_bcache(char *const *devs)
+{
+	int ret, bcachefd;
+
+	bcachefd = get_bcache_fd();
+
+	ret = ioctl(bcachefd, BCH_IOCTL_UNREGISTER, devs);
+	if (ret < 0) {
+		fprintf(stderr, "ioctl unregister error: %s\n", strerror(ret));
+		exit(EXIT_FAILURE);
+	}
+	return 0;
 }
 
 int probe(char *dev, int udev)

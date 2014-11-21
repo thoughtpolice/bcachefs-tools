@@ -60,11 +60,14 @@ void show_super_cache(struct cache_sb *, bool);
 struct cache_sb *query_dev(char *, bool, bool, bool, char *dev_uuid);
 int list_cachesets(char *, bool);
 char *parse_array_to_list(char *const *);
-int register_bcache();
+int register_bcache(char *const *);
+int unregister_bcache(char *const *);
 int probe(char *, int);
 void sb_state(struct cache_sb *, char *);
 void read_stat_dir(DIR *, char *, char *, bool);
 void find_matching_uuid(char *, char *, const char*);
+//int add_device(char *);
+//int remove_device(char *);
 
 #define csum_set(i, type)						\
 ({									\

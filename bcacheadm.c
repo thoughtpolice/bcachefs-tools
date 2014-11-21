@@ -199,6 +199,10 @@ static NihOption bcache_register_options[] = {
 	NIH_OPTION_LAST
 };
 
+static NihOption bcache_unregister_options[] = {
+	NIH_OPTION_LAST
+};
+
 static NihOption query_devs_options[] = {
 	{'f', "force_csum", N_("force_csum"), NULL, NULL, &force_csum, NULL},
 	{'u', "uuid-only", N_("only print out the uuid for the devices, not the whole superblock"), NULL, NULL, &uuid_only, NULL},
@@ -356,6 +360,13 @@ int bcache_register (NihCommand *command, char *const *args)
 	return ret;
 }
 
+int bcache_unregister (NihCommand *command, char *const *args)
+{
+	int ret = unregister_bcache(args);
+
+	return ret;
+}
+
 int bcache_list_cachesets (NihCommand *command, char *const *args)
 {
 	return list_cachesets(cset_dir, list_devs);
@@ -470,6 +481,10 @@ static NihCommand commands[] = {
 		     "Registers a list of devices",
 		     N_("Registers a list of devices"),
 		     NULL, bcache_register_options, bcache_register},
+	{"unregister", N_("unregister <list of devices>"),
+		     "Unregisters a list of devices",
+		     N_("Unregisters a list of devices"),
+		     NULL, bcache_unregister_options, bcache_unregister},
 	{"list-cachesets", N_("list-cachesets"),
 			   "Lists cachesets in /sys/fs/bcache",
 			   N_("Lists cachesets in /sys/fs/bcache"),
