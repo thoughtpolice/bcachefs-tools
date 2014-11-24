@@ -21,6 +21,7 @@ typedef __s32	s32;
 typedef __s64	s64;
 
 #define SB_START		(SB_SECTOR * 512)
+#define MAX_PATH		256
 
 
 #define max(x, y) ({				\

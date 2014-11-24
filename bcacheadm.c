@@ -114,11 +114,16 @@ static int set_cache(NihOption *option, const char *arg)
 	bdev = 0;
 	cache_devices[nr_cache_devices] = (char *)malloc(sizeof(char *) *
 			strlen(arg) + 1);
-	strcpy(cache_devices[nr_cache_devices], arg);
+	cache_devices[nr_cache_devices] = strdup(arg);
 	if(!tier)
 		tier_mapping[nr_cache_devices] = 0;
-	else
-		tier_mapping[nr_cache_devices] = atoi(tier);
+	else {
+		int ntier = atoi(tier);
+		if(tier == 0 || tier == 1)
+			tier_mapping[nr_cache_devices] = ntier;
+		else
+			printf("Invalid tier\n");
+	}
 
 	devs++;
 	nr_cache_devices++;
@@ -131,12 +136,12 @@ static int set_bdev(NihOption *option, const char *arg)
 	if(label) {
 		backing_dev_labels[nr_backing_devices] =
 			(char *)malloc(sizeof(char *) * strlen(label) + 1);
-		strcpy(backing_dev_labels[nr_backing_devices], label);
+		backing_dev_labels[nr_backing_devices] = strdup(label);
 	}
 
 	backing_devices[nr_backing_devices] = (char *)malloc(sizeof(char *) *
 			strlen(arg) + 1);
-	strcpy(backing_devices[nr_backing_devices], arg);
+	backing_devices[nr_backing_devices] = strdup(arg);
 
 	nr_backing_devices++;
 	devs++;
@@ -239,7 +244,7 @@ static NihOption options[] = {
 
 
 /* commands */
-int make_bcache (NihCommand *command, char *const *args)
+int make_bcache(NihCommand *command, char *const *args)
 {
 	int cache_dev_fd[devs];
 
@@ -342,7 +347,7 @@ int make_bcache (NihCommand *command, char *const *args)
 	return 0;
 }
 
-int probe_bcache (NihCommand *command, char *const *args)
+int probe_bcache(NihCommand *command, char *const *args)
 {
 	int i;
 
@@ -353,26 +358,26 @@ int probe_bcache (NihCommand *command, char *const *args)
 	return 0;
 }
 
-int bcache_register (NihCommand *command, char *const *args)
+int bcache_register(NihCommand *command, char *const *args)
 {
 	int ret = register_bcache(args);
 
 	return ret;
 }
 
-int bcache_unregister (NihCommand *command, char *const *args)
+int bcache_unregister(NihCommand *command, char *const *args)
 {
 	int ret = unregister_bcache(args);
 
 	return ret;
 }
 
-int bcache_list_cachesets (NihCommand *command, char *const *args)
+int bcache_list_cachesets(NihCommand *command, char *const *args)
 {
 	return list_cachesets(cset_dir, list_devs);
 }
 
-int bcache_query_devs (NihCommand *command, char *const *args)
+int bcache_query_devs(NihCommand *command, char *const *args)
 {
 	int i;
 
@@ -384,7 +389,7 @@ int bcache_query_devs (NihCommand *command, char *const *args)
 	}
 }
 
-int bcache_status (NihCommand *command, char *const *args)
+int bcache_status(NihCommand *command, char *const *args)
 {
 	int i;
 	struct cache_sb *sb_tier0 = NULL, *sb_tier1 = NULL;
@@ -434,17 +439,15 @@ static void stats_subdir(char* stats_dir)
 	strcat(stats_dir, tmp);
 }
 
-int bcache_stats (NihCommand *command, char *const *args)
+int bcache_stats(NihCommand *command, char *const *args)
 {
 	int i;
-	char stats_dir[200];
+	char stats_dir[MAX_PATH];
 	DIR *dir = NULL;
 	struct dirent *ent = NULL;
 
 	if (stats_uuid) {
-		strcpy(stats_dir, cset_dir);
-		strcat(stats_dir, "/");
-		strcat(stats_dir, stats_uuid);
+		snprintf(stats_dir, MAX_PATH, "%s/%s", cset_dir, stats_uuid);
 		stats_subdir(stats_dir);
 		dir = opendir(stats_dir);
 		if (!dir) {

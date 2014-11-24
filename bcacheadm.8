@@ -69,12 +69,7 @@ Create a cache
 Create a backing device
 .TP
 .BR \-b\ --bucket-size=
-Specifies the bucket size. Allocation is done in terms of buckets, and cache
-hits are counted per bucket; thus a smaller bucket size will give better cache
-utilization, but poorer write performance. The bucket size is intended to be
-equal to the size of your SSD's erase blocks, which seems to be 128k-512k for
-most SSDs. Must be a power of two; accepts human readable units. Defaults to
-128k.
+Specifies the bucket size.
 .TP
 .BR \-l\ --label=
 label
