@@ -963,7 +963,7 @@ static void list_cacheset_devs(char *cset_dir, char *cset_name, bool parse_dev_n
 	}
 }
 
-void find_matching_uuid(char *stats_dir, char *subdir, const char *stats_dev_uuid) {
+char *find_matching_uuid(char *stats_dir, char *subdir, const char *stats_dev_uuid) {
 	/* Do a query-dev --uuid only to get the uuid
 	 * repeat on each dev until we find a matching one
 	 * append that cache# to subdir and return
@@ -974,6 +974,7 @@ void find_matching_uuid(char *stats_dir, char *subdir, const char *stats_dev_uui
 	struct stat cache_stat;
 	char intbuf[4];
 	char entry[MAX_PATH];
+	char *err = NULL;
 
 	snprintf(entry, MAX_PATH, "%s%s", stats_dir, subdir);
 	snprintf(intbuf, 4, "%d", i);
@@ -1010,7 +1011,7 @@ void find_matching_uuid(char *stats_dir, char *subdir, const char *stats_dev_uui
 			query_dev(devname, false, false, true, dev_uuid);
 			if(!strcmp(stats_dev_uuid, dev_uuid)) {
 				strcat(subdir, intbuf);
-				return;
+				return err;
 			}
 		}
 
@@ -1022,17 +1023,20 @@ void find_matching_uuid(char *stats_dir, char *subdir, const char *stats_dev_uui
 	}
 
 
-	printf("dev uuid doesn't exist in cache_set\n");
-	exit(1);
+	err = "dev uuid doesn't exist in cache_set";
+	return err;
 }
 
-int list_cachesets(char *cset_dir, bool list_devs)
+char *list_cachesets(char *cset_dir, bool list_devs)
 {
 	struct dirent *ent;
-	DIR *dir = opendir(cset_dir);
+	DIR *dir;
+	char *err = NULL;
+
+	dir = opendir(cset_dir);
 	if (!dir) {
-		fprintf(stderr, "Failed to open dir %s\n", cset_dir);
-		return 1;
+		err = "Failed to open cacheset dir";
+		goto err;
 	}
 
 	while ((ent = readdir(dir)) != NULL) {
@@ -1045,8 +1049,8 @@ int list_cachesets(char *cset_dir, bool list_devs)
 
 		snprintf(entry, MAX_PATH, "%s/%s", cset_dir, ent->d_name);
 		if(stat(entry, &statbuf) == -1) {
-			fprintf(stderr, "Failed to stat %s\n", entry);
-			return 1;
+			err = "Failed to stat cacheset subdir";
+			goto err;
 		}
 
 		if (S_ISDIR(statbuf.st_mode)) {
@@ -1058,55 +1062,63 @@ int list_cachesets(char *cset_dir, bool list_devs)
 		}
 	}
 
+err:
 	closedir(dir);
-
-	return 0;
+	return err;
 }
 
-static int get_bcache_fd(void)
-{
-	int bcachefd = open("/dev/bcache", O_RDWR);
-
-	if (bcachefd < 0) {
-		perror("Can't open bcache device\n");
-		exit(EXIT_FAILURE);
-	}
-	return bcachefd;
-}
-
-int register_bcache(char *const *devs)
+char *register_bcache(char *const *devs)
 {
 	int ret, bcachefd;
+	char *err = NULL;
 
-	bcachefd = get_bcache_fd();
+	bcachefd = open("/dev/bcache", O_RDWR);
+	if (bcachefd < 0) {
+		err = "Can't open bcache device";
+		goto err;
+	}
 
 	ret = ioctl(bcachefd, BCH_IOCTL_REGISTER, devs);
 	if (ret < 0) {
-		fprintf(stderr, "ioctl register error: %s\n", strerror(ret));
-		exit(EXIT_FAILURE);
+		char tmp[64];
+		snprintf(tmp, 64, "ioctl register error: %s\n",
+				strerror(ret));
+		err = strdup(tmp);
+		goto err;
 	}
 
-	close(bcachefd);
-	return 0;
+err:
+	if (bcachefd)
+		close(bcachefd);
+	return err;
 }
 
-int unregister_bcache(char *const *devs)
+char *unregister_bcache(char *const *devs)
 {
 	int ret, bcachefd;
+	char *err = NULL;
 
-	bcachefd = get_bcache_fd();
+	bcachefd = open("/dev/bcache", O_RDWR);
+	if (bcachefd < 0) {
+		err = "Can't open bcache device";
+		goto err;
+	}
 
 	ret = ioctl(bcachefd, BCH_IOCTL_UNREGISTER, devs);
 	if (ret < 0) {
-		fprintf(stderr, "ioctl unregister error: %s\n", strerror(ret));
-		exit(EXIT_FAILURE);
+		char tmp[64];
+		snprintf(tmp, 64, "ioctl unregister error: %s\n",
+				strerror(ret));
+		err = strdup(tmp);
+		goto err;
 	}
 
+err:
 	close(bcachefd);
-	return 0;
+	return err;
 }
 
-int probe(char *dev, int udev)
+char *probe(char *dev, int udev)
 {
 	struct cache_sb sb;
 	char uuid[40];
@@ -1164,9 +1176,8 @@ int probe(char *dev, int udev)
 
 	return 0;
 
-	err:
-		fprintf(stderr, "Probe exit with error: %s", err);
-		return -1;
+err:
+	return err;
 }
 
 void sb_state(struct cache_sb *sb, char *dev)
@@ -1181,15 +1192,18 @@ void sb_state(struct cache_sb *sb, char *dev)
 
 }
 
-void read_stat_dir(DIR *dir, char *stats_dir, char *stat_name, bool print_val)
+char *read_stat_dir(DIR *dir, char *stats_dir, char *stat_name, bool print_val)
 {
 	struct stat statbuf;
 	char entry[MAX_PATH];
+	char *err = NULL;
 
 	snprintf(entry, MAX_PATH, "%s/%s", stats_dir, stat_name);
 	if(stat(entry, &statbuf) == -1) {
-		fprintf(stderr, "Failed to stat %s\n", entry);
-		return;
+		char tmp[MAX_PATH];
+		snprintf(tmp, MAX_PATH, "Failed to stat %s\n", entry);
+		err = strdup(tmp);
+		goto err;
 	}
 
 	if (S_ISREG(statbuf.st_mode)) {
@@ -1200,7 +1214,7 @@ void read_stat_dir(DIR *dir, char *stats_dir, char *stat_name, bool print_val)
 		if(!fp) {
 			/* If we can't open the file, this is probably because
 			 * of permissions, just move to the next file */
-			return;
+			return NULL;
 		}
 
 		while(fgets(buf, MAX_PATH, fp));
@@ -1211,4 +1225,6 @@ void read_stat_dir(DIR *dir, char *stats_dir, char *stat_name, bool print_val)
 			printf("%s\n", stat_name);
 		fclose(fp);
 	}
+err:
+	return err;
 }

@@ -112,14 +112,12 @@ static int set_block_size(NihOption *option, const char *arg)
 static int set_cache(NihOption *option, const char *arg)
 {
 	bdev = 0;
-	cache_devices[nr_cache_devices] = (char *)malloc(sizeof(char *) *
-			strlen(arg) + 1);
 	cache_devices[nr_cache_devices] = strdup(arg);
 	if(!tier)
 		tier_mapping[nr_cache_devices] = 0;
 	else {
 		int ntier = atoi(tier);
-		if(tier == 0 || tier == 1)
+		if(ntier == 0 || ntier == 1)
 			tier_mapping[nr_cache_devices] = ntier;
 		else
 			printf("Invalid tier\n");
@@ -133,14 +131,9 @@ static int set_bdev(NihOption *option, const char *arg)
 {
 	bdev = 1;
 
-	if(label) {
-		backing_dev_labels[nr_backing_devices] =
-			(char *)malloc(sizeof(char *) * strlen(label) + 1);
+	if(label)
 		backing_dev_labels[nr_backing_devices] = strdup(label);
-	}
 
-	backing_devices[nr_backing_devices] = (char *)malloc(sizeof(char *) *
-			strlen(arg) + 1);
 	backing_devices[nr_backing_devices] = strdup(arg);
 
 	nr_backing_devices++;
@@ -350,9 +343,14 @@ int make_bcache(NihCommand *command, char *const *args)
 int probe_bcache(NihCommand *command, char *const *args)
 {
 	int i;
+	char *err = NULL;
 
 	for (i = 0; args[i] != NULL; i++) {
-		probe(args[i], udev);
+		err = probe(args[i], udev);
+		if(err) {
+			printf("probe_bcache error: %s\n", err);
+			return -1;
+		}
 	}
 
 	return 0;
@@ -360,21 +358,40 @@ int probe_bcache(NihCommand *command, char *const *args)
 
 int bcache_register(NihCommand *command, char *const *args)
 {
-	int ret = register_bcache(args);
+	char *err = NULL;
 
-	return ret;
+	err = register_bcache(args);
+	if (err) {
+		printf("bcache_register error: %s\n", err);
+		return -1;
+	}
+
+	return 0;
 }
 
 int bcache_unregister(NihCommand *command, char *const *args)
 {
-	int ret = unregister_bcache(args);
+	char *err = NULL;
 
-	return ret;
+	err = unregister_bcache(args);
+	if (err) {
+		printf("bcache_unregister error: %s\n", err);
+		return -1;
+	}
+
+	return 0;
 }
 
 int bcache_list_cachesets(NihCommand *command, char *const *args)
 {
-	return list_cachesets(cset_dir, list_devs);
+	char *err = NULL;
+	err = list_cachesets(cset_dir, list_devs);
+	if (err) {
+		printf("bcache_list_cachesets error :%s\n", err);
+		return -1;
+	}
+
+	return 0;
 }
 
 int bcache_query_devs(NihCommand *command, char *const *args)
@@ -416,12 +433,15 @@ int bcache_status(NihCommand *command, char *const *args)
 	if (sb_tier1) sb_state(sb_tier1, dev1);
 }
 
-static void stats_subdir(char* stats_dir)
+static char *stats_subdir(char* stats_dir)
 {
 	char tmp[50] = "/";
+	char *err = NULL;
 	if(stats_dev_uuid) {
 		strcat(tmp, "cache");
-		find_matching_uuid(stats_dir, tmp, stats_dev_uuid);
+		err = find_matching_uuid(stats_dir, tmp, stats_dev_uuid);
+		if(err)
+			goto err;
 	} else if(stats_cache_num) {
 		strcat(tmp, "cache");
 		strcat(tmp, stats_cache_num);
@@ -434,9 +454,12 @@ static void stats_subdir(char* stats_dir)
 	else if (stats_total)
 		strcat(tmp, "stats_total");
 	else
-		return;
+		return err;
 
 	strcat(stats_dir, tmp);
+
+err:
+	return err;
 }
 
 int bcache_stats(NihCommand *command, char *const *args)
@@ -445,29 +468,46 @@ int bcache_stats(NihCommand *command, char *const *args)
 	char stats_dir[MAX_PATH];
 	DIR *dir = NULL;
 	struct dirent *ent = NULL;
+	char *err = NULL;
 
 	if (stats_uuid) {
 		snprintf(stats_dir, MAX_PATH, "%s/%s", cset_dir, stats_uuid);
-		stats_subdir(stats_dir);
+		err = stats_subdir(stats_dir);
+		if(err)
+			goto err;
+
 		dir = opendir(stats_dir);
 		if (!dir) {
-			fprintf(stderr, "Failed to open dir %s\n", cset_dir);
-			return 1;
+			err = "Failed to open dir";
+			goto err;
 		}
 	} else {
-		printf("Must provide a cacheset uuid\n");
-		exit(EXIT_FAILURE);
+		err = "Must provide a cacheset uuid";
+		goto err;
 	}
 
-	if(stats_list || stats_all)
-		while ((ent = readdir(dir)) != NULL)
-			read_stat_dir(dir, stats_dir, ent->d_name, stats_all);
+	if(stats_list || stats_all) {
+		while ((ent = readdir(dir)) != NULL) {
+			err = read_stat_dir(dir, stats_dir, ent->d_name, stats_all);
+			if (err)
+				goto err;
+		}
+	}
 
 
-	for (i = 0; args[i] != NULL; i++)
-		read_stat_dir(dir, stats_dir, args[i], true);
+	for (i = 0; args[i] != NULL; i++) {
+		err = read_stat_dir(dir, stats_dir, args[i], true);
+		if (err)
+			goto err;
+	}
 
 	closedir(dir);
+	return 0;
+
+err:
+	closedir(dir);
+	printf("bcache_stats error: %s\n", err);
+	return -1;
 }
 
 static NihCommand commands[] = {
