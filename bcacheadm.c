@@ -76,6 +76,11 @@ char *metadata_replicas = 0;
 char *data_replicas = 0;
 char *tier = 0;
 
+/* add-dev globals */
+char *add_dev_uuid = NULL;
+
+/* rm-dev globals */
+bool force_remove = false;
 
 /* query-dev globals */
 bool force_csum = false;
@@ -200,6 +205,16 @@ static NihOption bcache_register_options[] = {
 };
 
 static NihOption bcache_unregister_options[] = {
+	NIH_OPTION_LAST
+};
+
+static NihOption bcache_add_device_options[] = {
+	{'u', "set", N_("cacheset uuid"), NULL, "UUID", &add_dev_uuid, NULL},
+	NIH_OPTION_LAST
+};
+
+static NihOption bcache_rm_device_options[] = {
+	{'f', "force", N_("force cache removal"), NULL, NULL, &force_remove, NULL},
 	NIH_OPTION_LAST
 };
 
@@ -384,6 +399,35 @@ int bcache_unregister(NihCommand *command, char *const *args)
 	return 0;
 }
 
+int bcache_add_devices(NihCommand *command, char *const *args)
+{
+	char *err;
+
+	if (!add_dev_uuid)
+		printf("Must specify a cacheset uuid to add the disk to\n");
+
+	err = add_devices(args, add_dev_uuid);
+	if (err) {
+		printf("bcache_add_devices error: %s\n", err);
+		return -1;
+	}
+
+	return 0;
+}
+
+int bcache_rm_device(NihCommand *command, char *const *args)
+{
+	char *err;
+
+	err = remove_device(args[0], force_remove);
+	if (err) {
+		printf("bcache_rm_devices error: %s\n", err);
+		return -1;
+	}
+
+	return 0;
+}
+
 int bcache_list_cachesets(NihCommand *command, char *const *args)
 {
 	char *err = NULL;
@@ -536,6 +580,14 @@ static NihCommand commands[] = {
 		     "Unregisters a list of devices",
 		     N_("Unregisters a list of devices"),
 		     NULL, bcache_unregister_options, bcache_unregister},
+	{"add-devs", N_("add-devs --set=UUID --tier=# <list of devices>"),
+		"Adds a list of devices to a cacheset",
+		N_("Adds a list of devices to a cacheset"),
+		NULL, bcache_add_device_options, bcache_add_devices},
+	{"rm-dev", N_("rm-dev <dev>"),
+		"Removes a device from its cacheset",
+		N_("Removes a device from its cacheset"),
+		NULL, bcache_rm_device_options, bcache_rm_device},
 	{"list-cachesets", N_("list-cachesets"),
 			   "Lists cachesets in /sys/fs/bcache",
 			   N_("Lists cachesets in /sys/fs/bcache"),

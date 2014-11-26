@@ -879,6 +879,7 @@ struct cache_sb *query_dev(char *dev, bool force_csum,
 		printf("Can't open dev %s: %s\n", dev, strerror(errno));
 		exit(2);
 	}
+	printf("opened sb for %s\n", dev);
 
 	if (pread(fd, sb, bytes, SB_START) != bytes) {
 		fprintf(stderr, "Couldn't read\n");
@@ -1110,6 +1111,62 @@ char *unregister_bcache(char *const *devs)
 				strerror(ret));
 		err = strdup(tmp);
 		goto err;
+	}
+
+err:
+	close(bcachefd);
+	return err;
+}
+
+char *add_devices(char *const *devs, char *uuid)
+{
+	int ret, bcachefd;
+	char *err = NULL;
+
+	bcachefd = open("/dev/bcache", O_RDWR);
+	if (bcachefd < 0) {
+		err = "Can't open bcache device";
+		goto err;
+	}
+
+	struct bch_ioctl_add_disks ia;
+	ia.devs = devs;
+	ia.uuid = uuid;
+
+	ret = ioctl(bcachefd, BCH_IOCTL_ADD_DISKS, &ia);
+	if (ret < 0) {
+		char tmp[128];
+		snprintf(tmp, 128, "ioctl add disk error: %s\n",
+				strerror(ret));
+		err = strdup(tmp);
+	}
+
+err:
+	close(bcachefd);
+	return err;
+}
+
+char *remove_device(const char *dev, bool force)
+{
+	int ret, bcachefd;
+	char *err = NULL;
+
+	bcachefd = open("/dev/bcache", O_RDWR);
+	if (bcachefd < 0) {
+		err = "Can't open bcache device";
+		goto err;
+	}
+
+	struct bch_ioctl_rm_disk ir;
+	ir.dev = dev;
+	ir.force = force ? 1 : 0;
+
+	ret = ioctl(bcachefd, BCH_IOCTL_RM_DISK, &ir);
+	if (ret < 0) {
+		char tmp[128];
+		snprintf(tmp, 128, "ioctl add disk error: %s\n",
+				strerror(ret));
+		err = strdup(tmp);
 	}
 
 err:
