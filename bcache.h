@@ -30,6 +30,11 @@ typedef __s64	s64;
 	(void) (&_max1 == &_max2);		\
 	_max1 > _max2 ? _max1 : _max2; })
 
+struct add_msg {
+	char *const *devs;
+	char *uuid;
+	int tier;
+};
 
 extern const char * const cache_state[];
 extern const char * const replacement_policies[];
@@ -67,8 +72,8 @@ char *probe(char *, int);
 void sb_state(struct cache_sb *, char *);
 char *read_stat_dir(DIR *, char *, char *, bool);
 char *find_matching_uuid(char *, char *, const char*);
-//int add_device(char *);
-//int remove_device(char *);
+char *add_devices(char *const *, char *);
+char *remove_device(const char *, bool);
 
 #define csum_set(i, type)						\
 ({									\
