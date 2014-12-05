@@ -8,9 +8,10 @@ Group: tools
 BuildRoot: %{_tmppath}/%{name}-root
 Requires: libblkid
 BuildRequires: pkgconfig libblkid-devel linux-headers
+Summary: tools to manage bcache
 
-%package dev
 
 %description
+bcache tools
 
 %files

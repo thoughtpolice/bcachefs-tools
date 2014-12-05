@@ -42,3 +42,6 @@ initramfsdir=$(prefix)/etc/initramfs-tools/hooks/
 man8_MANS= bcache-super-show.8 \
 	   make-bcache.8 \
 	   probe-bcache.8
+
+include ../../../../../../../../../../usr/share/DateraContainer/Makefile.rpm
+# some version of automake don't like absolute path names for included makefiles
