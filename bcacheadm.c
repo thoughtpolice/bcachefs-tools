@@ -125,6 +125,8 @@ static int set_cache(NihOption *option, const char *arg)
 
 	devs++;
 	nr_cache_devices++;
+
+	return 0;
 }
 
 static int set_bdev(NihOption *option, const char *arg)
@@ -398,12 +400,14 @@ int bcache_query_devs(NihCommand *command, char *const *args)
 {
 	int i;
 
-	for (i = 0; args[i] != NULL; i++){
+	for (i = 0; args[i] != NULL; i++) {
 		char dev_uuid[40];
 		query_dev(args[i], force_csum, true, uuid_only, dev_uuid);
 		if(uuid_only)
 			printf("%s\n", dev_uuid);
 	}
+
+	return 0;
 }
 
 int bcache_status(NihCommand *command, char *const *args)
@@ -418,19 +422,23 @@ int bcache_status(NihCommand *command, char *const *args)
 			sb->nr_this_dev;
 		long long unsigned cache_tier = CACHE_TIER(m);
 
-		if (!cache_tier)
+		if (!cache_tier) {
 			if (!sb_tier0 || sb->seq > sb_tier0->seq) {
 				sb_tier0 = sb;
 				dev0 = args[i];
 			}
-		else if (cache_tier == 1)
+		} else if (cache_tier == 1) {
 			if (!sb_tier1 || sb->seq > sb_tier1->seq) {
 				sb_tier1 = sb;
 				dev1 = args[i];
 			}
+		}
 	}
+
 	if (sb_tier0) sb_state(sb_tier0, dev0);
 	if (sb_tier1) sb_state(sb_tier1, dev1);
+
+	return 0;
 }
 
 static char *stats_subdir(char* stats_dir)
@@ -562,4 +570,6 @@ int main(int argc, char *argv[])
 		exit (1);
 
 	nih_signal_reset();
+
+	return 0;
 }
