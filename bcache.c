@@ -1042,7 +1042,6 @@ char *list_cachesets(char *cset_dir, bool list_devs)
 	while ((ent = readdir(dir)) != NULL) {
 		struct stat statbuf;
 		char entry[MAX_PATH];
-		struct dirent *cache_ent;
 
 		if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, ".."))
 			continue;
