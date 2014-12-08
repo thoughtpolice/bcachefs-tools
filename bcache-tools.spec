@@ -7,7 +7,7 @@ License: GPL
 Group: tools
 BuildRoot: %{_tmppath}/%{name}-root
 Requires: libblkid
-BuildRequires: pkgconfig libblkid-devel linux-headers
+BuildRequires: pkgconfig libblkid-devel linux-headers libnih-devel
 Summary: tools to manage bcache
 
 

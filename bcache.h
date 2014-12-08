@@ -8,6 +8,7 @@
 #define _BCACHE_H
 
 #include <linux/bcache.h>
+#include <dirent.h>
 
 typedef __u8	u8;
 typedef __u16	u16;
@@ -20,6 +21,15 @@ typedef __s32	s32;
 typedef __s64	s64;
 
 #define SB_START		(SB_SECTOR * 512)
+#define MAX_PATH		256
+
+
+#define max(x, y) ({				\
+	typeof(x) _max1 = (x);			\
+	typeof(y) _max2 = (y);			\
+	(void) (&_max1 == &_max2);		\
+	_max1 > _max2 ? _max1 : _max2; })
+
 
 extern const char * const cache_state[];
 extern const char * const replacement_policies[];
@@ -33,6 +43,32 @@ ssize_t read_string_list_or_die(const char *, const char * const[],
 void print_string_list(const char * const[], size_t);
 
 uint64_t bch_checksum(unsigned, const void *, size_t);
+
+uint64_t getblocks(int);
+uint64_t hatoi(const char *);
+unsigned hatoi_validate(const char *, const char *);
+void write_backingdev_sb(int, unsigned, unsigned *,	bool, uint64_t,
+				const char *, uuid_le);
+int dev_open(const char *, bool);
+void write_cache_sbs(int *, struct cache_sb *, unsigned, unsigned *, int);
+void next_cache_device(struct cache_sb *, unsigned, int, unsigned, bool);
+unsigned get_blocksize(const char *);
+long strtoul_or_die(const char *, size_t, const char *);
+
+void show_super_backingdev(struct cache_sb *, bool);
+void show_super_cache(struct cache_sb *, bool);
+
+struct cache_sb *query_dev(char *, bool, bool, bool, char *dev_uuid);
+char *list_cachesets(char *, bool);
+char *parse_array_to_list(char *const *);
+char *register_bcache(char *const *);
+char *unregister_bcache(char *const *);
+char *probe(char *, int);
+void sb_state(struct cache_sb *, char *);
+char *read_stat_dir(DIR *, char *, char *, bool);
+char *find_matching_uuid(char *, char *, const char*);
+//int add_device(char *);
+//int remove_device(char *);
 
 #define csum_set(i, type)						\
 ({									\

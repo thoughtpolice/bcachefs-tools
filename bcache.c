@@ -5,9 +5,26 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <fcntl.h>
+#include <inttypes.h>
+#include <getopt.h>
+#include <limits.h>
+#include <linux/fs.h>
+#include <stdbool.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
 #include <unistd.h>
+#include <uuid/uuid.h>
+#include <blkid.h>
 
 #include "bcache.h"
+
+#define __KERNEL__
+#include <linux/bcache-ioctl.h>
+#undef __KERNEL__
 
 const char * const cache_state[] = {
 	"active",
@@ -350,4 +367,864 @@ uint64_t bch_checksum(unsigned type, const void *data, size_t len)
 	crc = bch_checksum_update(type, crc, data, len);
 
 	return crc ^ 0xffffffffffffffffULL;
+}
+
+uint64_t getblocks(int fd)
+{
+	uint64_t ret;
+	struct stat statbuf;
+	if (fstat(fd, &statbuf)) {
+		perror("getblocks: stat error\n");
+		exit(EXIT_FAILURE);
+	}
+	ret = statbuf.st_size / 512;
+	if (S_ISBLK(statbuf.st_mode))
+		if (ioctl(fd, BLKGETSIZE, &ret)) {
+			perror("ioctl error getting blksize");
+			exit(EXIT_FAILURE);
+		}
+	return ret;
+}
+
+uint64_t hatoi(const char *s)
+{
+	char *e;
+	long long i = strtoll(s, &e, 10);
+	switch (*e) {
+		case 't':
+		case 'T':
+			i *= 1024;
+		case 'g':
+		case 'G':
+			i *= 1024;
+		case 'm':
+		case 'M':
+			i *= 1024;
+		case 'k':
+		case 'K':
+			i *= 1024;
+	}
+	return i;
+}
+
+unsigned hatoi_validate(const char *s, const char *msg)
+{
+	uint64_t v = hatoi(s);
+
+	if (v & (v - 1)) {
+		fprintf(stderr, "%s must be a power of two\n", msg);
+		exit(EXIT_FAILURE);
+	}
+
+	v /= 512;
+
+	if (v > USHRT_MAX) {
+		fprintf(stderr, "%s too large\n", msg);
+		exit(EXIT_FAILURE);
+	}
+
+	if (!v) {
+		fprintf(stderr, "%s too small\n", msg);
+		exit(EXIT_FAILURE);
+	}
+
+	return v;
+}
+
+static void do_write_sb(int fd, struct cache_sb *sb)
+{
+	char zeroes[SB_START] = {0};
+	size_t bytes = ((void *) bset_bkey_last(sb)) - (void *) sb;
+
+	/* Zero start of disk */
+	if (pwrite(fd, zeroes, SB_START, 0) != SB_START) {
+		perror("write error trying to zero start of disk\n");
+		exit(EXIT_FAILURE);
+	}
+	/* Write superblock */
+	if (pwrite(fd, sb, bytes, SB_START) != bytes) {
+		perror("write error trying to write superblock\n");
+		exit(EXIT_FAILURE);
+	}
+
+	fsync(fd);
+	close(fd);
+}
+
+void write_backingdev_sb(int fd, unsigned block_size, unsigned *bucket_sizes,
+				bool writeback, uint64_t data_offset,
+				const char *label,
+				uuid_le set_uuid)
+{
+	char uuid_str[40], set_uuid_str[40];
+	struct cache_sb sb;
+
+	memset(&sb, 0, sizeof(struct cache_sb));
+
+	sb.offset	= SB_SECTOR;
+	sb.version	= BCACHE_SB_VERSION_BDEV;
+	sb.magic	= BCACHE_MAGIC;
+	uuid_generate(sb.uuid.b);
+	sb.set_uuid	= set_uuid;
+	sb.bucket_size	= bucket_sizes[0];
+	sb.block_size	= block_size;
+
+	uuid_unparse(sb.uuid.b, uuid_str);
+	uuid_unparse(sb.set_uuid.b, set_uuid_str);
+	if (label)
+		memcpy(sb.label, label, SB_LABEL_SIZE);
+
+	SET_BDEV_CACHE_MODE(&sb, writeback
+			    ? CACHE_MODE_WRITEBACK
+			    : CACHE_MODE_WRITETHROUGH);
+
+	if (data_offset != BDEV_DATA_START_DEFAULT) {
+		sb.version = BCACHE_SB_VERSION_BDEV_WITH_OFFSET;
+		sb.data_offset = data_offset;
+	}
+
+	sb.csum = csum_set(&sb, BCH_CSUM_CRC64);
+
+	printf("UUID:			%s\n"
+	       "Set UUID:		%s\n"
+	       "version:		%u\n"
+	       "block_size:		%u\n"
+	       "data_offset:		%ju\n",
+	       uuid_str, set_uuid_str,
+	       (unsigned) sb.version,
+	       sb.block_size,
+	       data_offset);
+
+	do_write_sb(fd, &sb);
+}
+
+int dev_open(const char *dev, bool wipe_bcache)
+{
+	struct cache_sb sb;
+	blkid_probe pr;
+	int fd;
+	char err[MAX_PATH];
+
+	if ((fd = open(dev, O_RDWR|O_EXCL)) == -1) {
+		sprintf(err, "Can't open dev %s: %s\n", dev, strerror(errno));
+		goto err;
+	}
+
+	if (pread(fd, &sb, sizeof(sb), SB_START) != sizeof(sb)) {
+		sprintf(err, "Failed to read superblock");
+		goto err;
+	}
+
+	if (!memcmp(&sb.magic, &BCACHE_MAGIC, 16) && !wipe_bcache) {
+		sprintf(err, "Already a bcache device on %s, "
+			"overwrite with --wipe-bcache\n", dev);
+		goto err;
+	}
+
+	if (!(pr = blkid_new_probe())) {
+		sprintf(err, "Failed to create a new probe");
+		goto err;
+	}
+	if (blkid_probe_set_device(pr, fd, 0, 0)) {
+		sprintf(err, "failed to set probe to device");
+		goto err;
+	}
+	/* enable ptable probing; superblock probing is enabled by default */
+	if (blkid_probe_enable_partitions(pr, true)) {
+		sprintf(err, "Failed to enable partitions on probe");
+		goto err;
+	}
+	if (!blkid_do_probe(pr)) {
+		/* XXX wipefs doesn't know how to remove partition tables */
+		sprintf(err, "Device %s already has a non-bcache superblock, "
+			"remove it using wipefs and wipefs -a\n", dev);
+		goto err;
+	}
+
+	return fd;
+
+	err:
+		fprintf(stderr, "dev_open failed with: %s", err);
+		exit(EXIT_FAILURE);
+}
+
+static unsigned min_bucket_size(int num_bucket_sizes, unsigned *bucket_sizes)
+{
+	int i;
+	unsigned min = bucket_sizes[0];
+
+	for (i = 0; i < num_bucket_sizes; i++)
+		min = bucket_sizes[i] < min ? bucket_sizes[i] : min;
+
+	return min;
+}
+
+static unsigned node_size(unsigned bucket_size) {
+
+	if (bucket_size <= 256)
+		return bucket_size;
+	else if (bucket_size <= 512)
+		return bucket_size / 2;
+	else
+		return bucket_size / 4;
+}
+
+void write_cache_sbs(int *fds, struct cache_sb *sb,
+			    unsigned block_size, unsigned *bucket_sizes,
+				int num_bucket_sizes)
+{
+	char uuid_str[40], set_uuid_str[40];
+	size_t i;
+	unsigned min_size = min_bucket_size(num_bucket_sizes, bucket_sizes);
+
+	sb->offset	= SB_SECTOR;
+	sb->version	= BCACHE_SB_VERSION_CDEV_V3;
+	sb->magic	= BCACHE_MAGIC;
+	sb->block_size	= block_size;
+	sb->keys	= bch_journal_buckets_offset(sb);
+
+	/*
+	 * don't have a userspace crc32c implementation handy, just always use
+	 * crc64
+	 */
+	SET_CACHE_SB_CSUM_TYPE(sb, BCH_CSUM_CRC64);
+
+	for (i = 0; i < sb->nr_in_set; i++) {
+		struct cache_member *m = sb->members + i;
+
+		if (num_bucket_sizes <= 1)
+			sb->bucket_size = bucket_sizes[0];
+		else
+			sb->bucket_size	= bucket_sizes[i];
+		SET_CACHE_BTREE_NODE_SIZE(sb, node_size(min_size));
+
+		sb->uuid = m->uuid;
+		sb->nbuckets		= getblocks(fds[i]) / sb->bucket_size;
+		sb->nr_this_dev		= i;
+		sb->first_bucket	= (23 / sb->bucket_size) + 1;
+
+		if (sb->nbuckets < 1 << 7) {
+			fprintf(stderr, "Not enough buckets: %llu, need %u\n",
+				sb->nbuckets, 1 << 7);
+			exit(EXIT_FAILURE);
+		}
+
+		sb->csum = csum_set(sb, CACHE_SB_CSUM_TYPE(sb));
+
+		uuid_unparse(sb->uuid.b, uuid_str);
+		uuid_unparse(sb->set_uuid.b, set_uuid_str);
+		printf("UUID:			%s\n"
+		       "Set UUID:		%s\n"
+		       "version:		%u\n"
+		       "nbuckets:		%llu\n"
+		       "block_size:		%u\n"
+		       "bucket_size:		%u\n"
+		       "nr_in_set:		%u\n"
+		       "nr_this_dev:		%u\n"
+		       "first_bucket:		%u\n",
+		       uuid_str, set_uuid_str,
+		       (unsigned) sb->version,
+		       sb->nbuckets,
+		       sb->block_size,
+		       sb->bucket_size,
+		       sb->nr_in_set,
+		       sb->nr_this_dev,
+		       sb->first_bucket);
+
+		do_write_sb(fds[i], sb);
+	}
+}
+
+void next_cache_device(struct cache_sb *sb,
+			      unsigned replication_set,
+			      int tier,
+			      unsigned replacement_policy,
+			      bool discard)
+{
+	struct cache_member *m = sb->members + sb->nr_in_set;
+
+	SET_CACHE_REPLICATION_SET(m, replication_set);
+	SET_CACHE_TIER(m, tier);
+	SET_CACHE_REPLACEMENT(m, replacement_policy);
+	SET_CACHE_DISCARD(m, discard);
+	uuid_generate(m->uuid.b);
+
+	sb->nr_in_set++;
+}
+
+unsigned get_blocksize(const char *path)
+{
+	struct stat statbuf;
+
+	if (stat(path, &statbuf)) {
+		fprintf(stderr, "Error statting %s: %s\n",
+			path, strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+
+	if (S_ISBLK(statbuf.st_mode)) {
+		/* check IO limits:
+		 * BLKALIGNOFF: alignment_offset
+		 * BLKPBSZGET: physical_block_size
+		 * BLKSSZGET: logical_block_size
+		 * BLKIOMIN: minimum_io_size
+		 * BLKIOOPT: optimal_io_size
+		 *
+		 * It may be tempting to use physical_block_size,
+		 * or even minimum_io_size.
+		 * But to be as transparent as possible,
+		 * we want to use logical_block_size.
+		 */
+		unsigned int logical_block_size;
+		int fd = open(path, O_RDONLY);
+
+		if (fd < 0) {
+			fprintf(stderr, "open(%s) failed: %m\n", path);
+			exit(EXIT_FAILURE);
+		}
+		if (ioctl(fd, BLKSSZGET, &logical_block_size)) {
+			fprintf(stderr, "ioctl(%s, BLKSSZGET) failed: %m\n", path);
+			exit(EXIT_FAILURE);
+		}
+		close(fd);
+		return logical_block_size / 512;
+
+	}
+	/* else: not a block device.
+	 * Why would we even want to write a bcache super block there? */
+
+	return statbuf.st_blksize / 512;
+}
+
+long strtoul_or_die(const char *p, size_t max, const char *msg)
+{
+	errno = 0;
+	long v = strtol(p, NULL, 10);
+	if (errno || v < 0 || v >= max) {
+		fprintf(stderr, "Invalid %s %zi\n", msg, v);
+		exit(EXIT_FAILURE);
+	}
+
+	return v;
+}
+
+static void print_encode(char *in)
+{
+    char *pos;
+	for (pos = in; *pos; pos++)
+		if (isalnum(*pos) || strchr(".-_", *pos))
+			putchar(*pos);
+		else
+			printf("%%%x", *pos);
+}
+
+static void show_uuid_only(struct cache_sb *sb, char *dev_uuid) {
+	uuid_unparse(sb->uuid.b, dev_uuid);
+}
+
+static void show_super_common(struct cache_sb *sb, bool force_csum)
+{
+	char uuid[40];
+	char label[SB_LABEL_SIZE + 1];
+	uint64_t expected_csum;
+
+	printf("sb.magic\t\t");
+	if (!memcmp(&sb->magic, &BCACHE_MAGIC, sizeof(sb->magic))) {
+		printf("ok\n");
+	} else {
+		printf("bad magic\n");
+		fprintf(stderr, "Invalid superblock (bad magic)\n");
+		exit(2);
+	}
+
+	printf("sb.first_sector\t\t%ju", (uint64_t) sb->offset);
+	if (sb->offset == SB_SECTOR) {
+		printf(" [match]\n");
+	} else {
+		printf(" [expected %ds]\n", SB_SECTOR);
+		fprintf(stderr, "Invalid superblock (bad sector)\n");
+		exit(2);
+	}
+
+	printf("sb.csum\t\t\t%ju", (uint64_t) sb->csum);
+	expected_csum = csum_set(sb,
+				 sb->version < BCACHE_SB_VERSION_CDEV_V3
+				 ? BCH_CSUM_CRC64
+				 : CACHE_SB_CSUM_TYPE(sb));
+	if (sb->csum == expected_csum) {
+		printf(" [match]\n");
+	} else {
+		printf(" [expected %" PRIX64 "]\n", expected_csum);
+		if (!force_csum) {
+			fprintf(stderr, "Corrupt superblock (bad csum)\n");
+			exit(2);
+		}
+	}
+
+	printf("sb.version\t\t%ju", (uint64_t) sb->version);
+	switch (sb->version) {
+		// These are handled the same by the kernel
+		case BCACHE_SB_VERSION_CDEV:
+		case BCACHE_SB_VERSION_CDEV_WITH_UUID:
+			printf(" [cache device]\n");
+			break;
+
+		// The second adds data offset support
+		case BCACHE_SB_VERSION_BDEV:
+		case BCACHE_SB_VERSION_BDEV_WITH_OFFSET:
+			printf(" [backing device]\n");
+			break;
+
+		default:
+			printf(" [unknown]\n");
+			// exit code?
+			exit(EXIT_SUCCESS);
+	}
+
+	putchar('\n');
+
+	strncpy(label, (char *) sb->label, SB_LABEL_SIZE);
+	label[SB_LABEL_SIZE] = '\0';
+	printf("dev.label\t\t");
+	if (*label)
+		print_encode(label);
+	else
+		printf("(empty)");
+	putchar('\n');
+
+	uuid_unparse(sb->uuid.b, uuid);
+	printf("dev.uuid\t\t%s\n", uuid);
+
+	uuid_unparse(sb->set_uuid.b, uuid);
+	printf("cset.uuid\t\t%s\n", uuid);
+}
+
+void show_super_backingdev(struct cache_sb *sb, bool force_csum)
+{
+	uint64_t first_sector;
+
+	show_super_common(sb, force_csum);
+
+	if (sb->version == BCACHE_SB_VERSION_BDEV) {
+		first_sector = BDEV_DATA_START_DEFAULT;
+	} else {
+		if (sb->keys == 1 || sb->d[0]) {
+			fprintf(stderr,
+				"Possible experimental format detected, bailing\n");
+			exit(3);
+		}
+		first_sector = sb->data_offset;
+	}
+
+	printf("dev.data.first_sector\t%ju\n"
+	       "dev.data.cache_mode\t%s"
+	       "dev.data.cache_state\t%s\n",
+	       first_sector,
+	       bdev_cache_mode[BDEV_CACHE_MODE(sb)],
+	       bdev_state[BDEV_STATE(sb)]);
+}
+
+static void show_cache_member(struct cache_sb *sb, unsigned i)
+{
+	struct cache_member *m = ((struct cache_member *) sb->d) + i;
+
+	printf("cache.state\t%s\n",		cache_state[CACHE_STATE(m)]);
+	printf("cache.tier\t%llu\n",		CACHE_TIER(m));
+
+	printf("cache.replication_set\t%llu\n",	CACHE_REPLICATION_SET(m));
+	printf("cache.cur_meta_replicas\t%llu\n", REPLICATION_SET_CUR_META_REPLICAS(m));
+	printf("cache.cur_data_replicas\t%llu\n", REPLICATION_SET_CUR_DATA_REPLICAS(m));
+
+	printf("cache.has_metadata\t%llu\n",	CACHE_HAS_METADATA(m));
+	printf("cache.has_data\t%llu\n",	CACHE_HAS_DATA(m));
+
+	printf("cache.replacement\t%s\n",	replacement_policies[CACHE_REPLACEMENT(m)]);
+	printf("cache.discard\t%llu\n",		CACHE_DISCARD(m));
+}
+
+void show_super_cache(struct cache_sb *sb, bool force_csum)
+{
+	show_super_common(sb, force_csum);
+
+	printf("dev.sectors_per_block\t%u\n"
+	       "dev.sectors_per_bucket\t%u\n",
+	       sb->block_size,
+	       sb->bucket_size);
+
+	// total_sectors includes the superblock;
+	printf("dev.cache.first_sector\t%u\n"
+	       "dev.cache.cache_sectors\t%llu\n"
+	       "dev.cache.total_sectors\t%llu\n"
+	       "dev.cache.ordered\t%s\n"
+	       "dev.cache.pos\t\t%u\n"
+	       "dev.cache.setsize\t\t%u\n",
+	       sb->bucket_size * sb->first_bucket,
+	       sb->bucket_size * (sb->nbuckets - sb->first_bucket),
+	       sb->bucket_size * sb->nbuckets,
+	       CACHE_SYNC(sb) ? "yes" : "no",
+	       sb->nr_this_dev,
+	       sb->nr_in_set);
+
+	show_cache_member(sb, sb->nr_this_dev);
+}
+
+struct cache_sb *query_dev(char *dev, bool force_csum,
+		bool print_sb, bool uuid_only, char *dev_uuid)
+{
+	struct cache_sb sb_stack, *sb = &sb_stack;
+	size_t bytes = sizeof(*sb);
+
+	int fd = open(dev, O_RDONLY);
+	if (fd < 0) {
+		printf("Can't open dev %s: %s\n", dev, strerror(errno));
+		exit(2);
+	}
+
+	if (pread(fd, sb, bytes, SB_START) != bytes) {
+		fprintf(stderr, "Couldn't read\n");
+		exit(2);
+	}
+
+	if (sb->keys) {
+		bytes = sizeof(*sb) + sb->keys * sizeof(uint64_t);
+		sb = malloc(bytes);
+
+		if (pread(fd, sb, bytes, SB_START) != bytes) {
+			fprintf(stderr, "Couldn't read\n");
+			exit(2);
+		}
+	}
+
+	if(uuid_only) {
+		show_uuid_only(sb, dev_uuid);
+		return sb;
+	}
+
+	if(print_sb) {
+		if (!SB_IS_BDEV(sb))
+			show_super_cache(sb, force_csum);
+		else
+			show_super_backingdev(sb, force_csum);
+	}
+
+	return sb;
+}
+
+static void dev_name(const char *ugly_path) {
+	char buf[32];
+	int i, end = strlen(ugly_path);
+
+	//Chop off "/bcache", then look for the next '/' from the end
+	for (i = end - 8; ; i--)
+		if(ugly_path[i] == '/')
+			break;
+
+	strcpy(buf, ugly_path + i);
+	buf[end - i - 7] = 0;
+
+	// Is the dev guaranteed to be in /dev?
+	// This is needed for finding the superblock with a query-dev
+	printf("/dev%s\n", buf);
+}
+
+static void list_cacheset_devs(char *cset_dir, char *cset_name, bool parse_dev_name) {
+	int i = 0;
+	DIR *cachedir;
+	struct stat cache_stat;
+	char intbuf[4];
+	char entry[MAX_PATH];
+
+	snprintf(entry, MAX_PATH, "%s/%s/cache0", cset_dir, cset_name);
+	snprintf(intbuf, 4, "%d", i);
+
+	while(true) {
+		char buf[MAX_PATH];
+		int len;
+
+		if((cachedir = opendir(entry)) == NULL)
+			break;
+
+		if(stat(entry, &cache_stat))
+			break;
+
+		if((len = readlink(entry, buf, sizeof(buf) - 1)) != -1) {
+			buf[len] = '\0';
+			if(parse_dev_name)
+				dev_name(buf);
+			else
+				printf("\t%s\n", buf);
+		}
+
+		/* remove i from end and append i++ */
+		entry[strlen(entry)-strlen(intbuf)] = 0;
+		i++;
+		snprintf(intbuf, 4, "%d", i);
+		strcat(entry, intbuf);
+	}
+}
+
+char *find_matching_uuid(char *stats_dir, char *subdir, const char *stats_dev_uuid) {
+	/* Do a query-dev --uuid only to get the uuid
+	 * repeat on each dev until we find a matching one
+	 * append that cache# to subdir and return
+	 */
+
+	int i = 0;
+	DIR *cachedir;
+	struct stat cache_stat;
+	char intbuf[4];
+	char entry[MAX_PATH];
+	char *err = NULL;
+
+	snprintf(entry, MAX_PATH, "%s%s", stats_dir, subdir);
+	snprintf(intbuf, 4, "%d", i);
+	strcat(entry, intbuf);
+
+	while(true) {
+		char buf[MAX_PATH];
+		int len;
+
+		if((cachedir = opendir(entry)) == NULL)
+			break;
+
+		if(stat(entry, &cache_stat))
+			break;
+
+		if((len = readlink(entry, buf, sizeof(buf) - 1)) != -1) {
+			char dev_uuid[40];
+			buf[len] = '\0';
+			int i, end = strlen(buf);
+			char tmp[32], devname[32];
+
+			/* Chop off "/bcache", then look for the
+			 * next '/' from the end
+			 */
+			for (i = end - 8; ; i--)
+				if(buf[i] == '/')
+					break;
+
+			strcpy(tmp, buf + i);
+			tmp[end - i - 7] = 0;
+			strcpy(devname, "/dev");
+			strcat(devname, tmp);
+
+			query_dev(devname, false, false, true, dev_uuid);
+			if(!strcmp(stats_dev_uuid, dev_uuid)) {
+				strcat(subdir, intbuf);
+				return err;
+			}
+		}
+
+		/* remove i from end and append i++ */
+		entry[strlen(entry)-strlen(intbuf)] = 0;
+		i++;
+		snprintf(intbuf, 4, "%d", i);
+		strcat(entry, intbuf);
+	}
+
+
+	err = "dev uuid doesn't exist in cache_set";
+	return err;
+}
+
+char *list_cachesets(char *cset_dir, bool list_devs)
+{
+	struct dirent *ent;
+	DIR *dir;
+	char *err = NULL;
+
+	dir = opendir(cset_dir);
+	if (!dir) {
+		err = "Failed to open cacheset dir";
+		goto err;
+	}
+
+	while ((ent = readdir(dir)) != NULL) {
+		struct stat statbuf;
+		char entry[MAX_PATH];
+		struct dirent *cache_ent;
+
+		if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, ".."))
+			continue;
+
+		snprintf(entry, MAX_PATH, "%s/%s", cset_dir, ent->d_name);
+		if(stat(entry, &statbuf) == -1) {
+			err = "Failed to stat cacheset subdir";
+			goto err;
+		}
+
+		if (S_ISDIR(statbuf.st_mode)) {
+			printf("%s\n", ent->d_name);
+
+			if(list_devs) {
+				list_cacheset_devs(cset_dir, ent->d_name, true);
+			}
+		}
+	}
+
+err:
+	closedir(dir);
+	return err;
+}
+
+char *register_bcache(char *const *devs)
+{
+	int ret, bcachefd;
+	char *err = NULL;
+
+	bcachefd = open("/dev/bcache", O_RDWR);
+	if (bcachefd < 0) {
+		err = "Can't open bcache device";
+		goto err;
+	}
+
+	ret = ioctl(bcachefd, BCH_IOCTL_REGISTER, devs);
+	if (ret < 0) {
+		char tmp[64];
+		snprintf(tmp, 64, "ioctl register error: %s\n",
+				strerror(ret));
+		err = strdup(tmp);
+		goto err;
+	}
+
+err:
+	if (bcachefd)
+		close(bcachefd);
+	return err;
+}
+
+char *unregister_bcache(char *const *devs)
+{
+	int ret, bcachefd;
+	char *err = NULL;
+
+	bcachefd = open("/dev/bcache", O_RDWR);
+	if (bcachefd < 0) {
+		err = "Can't open bcache device";
+		goto err;
+	}
+
+	ret = ioctl(bcachefd, BCH_IOCTL_UNREGISTER, devs);
+	if (ret < 0) {
+		char tmp[64];
+		snprintf(tmp, 64, "ioctl unregister error: %s\n",
+				strerror(ret));
+		err = strdup(tmp);
+		goto err;
+	}
+
+err:
+	close(bcachefd);
+	return err;
+}
+
+char *probe(char *dev, int udev)
+{
+	struct cache_sb sb;
+	char uuid[40];
+	blkid_probe pr;
+	char *err = NULL;
+
+	int fd = open(dev, O_RDONLY);
+	if (fd == -1) {
+		err = "Got file descriptor -1 trying to open dev";
+		goto err;
+	}
+
+	if (!(pr = blkid_new_probe())) {
+		err = "Failed trying to get a blkid for new probe";
+		goto err;
+	}
+
+	if (blkid_probe_set_device(pr, fd, 0, 0)) {
+		err = "Failed blkid probe set device";
+		goto err;
+	}
+
+	/* probe partitions too */
+	if (blkid_probe_enable_partitions(pr, true)) {
+		err = "Enable probe partitions";
+		goto err;
+	}
+
+	/* bail if anything was found
+	 * probe-bcache isn't needed once blkid recognizes bcache */
+	if (!blkid_do_probe(pr)) {
+		err = "blkid recognizes bcache";
+		goto err;
+	}
+
+	if (pread(fd, &sb, sizeof(sb), SB_START) != sizeof(sb)) {
+		err = "Failed to read superblock";
+		goto err;
+	}
+
+	if (memcmp(&sb.magic, &BCACHE_MAGIC, sizeof(sb.magic))) {
+		err = "Bcache magic incorrect";
+		goto err;
+	}
+
+	uuid_unparse(sb.uuid.b, uuid);
+
+	if (udev)
+		printf("ID_FS_UUID=%s\n"
+		       "ID_FS_UUID_ENC=%s\n"
+		       "ID_FS_TYPE=bcache\n",
+		       uuid, uuid);
+	else
+		printf("%s: UUID=\"\" TYPE=\"bcache\"\n", uuid);
+
+	return 0;
+
+err:
+	return err;
+}
+
+void sb_state(struct cache_sb *sb, char *dev)
+{
+	struct cache_member *m = ((struct cache_member *) sb->d) +
+		sb->nr_this_dev;
+
+	printf("device %s\n", dev);
+	printf("\tcache state\t%s\n",	cache_state[CACHE_STATE(m)]);
+	printf("\tcache_tier\t%llu\n", CACHE_TIER(m));
+	printf("\tseq#: \t%llu\n", sb->seq);
+
+}
+
+char *read_stat_dir(DIR *dir, char *stats_dir, char *stat_name, bool print_val)
+{
+	struct stat statbuf;
+	char entry[MAX_PATH];
+	char *err = NULL;
+
+	snprintf(entry, MAX_PATH, "%s/%s", stats_dir, stat_name);
+	if(stat(entry, &statbuf) == -1) {
+		char tmp[MAX_PATH];
+		snprintf(tmp, MAX_PATH, "Failed to stat %s\n", entry);
+		err = strdup(tmp);
+		goto err;
+	}
+
+	if (S_ISREG(statbuf.st_mode)) {
+		char buf[MAX_PATH];
+		FILE *fp = NULL;
+
+		fp = fopen(entry, "r");
+		if(!fp) {
+			/* If we can't open the file, this is probably because
+			 * of permissions, just move to the next file */
+			return NULL;
+		}
+
+		while(fgets(buf, MAX_PATH, fp));
+
+		if(print_val)
+			printf("%s\n", buf);
+		else
+			printf("%s\n", stat_name);
+		fclose(fp);
+	}
+err:
+	return err;
 }
