@@ -30,12 +30,6 @@ typedef __s64	s64;
 	(void) (&_max1 == &_max2);		\
 	_max1 > _max2 ? _max1 : _max2; })
 
-struct add_msg {
-	char *const *devs;
-	char *uuid;
-	int tier;
-};
-
 extern const char * const cache_state[];
 extern const char * const replacement_policies[];
 extern const char * const csum_types[];
@@ -62,6 +56,47 @@ long strtoul_or_die(const char *, size_t, const char *);
 
 void show_super_backingdev(struct cache_sb *, bool);
 void show_super_cache(struct cache_sb *, bool);
+
+enum sysfs_attr {SET_ATTR, CACHE_ATTR, INTERNAL_ATTR};
+
+static const char *set_attrs[] = {
+	"btree_flush_delay",
+	"btree_scan_ratelimit",
+	"bucket_reserve_percent",
+	"cache_reserve_percent",
+	"checksum_type",
+	"congested_read_threshold_us",
+	"congested_write_threshold_us",
+	"data_replicas",
+	"errors",
+	"foreground_target_percent",
+	"gc_sector_percent",
+	"journal_delay_ms",
+	"meta_replicas",
+	"sector_reserve_percent",
+	"tiering_percent",
+	NULL
+};
+
+static const char *cache_attrs[] = {
+	"cache_replacement_policy",
+	"discard",
+	"state",
+	"tier",
+	NULL
+};
+
+static const char *internal_attrs[] = {
+	"btree_shrinker_disabled",
+	"copy_gc_enabled",
+	"foreground_write_rate",
+	"tiering_enabled",
+	"tiering_rate",
+	NULL
+};
+
+enum sysfs_attr sysfs_attr_type(char *attr);
+void sysfs_attr_list();
 
 struct cache_sb *query_dev(char *, bool, bool, bool, char *dev_uuid);
 char *list_cachesets(char *, bool);
