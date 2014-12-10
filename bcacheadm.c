@@ -456,31 +456,40 @@ int bcache_query_devs(NihCommand *command, char *const *args)
 
 int bcache_status(NihCommand *command, char *const *args)
 {
-	int i;
-	struct cache_sb *sb_tier0 = NULL, *sb_tier1 = NULL;
-	char *dev0 = NULL, *dev1 = NULL;
+	int i, seq, nr_in_set = 0;
+	struct cache_sb *seq_sb = NULL;
 
 	for (i = 0; args[i] != NULL; i++) {
-		struct cache_sb *sb = query_dev(args[i], false, false, false, NULL);
-		struct cache_member *m = ((struct cache_member *) sb->d) +
-			sb->nr_this_dev;
-		long long unsigned cache_tier = CACHE_TIER(m);
+		struct cache_sb *sb = query_dev(args[i], false, false,
+				false, NULL);
 
-		if (!cache_tier) {
-			if (!sb_tier0 || sb->seq > sb_tier0->seq) {
-				sb_tier0 = sb;
-				dev0 = args[i];
-			}
-		} else if (cache_tier == 1) {
-			if (!sb_tier1 || sb->seq > sb_tier1->seq) {
-				sb_tier1 = sb;
-				dev1 = args[i];
-			}
+		if(!sb) {
+			printf("Unable to open superblock, bad path\n");
+			return -1;
+		}
+
+		if(!seq_sb || sb->seq > seq) {
+			seq = sb->seq;
+			seq_sb = sb;
+			nr_in_set = sb->nr_in_set;
 		}
 	}
 
-	if (sb_tier0) sb_state(sb_tier0, dev0);
-	if (sb_tier1) sb_state(sb_tier1, dev1);
+	if(!seq_sb)
+		printf("Unable to find a superblock\n");
+	else
+		printf("%-50s%-15s%-4s\n", "uuid", "state", "tier");
+
+	for (i = 0; i < seq_sb->nr_in_set; i++) {
+		char uuid_str[40];
+		struct cache_member *m = ((struct cache_member *) seq_sb->d) + i;
+
+		uuid_unparse(m->uuid.b, uuid_str);
+
+		printf("%-50s%-15s%-4llu\n", uuid_str,
+				cache_state[CACHE_STATE(m)],
+				CACHE_TIER(m));
+	}
 
 	return 0;
 }

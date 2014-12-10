@@ -1236,18 +1236,6 @@ err:
 	return err;
 }
 
-void sb_state(struct cache_sb *sb, char *dev)
-{
-	struct cache_member *m = ((struct cache_member *) sb->d) +
-		sb->nr_this_dev;
-
-	printf("device %s\n", dev);
-	printf("\tcache state\t%s\n",	cache_state[CACHE_STATE(m)]);
-	printf("\tcache_tier\t%llu\n", CACHE_TIER(m));
-	printf("\tseq#: \t%llu\n", sb->seq);
-
-}
-
 char *read_stat_dir(DIR *dir, char *stats_dir, char *stat_name, bool print_val)
 {
 	struct stat statbuf;
