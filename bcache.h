@@ -69,7 +69,6 @@ char *parse_array_to_list(char *const *);
 char *register_bcache(char *const *);
 char *unregister_bcache(char *const *);
 char *probe(char *, int);
-void sb_state(struct cache_sb *, char *);
 char *read_stat_dir(DIR *, char *, char *, bool);
 char *find_matching_uuid(char *, char *, const char*);
 char *add_devices(char *const *, char *);
