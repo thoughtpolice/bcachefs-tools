@@ -868,6 +868,40 @@ void show_super_cache(struct cache_sb *sb, bool force_csum)
 	show_cache_member(sb, sb->nr_this_dev);
 }
 
+static int __sysfs_attr_type(char *attr, const char **attr_arr) {
+	int i, j;
+	for(i = 0; attr_arr[i] != NULL; i++)
+		if(!strcmp(attr, attr_arr[i]))
+			return 1;
+	return 0;
+}
+
+enum sysfs_attr sysfs_attr_type(char *attr) {
+	int ret;
+	if(__sysfs_attr_type(attr, set_attrs))
+		return SET_ATTR;
+	if(__sysfs_attr_type(attr, cache_attrs))
+		return CACHE_ATTR;
+	if(__sysfs_attr_type(attr, internal_attrs))
+		return INTERNAL_ATTR;
+
+	printf("No attribute called %s, try --list to see options\n", attr);
+
+	return -1;
+}
+
+static void __sysfs_attr_list(const char **attr_arr) {
+	int i, j;
+	for (i = 0; attr_arr[i] != NULL; i++)
+		printf("%s\n", attr_arr[i]);
+}
+
+void sysfs_attr_list() {
+	__sysfs_attr_list(set_attrs);
+	__sysfs_attr_list(cache_attrs);
+	__sysfs_attr_list(internal_attrs);
+}
+
 struct cache_sb *query_dev(char *dev, bool force_csum,
 		bool print_sb, bool uuid_only, char *dev_uuid)
 {
@@ -879,7 +913,6 @@ struct cache_sb *query_dev(char *dev, bool force_csum,
 		printf("Can't open dev %s: %s\n", dev, strerror(errno));
 		exit(2);
 	}
-	printf("opened sb for %s\n", dev);
 
 	if (pread(fd, sb, bytes, SB_START) != bytes) {
 		fprintf(stderr, "Couldn't read\n");

@@ -37,16 +37,6 @@
 #define MAX_DEVS MAX_CACHES_PER_SET
 
 
-/* bcacheadm globals */
-enum exit {
-	EXIT_OK = 0,		/* Ok */
-	EXIT_ERROR = 1,		/* General/OS error */
-	EXIT_SHELL = 2,		/* Start maintenance shell */
-	EXIT_SHELL_REBOOT = 3,	/* Start maintenance shell, reboot when done */
-	EXIT_REBOOT = 4,	/* System must reboot */
-};
-
-
 /* make-bcache globals */
 int bdev = -1;
 int devs = 0;
@@ -63,13 +53,6 @@ unsigned replication_set = 0, replacement_policy = 0;
 uint64_t data_offset = BDEV_DATA_START_DEFAULT;
 char *label = NULL;
 struct cache_sb *cache_set_sb = NULL;
-enum long_opts {
-	CACHE_SET_UUID = 256,
-	CSUM_TYPE,
-	REPLICATION_SET,
-	META_REPLICAS,
-	DATA_REPLICAS,
-};
 const char *cache_set_uuid = 0;
 const char *csum_type = 0;
 char *metadata_replicas = 0;
@@ -81,6 +64,11 @@ char *add_dev_uuid = NULL;
 
 /* rm-dev globals */
 bool force_remove = false;
+
+/* Modify globals */
+bool modify_list_attrs = false;
+static const char *modify_set_uuid = NULL;
+static const char *modify_dev_uuid = NULL;
 
 /* query-dev globals */
 bool force_csum = false;
@@ -215,6 +203,13 @@ static NihOption bcache_add_device_options[] = {
 
 static NihOption bcache_rm_device_options[] = {
 	{'f', "force", N_("force cache removal"), NULL, NULL, &force_remove, NULL},
+	NIH_OPTION_LAST
+};
+
+static NihOption bcache_modify_options[] = {
+	{'l', "list", N_("list attributes"), NULL, NULL, &modify_list_attrs, NULL},
+	{'u', "set", N_("cacheset uuid"), NULL, "UUID", &modify_set_uuid, NULL},
+	{'d', "dev", N_("device uuid"), NULL, "UUID", &modify_dev_uuid, NULL},
 	NIH_OPTION_LAST
 };
 
@@ -403,8 +398,10 @@ int bcache_add_devices(NihCommand *command, char *const *args)
 {
 	char *err;
 
-	if (!add_dev_uuid)
+	if (!add_dev_uuid) {
 		printf("Must specify a cacheset uuid to add the disk to\n");
+		return -1;
+	}
 
 	err = add_devices(args, add_dev_uuid);
 	if (err) {
@@ -425,6 +422,82 @@ int bcache_rm_device(NihCommand *command, char *const *args)
 		return -1;
 	}
 
+	return 0;
+}
+
+int bcache_modify(NihCommand *command, char *const *args)
+{
+	char *err;
+	char path[MAX_PATH];
+	DIR *path_dir;
+	struct stat cache_stat;
+	char *attr = args[0];
+	char *val = NULL;
+	int fd = -1;
+
+	if (modify_list_attrs) {
+		sysfs_attr_list();
+		return 0;
+	}
+
+	if (!modify_set_uuid) {
+		printf("Must provide a cacheset uuid\n");
+		return -1;
+	}
+
+	snprintf(path, MAX_PATH, "%s/%s", cset_dir, modify_set_uuid);
+
+	if(!attr) {
+		printf("Must provide the name of an attribute to modify\n");
+		goto err;
+	}
+
+	enum sysfs_attr type = sysfs_attr_type(attr);
+
+	if (type == -1)
+		goto err;
+	else if(type == INTERNAL_ATTR)
+		strcat(path, "/internal");
+	else if(type == CACHE_ATTR) {
+		if(modify_dev_uuid) {
+			/* searches all cache# for a matching uuid,
+			 * path gets modified to the correct cache path */
+			char subdir[10] = "/cache";
+			err = find_matching_uuid(path, subdir,
+					modify_dev_uuid);
+			if (err) {
+				printf("Failed to find "
+					"matching dev %s\n", err);
+				goto err;
+			} else {
+				strcat(path, subdir);
+			}
+		} else {
+			printf("Must provide a device uuid\n");
+		}
+	}
+	/* SET_ATTRs are just in the current dir */
+
+	strcat(path, "/");
+	strcat(path, attr);
+
+	val = args[1];
+	if (!val) {
+		printf("Must provide a value to change the attribute to\n");
+		goto err;
+	}
+
+	fd = open(path, O_WRONLY);
+	if (fd < 0) {
+		printf("Unable to open modify attr with path %s\n", path);
+		goto err;
+	}
+
+	write(fd, val, strlen(val));
+
+err:
+	if(fd)
+		close(fd);
 	return 0;
 }
 
@@ -597,6 +670,10 @@ static NihCommand commands[] = {
 		"Removes a device from its cacheset",
 		N_("Removes a device from its cacheset"),
 		NULL, bcache_rm_device_options, bcache_rm_device},
+	{"modify", N_("modify --set=UUID (dev=UUID) name value"),
+		"Modifies attributes related to the cacheset",
+		N_("Modifies attributes related to the cacheset"),
+		NULL, bcache_modify_options, bcache_modify},
 	{"list-cachesets", N_("list-cachesets"),
 			   "Lists cachesets in /sys/fs/bcache",
 			   N_("Lists cachesets in /sys/fs/bcache"),
