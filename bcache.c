@@ -911,12 +911,12 @@ struct cache_sb *query_dev(char *dev, bool force_csum,
 	int fd = open(dev, O_RDONLY);
 	if (fd < 0) {
 		printf("Can't open dev %s: %s\n", dev, strerror(errno));
-		exit(2);
+		return NULL;
 	}
 
 	if (pread(fd, sb, bytes, SB_START) != bytes) {
 		fprintf(stderr, "Couldn't read\n");
-		exit(2);
+		return NULL;
 	}
 
 	if (sb->keys) {
@@ -925,7 +925,7 @@ struct cache_sb *query_dev(char *dev, bool force_csum,
 
 		if (pread(fd, sb, bytes, SB_START) != bytes) {
 			fprintf(stderr, "Couldn't read\n");
-			exit(2);
+			return NULL;
 		}
 	}
 
@@ -1029,6 +1029,7 @@ char *find_matching_uuid(char *stats_dir, char *subdir, const char *stats_dev_uu
 			buf[len] = '\0';
 			int i, end = strlen(buf);
 			char tmp[32], devname[32];
+			struct cache_sb *sb;
 
 			/* Chop off "/bcache", then look for the
 			 * next '/' from the end
@@ -1042,10 +1043,14 @@ char *find_matching_uuid(char *stats_dir, char *subdir, const char *stats_dev_uu
 			strcpy(devname, "/dev");
 			strcat(devname, tmp);
 
-			query_dev(devname, false, false, true, dev_uuid);
+			err = "Unable to open superblock";
+			sb = query_dev(devname, false, false, true, dev_uuid);
+			if(!sb)
+				return err;
+
 			if(!strcmp(stats_dev_uuid, dev_uuid)) {
 				strcat(subdir, intbuf);
-				return err;
+				return NULL;
 			}
 		}
 
