@@ -73,6 +73,7 @@ static const char *modify_dev_uuid = NULL;
 /* query-dev globals */
 bool force_csum = false;
 bool uuid_only = false;
+bool query_brief = false;
 
 /* probe globals */
 bool udev = false;
@@ -216,6 +217,7 @@ static NihOption bcache_modify_options[] = {
 static NihOption query_devs_options[] = {
 	{'f', "force_csum", N_("force_csum"), NULL, NULL, &force_csum, NULL},
 	{'u', "uuid-only", N_("only print out the uuid for the devices, not the whole superblock"), NULL, NULL, &uuid_only, NULL},
+	{'b', "brief", N_("only print out the cluster,server,and disk uuids"), NULL, NULL, &query_brief, NULL},
 	NIH_OPTION_LAST
 };
 
@@ -520,11 +522,37 @@ int bcache_query_devs(NihCommand *command, char *const *args)
 {
 	int i;
 
+	if (query_brief)
+		printf("%-10s%-40s%-40s%-40s\n", "dev name", "disk uuid",
+				"server uuid", "cluster uuid");
+
 	for (i = 0; args[i] != NULL; i++) {
 		char dev_uuid[40];
-		query_dev(args[i], force_csum, true, uuid_only, dev_uuid);
-		if(uuid_only)
+		struct cache_sb *sb = query_dev(args[i], force_csum,
+				!query_brief, uuid_only, dev_uuid);
+
+		if (!sb) {
+			printf("error opening the superblock for %s\n",
+					args[i]);
+			return -1;
+		}
+
+		if (uuid_only) {
 			printf("%s\n", dev_uuid);
+		} else if (query_brief) {
+			char set_uuid_str[40], dev_uuid_str[40];
+			char *clus_uuid = (char *)sb->label;
+
+			uuid_unparse(sb->set_uuid.b, set_uuid_str);
+			uuid_unparse(sb->uuid.b, dev_uuid_str);
+			if (!strcmp(clus_uuid, ""))
+				clus_uuid = "None";
+
+			printf("%-10s%-40s%-40s%-40s\n", args[i],
+					dev_uuid_str,
+					set_uuid_str,
+					clus_uuid);
+		}
 	}
 
 	return 0;
