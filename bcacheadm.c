@@ -269,6 +269,9 @@ int make_bcache(NihCommand *command, char *const *args)
 		uuid_generate(cache_set_sb->set_uuid.b);
 	}
 
+	if (label) 
+		memcpy(cache_set_sb->label, label, sizeof(cache_set_sb->label));
+
 	if (csum_type) {
 		SET_CACHE_PREFERRED_CSUM_TYPE(cache_set_sb,
 				read_string_list_or_die(csum_type, csum_types,
