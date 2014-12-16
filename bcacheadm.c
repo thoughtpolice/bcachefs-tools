@@ -34,7 +34,6 @@
 #define PACKAGE_VERSION "1.0"
 #define PACKAGE_BUGREPORT "bugreport"
 
-#define MAX_DEVS MAX_CACHES_PER_SET
 
 
 /* make-bcache globals */
@@ -84,6 +83,10 @@ bool list_devs = false;
 
 /* status globals */
 bool status_all = false;
+
+/* capacity globals */
+static const char *capacity_uuid = NULL;
+bool capacity_devs = false;
 
 /* stats globals */
 bool stats_all = false;
@@ -229,6 +232,12 @@ static NihOption list_cachesets_options[] = {
 
 static NihOption status_options[] = {
 	{'a', "all", N_("all"), NULL, NULL, &status_all, NULL},
+	NIH_OPTION_LAST
+};
+
+static NihOption capacity_options[] = {
+	{'u', "set", N_("cache_set UUID"), NULL, "UUID", &capacity_uuid, NULL},
+	{'d', "devs", N_("dev UUID"), NULL, NULL, &capacity_devs, NULL},
 	NIH_OPTION_LAST
 };
 
@@ -598,6 +607,24 @@ int bcache_status(NihCommand *command, char *const *args)
 	return 0;
 }
 
+int bcache_capacity(NihCommand *command, char *const *args)
+{
+	char *err = "Must provide a cacheset uuid";
+	if(!capacity_uuid)
+		goto err;
+
+	err = bcache_get_capacity(cset_dir, capacity_uuid, capacity_devs);
+	if (err)
+		goto err;
+
+	return 0;
+
+err:
+	printf("bcache_capacity failed with error: %s\n", err);
+	return -1;
+
+}
+
 static char *stats_subdir(char* stats_dir)
 {
 	char tmp[50] = "/";
@@ -634,6 +661,7 @@ int bcache_stats(NihCommand *command, char *const *args)
 	DIR *dir = NULL;
 	struct dirent *ent = NULL;
 	char *err = NULL;
+	char buf[MAX_PATH];
 
 	if (stats_uuid) {
 		snprintf(stats_dir, MAX_PATH, "%s/%s", cset_dir, stats_uuid);
@@ -653,17 +681,21 @@ int bcache_stats(NihCommand *command, char *const *args)
 
 	if(stats_list || stats_all) {
 		while ((ent = readdir(dir)) != NULL) {
-			err = read_stat_dir(dir, stats_dir, ent->d_name, stats_all);
+			err = read_stat_dir(dir, stats_dir, ent->d_name, buf);
 			if (err)
 				goto err;
+			if(stats_list)
+				printf("%s\n", ent->d_name);
+			if(stats_all)
+				printf("\t%s\n", buf);
 		}
 	}
 
-
 	for (i = 0; args[i] != NULL; i++) {
-		err = read_stat_dir(dir, stats_dir, args[i], true);
+		err = read_stat_dir(dir, stats_dir, args[i], buf);
 		if (err)
 			goto err;
+		printf("%s\n", buf);
 	}
 
 	closedir(dir);
@@ -717,6 +749,10 @@ static NihCommand commands[] = {
 		   "Finds the status of the most up to date superblock",
 		   N_("Finds the status of the most up to date superblock"),
 		   NULL, status_options, bcache_status},
+	{"capacity", N_("capacity --set=UUID"),
+		"Shows the capacity of the cacheset",
+		N_("Shows the capacity of the cacheset"),
+		NULL, capacity_options, bcache_capacity},
 	{"stats", N_("stats <list of devices>"),
 		  "List various bcache statistics",
 		  N_("List various bcache statistics"),

@@ -829,6 +829,7 @@ static void show_cache_member(struct cache_sb *sb, unsigned i)
 	struct cache_member *m = ((struct cache_member *) sb->d) + i;
 
 	printf("cache.state\t%s\n",		cache_state[CACHE_STATE(m)]);
+
 	printf("cache.tier\t%llu\n",		CACHE_TIER(m));
 
 	printf("cache.replication_set\t%llu\n",	CACHE_REPLICATION_SET(m));
@@ -944,7 +945,7 @@ struct cache_sb *query_dev(char *dev, bool force_csum,
 	return sb;
 }
 
-static void dev_name(const char *ugly_path) {
+static char *dev_name(const char *ugly_path) {
 	char buf[32];
 	int i, end = strlen(ugly_path);
 
@@ -958,7 +959,7 @@ static void dev_name(const char *ugly_path) {
 
 	// Is the dev guaranteed to be in /dev?
 	// This is needed for finding the superblock with a query-dev
-	printf("/dev%s\n", buf);
+	return strdup(buf);
 }
 
 static void list_cacheset_devs(char *cset_dir, char *cset_name, bool parse_dev_name) {
@@ -974,6 +975,7 @@ static void list_cacheset_devs(char *cset_dir, char *cset_name, bool parse_dev_n
 	while(true) {
 		char buf[MAX_PATH];
 		int len;
+		char *tmp;
 
 		if((cachedir = opendir(entry)) == NULL)
 			break;
@@ -983,10 +985,13 @@ static void list_cacheset_devs(char *cset_dir, char *cset_name, bool parse_dev_n
 
 		if((len = readlink(entry, buf, sizeof(buf) - 1)) != -1) {
 			buf[len] = '\0';
-			if(parse_dev_name)
-				dev_name(buf);
-			else
+			if(parse_dev_name) {
+				tmp = dev_name(buf);
+				printf("/dev%s\n", tmp);
+				free(tmp);
+			} else {
 				printf("\t%s\n", buf);
+			}
 		}
 
 		/* remove i from end and append i++ */
@@ -1274,7 +1279,7 @@ err:
 	return err;
 }
 
-char *read_stat_dir(DIR *dir, char *stats_dir, char *stat_name, bool print_val)
+char *read_stat_dir(DIR *dir, char *stats_dir, char *stat_name, char *ret)
 {
 	struct stat statbuf;
 	char entry[MAX_PATH];
@@ -1299,14 +1304,114 @@ char *read_stat_dir(DIR *dir, char *stats_dir, char *stat_name, bool print_val)
 			return NULL;
 		}
 
-		while(fgets(buf, MAX_PATH, fp));
-
-		if(print_val)
-			printf("%s\n", buf);
-		else
-			printf("%s\n", stat_name);
+		while(fgets(ret, MAX_PATH, fp));
 		fclose(fp);
 	}
 err:
+	return err;
+}
+
+char *bcache_get_capacity(const char *cset_dir, const char *capacity_uuid,
+		bool show_devs)
+{
+	char *err = NULL;
+	char bucket_size_path[MAX_PATH];
+	char nbuckets_path[MAX_PATH];
+	char avail_buckets_path[MAX_PATH];
+	char cache_path[MAX_PATH];
+
+	double bucket_sizes[MAX_DEVS];
+	double nbuckets[MAX_DEVS];
+	double avail_buckets[MAX_DEVS];
+	char *dev_names[MAX_DEVS];
+	int dev_count = 0, i;
+	char intbuf[4];
+	double total_cap = 0, total_free = 0;
+	int precision = 2;
+
+	snprintf(intbuf, 4, "%d", i);
+	snprintf(bucket_size_path, MAX_PATH, "%s/%s/%s/%s", cset_dir,
+			capacity_uuid, "cache0", "bucket_size_bytes");
+	snprintf(nbuckets_path, MAX_PATH, "%s/%s/%s/%s", cset_dir,
+			capacity_uuid, "cache0", "nbuckets");
+	snprintf(avail_buckets_path, MAX_PATH, "%s/%s/%s/%s", cset_dir,
+			capacity_uuid, "cache0", "available_buckets");
+	snprintf(cache_path, MAX_PATH, "%s/%s/%s", cset_dir, capacity_uuid,
+			"cache0");
+
+	while(true) {
+		char buf[MAX_PATH];
+		int len;
+		DIR *cache_dir;
+
+		if((cache_dir = opendir(cache_path)) == NULL)
+			break;
+
+		err = read_stat_dir(cache_dir, cache_path,
+				"bucket_size_bytes", buf);
+		if (err)
+			goto err;
+		else
+			bucket_sizes[dev_count] = atof(buf);
+
+		err = read_stat_dir(cache_dir, cache_path,
+				"nbuckets", buf);
+		if (err)
+			goto err;
+		else
+			nbuckets[dev_count] = atof(buf);
+
+		err = read_stat_dir(cache_dir, cache_path,
+				"available_buckets", buf);
+		if (err)
+			goto err;
+		else
+			avail_buckets[dev_count] = atof(buf);
+
+		if((len = readlink(cache_path, buf, sizeof(buf) - 1)) != -1) {
+			buf[len] = '\0';
+			dev_names[dev_count] = dev_name(buf);
+		}
+
+		/* remove i/stat and append i++/stat */
+		bucket_size_path[strlen(cache_path) - strlen(intbuf)] = 0;
+		nbuckets_path[strlen(cache_path) - strlen(intbuf)] = 0;
+		avail_buckets_path[strlen(cache_path) - strlen(intbuf)] = 0;
+		cache_path[strlen(cache_path) - strlen(intbuf)] = 0;
+
+		dev_count++;
+
+		snprintf(intbuf, 4, "%d", dev_count);
+		strcat(cache_path, intbuf);
+		strcat(bucket_size_path, intbuf);
+		strcat(nbuckets_path, intbuf);
+		strcat(avail_buckets_path, intbuf);
+	}
+
+	printf("%-15s%-25s%-25s\n", "Device Name", "Capacity (512 Blocks)", "Free (512 Blocks)");
+
+	if (show_devs) {
+		for (i = 0; i < dev_count; i++) {
+			printf("%s%-11s%-25.*f%-25.*f\n", "/dev", dev_names[i],
+				precision,
+				(bucket_sizes[i] * nbuckets[i]) / 512,
+				precision,
+				(bucket_sizes[i] * avail_buckets[i]) / 512);
+		}
+	}
+
+	for (i = 0; i < dev_count; i++) {
+		total_cap += (bucket_sizes[i] * nbuckets[i]) / 512;
+		total_free += (bucket_sizes[i] * avail_buckets[i]) / 512;
+
+	}
+
+	printf("%-15s%-25.*f%-25.*f\n", "Total", precision, total_cap,
+			precision, total_free);
+
+err:
+	for (i = 0; i < dev_count; i++)
+		if (dev_names[i])
+			free(dev_names[i]);
 	return err;
 }
