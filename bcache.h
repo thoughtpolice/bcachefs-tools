@@ -22,7 +22,7 @@ typedef __s64	s64;
 
 #define SB_START		(SB_SECTOR * 512)
 #define MAX_PATH		256
-
+#define MAX_DEVS		MAX_CACHES_PER_SET
 
 #define max(x, y) ({				\
 	typeof(x) _max1 = (x);			\
@@ -104,10 +104,11 @@ char *parse_array_to_list(char *const *);
 char *register_bcache(char *const *);
 char *unregister_bcache(char *const *);
 char *probe(char *, int);
-char *read_stat_dir(DIR *, char *, char *, bool);
+char *read_stat_dir(DIR *, char *, char *, char *);
 char *find_matching_uuid(char *, char *, const char*);
 char *add_devices(char *const *, char *);
 char *remove_device(const char *, bool);
+char *bcache_get_capacity(const char *, const char *, bool);
 
 #define csum_set(i, type)						\
 ({									\
