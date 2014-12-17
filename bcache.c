@@ -755,7 +755,7 @@ static void show_super_common(struct cache_sb *sb, bool force_csum)
 		printf(" [match]\n");
 	} else {
 		printf(" [expected %" PRIX64 "]\n", expected_csum);
-		if (!force_csum) {
+		if (force_csum) {
 			fprintf(stderr, "Corrupt superblock (bad csum)\n");
 			exit(2);
 		}
