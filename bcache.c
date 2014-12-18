@@ -964,41 +964,50 @@ static char *dev_name(const char *ugly_path) {
 
 static void list_cacheset_devs(char *cset_dir, char *cset_name, bool parse_dev_name) {
 	int i = 0;
-	DIR *cachedir;
+	DIR *cachedir, *dir;
 	struct stat cache_stat;
-	char intbuf[4];
 	char entry[MAX_PATH];
+	struct dirent *ent;
+	snprintf(entry, MAX_PATH, "%s/%s", cset_dir, cset_name);
 
-	snprintf(entry, MAX_PATH, "%s/%s/cache0", cset_dir, cset_name);
-	snprintf(intbuf, 4, "%d", i);
+	if((dir = opendir(entry)) != NULL) {
+		while((ent = readdir(dir)) != NULL) {
+			char buf[MAX_PATH];
+			int len;
+			char *tmp;
 
-	while(true) {
-		char buf[MAX_PATH];
-		int len;
-		char *tmp;
+			/*
+			 * We are looking for all cache# directories
+			 * do a strlen < 9 to skip over other entries
+			 * that also start with "cache"
+			 */
+			if(strncmp(ent->d_name, "cache", 5) ||
+					!(strlen(ent->d_name) < 9))
+				continue;
 
-		if((cachedir = opendir(entry)) == NULL)
-			break;
+			snprintf(entry, MAX_PATH, "%s/%s/%s",
+					cset_dir,
+					cset_name,
+					ent->d_name);
 
-		if(stat(entry, &cache_stat))
-			break;
+			if((cachedir = opendir(entry)) == NULL)
+				continue;
 
-		if((len = readlink(entry, buf, sizeof(buf) - 1)) != -1) {
-			buf[len] = '\0';
-			if(parse_dev_name) {
-				tmp = dev_name(buf);
-				printf("/dev%s\n", tmp);
-				free(tmp);
-			} else {
-				printf("\t%s\n", buf);
+			if(stat(entry, &cache_stat))
+				continue;
+
+			if((len = readlink(entry, buf, sizeof(buf) - 1)) !=
+					-1) {
+				buf[len] = '\0';
+				if(parse_dev_name) {
+					tmp = dev_name(buf);
+					printf("/dev%s\n", tmp);
+					free(tmp);
+				} else {
+					printf("\t%s\n", buf);
+				}
 			}
 		}
-
-		/* remove i from end and append i++ */
-		entry[strlen(entry)-strlen(intbuf)] = 0;
-		i++;
-		snprintf(intbuf, 4, "%d", i);
-		strcat(entry, intbuf);
 	}
 }
 
