@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.61)
-AC_INIT(bcache-tools, VERSION, BUG-REPORT-ADDRESS)
+AC_INIT(bcache-tools, 0.1, support@datera.io)
 AM_INIT_AUTOMAKE
 LT_INIT
 AC_CONFIG_HEADER([config.h])
