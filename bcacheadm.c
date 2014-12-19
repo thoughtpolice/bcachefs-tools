@@ -590,10 +590,12 @@ int bcache_status(NihCommand *command, char *const *args)
 			free(sb);
 	}
 
-	if(!seq_sb)
+	if(!seq_sb) {
 		printf("Unable to find a superblock\n");
-	else
+		return -1;
+	} else {
 		printf("%-50s%-15s%-4s\n", "uuid", "state", "tier");
+	}
 
 	for (i = 0; i < seq_sb->nr_in_set; i++) {
 		char uuid_str[40];
