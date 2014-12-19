@@ -562,6 +562,7 @@ int bcache_query_devs(NihCommand *command, char *const *args)
 					set_uuid_str,
 					clus_uuid);
 		}
+		free(sb);
 	}
 
 	return 0;
@@ -585,7 +586,8 @@ int bcache_status(NihCommand *command, char *const *args)
 			seq = sb->seq;
 			seq_sb = sb;
 			nr_in_set = sb->nr_in_set;
-		}
+		} else
+			free(sb);
 	}
 
 	if(!seq_sb)
@@ -603,6 +605,9 @@ int bcache_status(NihCommand *command, char *const *args)
 				cache_state[CACHE_STATE(m)],
 				CACHE_TIER(m));
 	}
+
+	if(seq_sb)
+		free(seq_sb);
 
 	return 0;
 }

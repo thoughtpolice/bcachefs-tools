@@ -906,29 +906,38 @@ void sysfs_attr_list() {
 struct cache_sb *query_dev(char *dev, bool force_csum,
 		bool print_sb, bool uuid_only, char *dev_uuid)
 {
-	struct cache_sb sb_stack, *sb = &sb_stack;
-	size_t bytes = sizeof(*sb);
+	size_t bytes = 4096;
+	struct cache_sb *sb = aligned_alloc(bytes, bytes);
 
-	int fd = open(dev, O_RDONLY);
+	int fd = open(dev, O_RDONLY|O_DIRECT);
 	if (fd < 0) {
 		printf("Can't open dev %s: %s\n", dev, strerror(errno));
 		return NULL;
 	}
 
-	if (pread(fd, sb, bytes, SB_START) != bytes) {
-		fprintf(stderr, "Couldn't read\n");
-		return NULL;
-	}
-
-	if (sb->keys) {
-		bytes = sizeof(*sb) + sb->keys * sizeof(uint64_t);
-		sb = malloc(bytes);
-
-		if (pread(fd, sb, bytes, SB_START) != bytes) {
-			fprintf(stderr, "Couldn't read\n");
+	while (true) {
+		int ret = pread(fd, sb, bytes, SB_START);
+		if (ret < 0) {
+			fprintf(stderr, "Couldn't read superblock: %s\n",
+					strerror(errno));
+			close(fd);
+			free(sb);
 			return NULL;
+		} else if (bytes > sizeof(sb) + sb->keys * sizeof(u64)) {
+			/* We read the whole superblock */
+			break;
 		}
+
+		/*
+		 * otherwise double the size of our dest
+		 * and read again
+		 */
+		free(sb);
+		bytes *= 2;
+		sb = aligned_alloc(4096, bytes);
 	}
+
+	close(fd);
 
 	if(uuid_only) {
 		show_uuid_only(sb, dev_uuid);
@@ -1061,6 +1070,8 @@ char *find_matching_uuid(char *stats_dir, char *subdir, const char *stats_dev_uu
 			sb = query_dev(devname, false, false, true, dev_uuid);
 			if(!sb)
 				return err;
+			else
+				free(sb);
 
 			if(!strcmp(stats_dev_uuid, dev_uuid)) {
 				strcat(subdir, intbuf);
