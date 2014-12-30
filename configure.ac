@@ -2,22 +2,12 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.61)
-AC_INIT(bcache-tools, 0.1, support@datera.io)
-AM_INIT_AUTOMAKE
+AC_INIT(m4_esyscmd([echo -n $PACKAGE]), m4_esyscmd([echo -n $DATERA_VERSION]), m4_esyscmd([echo -n $SUPPORT_EMAIL]))
 LT_INIT
 AC_CONFIG_HEADER([config.h])
 AC_CONFIG_MACRO_DIR([m4])
 
-# Checks for programs.
-AC_PROG_CC
-
-# Checks for libraries.
-
-# Checks for header files.
-
-# Checks for typedefs, structures, and compiler characteristics.
-
-# Checks for library functions.
+m4_include([../BTools/cscript/ccpp.m4])
 
 AC_CONFIG_FILES([Makefile])
 AC_OUTPUT
