@@ -559,16 +559,6 @@ static unsigned min_bucket_size(int num_bucket_sizes, unsigned *bucket_sizes)
 	return min;
 }
 
-static unsigned node_size(unsigned bucket_size) {
-
-	if (bucket_size <= 256)
-		return bucket_size;
-	else if (bucket_size <= 512)
-		return bucket_size / 2;
-	else
-		return bucket_size / 4;
-}
-
 void write_cache_sbs(int *fds, struct cache_sb *sb,
 			    unsigned block_size, unsigned *bucket_sizes,
 				int num_bucket_sizes)
@@ -596,7 +586,8 @@ void write_cache_sbs(int *fds, struct cache_sb *sb,
 			sb->bucket_size = bucket_sizes[0];
 		else
 			sb->bucket_size	= bucket_sizes[i];
-		SET_CACHE_BTREE_NODE_SIZE(sb, node_size(min_size));
+		SET_CACHE_BTREE_NODE_SIZE(sb, min_size);
+
 
 		sb->uuid = m->uuid;
 		sb->nbuckets		= getblocks(fds[i]) / sb->bucket_size;
