@@ -582,10 +582,18 @@ void write_cache_sbs(int *fds, struct cache_sb *sb,
 	for (i = 0; i < sb->nr_in_set; i++) {
 		struct cache_member *m = sb->members + i;
 
-		if (num_bucket_sizes <= 1)
+		if (num_bucket_sizes <= 1) {
 			sb->bucket_size = bucket_sizes[0];
-		else
-			sb->bucket_size	= bucket_sizes[i];
+		} else {
+			if (!bucket_sizes[i]) {
+				printf("No bucket size specified for cache %d,"
+				       " using the default of %d",
+				       i, bucket_sizes[0]);
+				sb->bucket_size = bucket_sizes[0];
+			} else {
+				sb->bucket_size	= bucket_sizes[i];
+			}
+		}
 		SET_CACHE_BTREE_NODE_SIZE(sb, min_size);
 
 
