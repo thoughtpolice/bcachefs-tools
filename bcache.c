@@ -953,7 +953,7 @@ struct cache_sb *query_dev(char *dev, bool force_csum,
 	return sb;
 }
 
-static char *dev_name(const char *ugly_path) {
+char *dev_name(const char *ugly_path) {
 	char buf[32];
 	int i, end = strlen(ugly_path);
 

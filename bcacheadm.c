@@ -570,19 +570,24 @@ int bcache_query_devs(NihCommand *command, char *const *args)
 
 int bcache_status(NihCommand *command, char *const *args)
 {
-	int i, seq, nr_in_set = 0;
+	int i, dev_count = 0, seq, nr_in_set = 0;
 	struct cache_sb *seq_sb = NULL;
+	char cache_path[MAX_PATH];
+	char *dev_names[MAX_DEVS];
+	char *dev_uuids[MAX_DEVS];
+	char intbuf[4];
+	char set_uuid[40];
 
 	for (i = 0; args[i] != NULL; i++) {
 		struct cache_sb *sb = query_dev(args[i], false, false,
 				false, NULL);
 
-		if(!sb) {
+		if (!sb) {
 			printf("Unable to open superblock, bad path\n");
 			return -1;
 		}
 
-		if(!seq_sb || sb->seq > seq) {
+		if (!seq_sb || sb->seq > seq) {
 			seq = sb->seq;
 			seq_sb = sb;
 			nr_in_set = sb->nr_in_set;
@@ -590,26 +595,91 @@ int bcache_status(NihCommand *command, char *const *args)
 			free(sb);
 	}
 
-	if(!seq_sb) {
+	if (!seq_sb) {
 		printf("Unable to find a superblock\n");
 		return -1;
 	} else {
+		uuid_unparse(seq_sb->set_uuid.b, set_uuid);
 		printf("%-50s%-15s%-4s\n", "uuid", "state", "tier");
+	}
+
+	snprintf(intbuf, 4, "%d", i);
+	snprintf(cache_path, MAX_PATH, "%s/%s/%s", cset_dir, set_uuid,
+			"cache0");
+
+	/*
+	 * Get a list of all the devices from sysfs first, then
+	 * compare it to the list we get back from the most up
+	 * to date superblock. If there are any devices in the superblock
+	 * that are not in sysfs, print out 'NOT PRESENT'
+	 */
+	while (true) {
+		char buf[MAX_PATH];
+		int len;
+		DIR *cache_dir;
+
+		if(((cache_dir = opendir(cache_path)) == NULL) &&
+		    dev_count < MAX_DEVS)
+			break;
+
+		if((len = readlink(cache_path, buf, sizeof(buf) - 1)) != -1) {
+			struct cache_sb *sb;
+			char dev_uuid[40];
+			char dev_path[32];
+
+			buf[len] = '\0';
+			dev_names[dev_count] = dev_name(buf);
+			snprintf(dev_path, MAX_PATH, "%s/%s", "/dev",
+					dev_names[dev_count]);
+			sb = query_dev(dev_path, false, false,
+					true, dev_uuid);
+			if (!sb) {
+				printf("error reading %s\n", dev_path);
+				return -1;
+			} else
+				free(sb);
+
+			dev_uuids[dev_count] = strdup(dev_uuid);
+		} else {
+			dev_uuids[dev_count] = strdup("Nothing");
+			dev_names[dev_count] = strdup("Nothing");
+		}
+
+		cache_path[strlen(cache_path) - strlen(intbuf)] = 0;
+		dev_count++;
+
+		snprintf(intbuf, 4, "%d", dev_count);
+		strcat(cache_path, intbuf);
 	}
 
 	for (i = 0; i < seq_sb->nr_in_set; i++) {
 		char uuid_str[40];
 		struct cache_member *m = ((struct cache_member *) seq_sb->d) + i;
+		char dev_state[32];
+		int j;
 
 		uuid_unparse(m->uuid.b, uuid_str);
 
-		printf("%-50s%-15s%-4llu\n", uuid_str,
-				cache_state[CACHE_STATE(m)],
+		for (j = 0; j < dev_count; j++) {
+			if (!strcmp(uuid_str, dev_uuids[j])) {
+				snprintf(dev_state, MAX_PATH, "%s", cache_state[CACHE_STATE(m)]);
+				break;
+			} else if (j == dev_count - 1) {
+				snprintf(dev_state, MAX_PATH, "%s", "missing");
+				break;
+			}
+		}
+
+		printf("%-50s%-15s%-4llu\n", uuid_str, dev_state,
 				CACHE_TIER(m));
 	}
 
-	if(seq_sb)
+	if (seq_sb)
 		free(seq_sb);
+	for (i = 0; i < dev_count; i++) {
+		free(dev_names[i]);
+		free(dev_uuids[i]);
+	}
 
 	return 0;
 }

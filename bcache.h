@@ -109,6 +109,8 @@ char *find_matching_uuid(char *, char *, const char*);
 char *add_devices(char *const *, char *);
 char *remove_device(const char *, bool);
 char *bcache_get_capacity(const char *, const char *, bool);
+char *dev_name(const char *);
+
 
 #define csum_set(i, type)						\
 ({									\
