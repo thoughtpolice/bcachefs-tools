@@ -1236,6 +1236,36 @@ err:
 	return err;
 }
 
+char *device_set_failed(const char *dev_uuid, const char *set_uuid) {
+	int ret, bcachefd;
+	char *err = NULL;
+	uuid_le dev, set;
+	struct bch_ioctl_disk_failed df;
+
+	bcachefd = open("/dev/bcache", O_RDWR);
+	if (bcachefd < 0) {
+		err = "Can't open bcache device";
+		goto err;
+	}
+
+	uuid_parse(dev_uuid, dev.b);
+	uuid_parse(set_uuid, set.b);
+	df.dev_uuid = dev;
+	df.set_uuid = set;
+
+	ret = ioctl(bcachefd, BCH_IOCTL_SET_DISK_FAILED, &df);
+	if (ret < 0) {
+		char tmp[128];
+		snprintf(tmp, 128, "ioctl set disk failed error %s\n",
+				strerror(ret));
+		err = strdup(tmp);
+	}
+
+err:
+	close(bcachefd);
+	return err;
+}
+
 char *probe(char *dev, int udev)
 {
 	struct cache_sb sb;

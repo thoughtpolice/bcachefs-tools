@@ -110,7 +110,7 @@ char *add_devices(char *const *, char *);
 char *remove_device(const char *, bool);
 char *bcache_get_capacity(const char *, const char *, bool);
 char *dev_name(const char *);
-
+char *device_set_failed(const char *dev_uuid, const char *set_uuid);
 
 #define csum_set(i, type)						\
 ({									\

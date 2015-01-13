@@ -99,6 +99,10 @@ bool stats_hour = false;
 bool stats_day = false;
 bool stats_total = false;
 
+/* set_failed globals */
+static const char *failed_uuid = NULL;
+static const char *dev_failed_uuid = NULL;
+
 /* make-bcache option setters */
 static int set_block_size(NihOption *option, const char *arg)
 {
@@ -251,6 +255,12 @@ static NihOption stats_options[] = {
 	{0, "hour-stats", N_("stats accumulated in last hour"), NULL, NULL, &stats_hour, NULL},
 	{0, "day-stats", N_("stats accumulated in last day"), NULL, NULL, &stats_day, NULL},
 	{0, "total-stats", N_("stats accumulated in total"), NULL, NULL, &stats_total, NULL},
+	NIH_OPTION_LAST
+};
+
+static NihOption set_failed_options[] = {
+	{'u', "set", N_("cache_set UUID"), NULL, "UUID", &failed_uuid, NULL},
+	{'d', "dev", N_("dev UUID"), NULL, "UUID", &dev_failed_uuid, NULL},
 	NIH_OPTION_LAST
 };
 
@@ -784,6 +794,30 @@ err:
 	return -1;
 }
 
+int bcache_set_failed(NihCommand *command, char *const *args)
+{
+	int i;
+	char *err = NULL;
+
+	if (!failed_uuid) {
+		printf("Pass in a cacheset uuid\n");
+		return -1;
+	}
+
+	if (!dev_failed_uuid) {
+		printf("Pass in a dev uuid\n");
+		return -1;
+	}
+
+	err = device_set_failed(dev_failed_uuid, failed_uuid);
+	if (err) {
+		printf("bcache_set_failed_ioctl error: %s\n", err);
+		return -1;
+	}
+
+	return 0;
+}
+
 static NihCommand commands[] = {
 	{"format", N_("format <list of drives>"),
 		  "Format one or a list of devices with bcache datastructures."
@@ -834,6 +868,10 @@ static NihCommand commands[] = {
 		  "List various bcache statistics",
 		  N_("List various bcache statistics"),
 		  NULL, stats_options, bcache_stats},
+	{"set-failed", N_("set-failed --set=UUID --dev=UUID"),
+		"Sets a device to the FAILED state",
+		N_("Sets a device to the FAILED state"),
+		NULL, set_failed_options, bcache_set_failed},
 	NIH_COMMAND_LAST
 };
 
