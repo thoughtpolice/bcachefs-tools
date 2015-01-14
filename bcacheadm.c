@@ -672,10 +672,15 @@ int bcache_status(NihCommand *command, char *const *args)
 
 		for (j = 0; j < dev_count; j++) {
 			if (!strcmp(uuid_str, dev_uuids[j])) {
-				snprintf(dev_state, MAX_PATH, "%s", cache_state[CACHE_STATE(m)]);
+				snprintf(dev_state, MAX_PATH, "%s",
+						cache_state[CACHE_STATE(m)]);
 				break;
 			} else if (j == dev_count - 1) {
-				snprintf(dev_state, MAX_PATH, "%s", "missing");
+				if (!strcmp(cache_state[CACHE_STATE(m)], "active"))
+					snprintf(dev_state, MAX_PATH, "%s", "missing");
+				else
+					snprintf(dev_state, MAX_PATH, "%s",
+							cache_state[CACHE_STATE(m)]);
 				break;
 			}
 		}
