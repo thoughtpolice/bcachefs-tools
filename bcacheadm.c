@@ -58,9 +58,6 @@ char *metadata_replicas = 0;
 char *data_replicas = 0;
 char *tier = 0;
 
-/* add-dev globals */
-char *add_dev_uuid = NULL;
-
 /* rm-dev globals */
 bool force_remove = false;
 
@@ -100,7 +97,6 @@ bool stats_day = false;
 bool stats_total = false;
 
 /* set_failed globals */
-static const char *failed_uuid = NULL;
 static const char *dev_failed_uuid = NULL;
 
 /* make-bcache option setters */
@@ -205,7 +201,6 @@ static NihOption bcache_unregister_options[] = {
 };
 
 static NihOption bcache_add_device_options[] = {
-	{'u', "set", N_("cacheset uuid"), NULL, "UUID", &add_dev_uuid, NULL},
 	NIH_OPTION_LAST
 };
 
@@ -259,7 +254,6 @@ static NihOption stats_options[] = {
 };
 
 static NihOption set_failed_options[] = {
-	{'u', "set", N_("cache_set UUID"), NULL, "UUID", &failed_uuid, NULL},
 	{'d', "dev", N_("dev UUID"), NULL, "UUID", &dev_failed_uuid, NULL},
 	NIH_OPTION_LAST
 };
@@ -422,12 +416,7 @@ int bcache_add_devices(NihCommand *command, char *const *args)
 {
 	char *err;
 
-	if (!add_dev_uuid) {
-		printf("Must specify a cacheset uuid to add the disk to\n");
-		return -1;
-	}
-
-	err = add_devices(args, add_dev_uuid);
+	err = add_devices(args);
 	if (err) {
 		printf("bcache_add_devices error: %s\n", err);
 		return -1;
@@ -804,17 +793,12 @@ int bcache_set_failed(NihCommand *command, char *const *args)
 	int i;
 	char *err = NULL;
 
-	if (!failed_uuid) {
-		printf("Pass in a cacheset uuid\n");
-		return -1;
-	}
-
 	if (!dev_failed_uuid) {
 		printf("Pass in a dev uuid\n");
 		return -1;
 	}
 
-	err = device_set_failed(dev_failed_uuid, failed_uuid);
+	err = device_set_failed(dev_failed_uuid);
 	if (err) {
 		printf("bcache_set_failed_ioctl error: %s\n", err);
 		return -1;
@@ -841,7 +825,7 @@ static NihCommand commands[] = {
 		     "Unregisters a list of devices",
 		     N_("Unregisters a list of devices"),
 		     NULL, bcache_unregister_options, bcache_unregister},
-	{"add-devs", N_("add-devs --set=UUID --tier=# <list of devices>"),
+	{"add-devs", N_("add-devs --tier=# <list of devices>"),
 		"Adds a list of devices to a cacheset",
 		N_("Adds a list of devices to a cacheset"),
 		NULL, bcache_add_device_options, bcache_add_devices},
@@ -873,7 +857,7 @@ static NihCommand commands[] = {
 		  "List various bcache statistics",
 		  N_("List various bcache statistics"),
 		  NULL, stats_options, bcache_stats},
-	{"set-failed", N_("set-failed --set=UUID --dev=UUID"),
+	{"set-failed", N_("set-failed --dev=UUID"),
 		"Sets a device to the FAILED state",
 		N_("Sets a device to the FAILED state"),
 		NULL, set_failed_options, bcache_set_failed},

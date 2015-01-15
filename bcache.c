@@ -1180,12 +1180,12 @@ err:
 	return err;
 }
 
-char *add_devices(char *const *devs, char *uuid)
+char *add_devices(char *const *devs)
 {
 	int ret, bcachefd;
 	char *err = NULL;
 
-	bcachefd = open("/dev/bcache", O_RDWR);
+	bcachefd = open("/dev/bcache_extent0", O_RDWR);
 	if (bcachefd < 0) {
 		err = "Can't open bcache device";
 		goto err;
@@ -1193,7 +1193,6 @@ char *add_devices(char *const *devs, char *uuid)
 
 	struct bch_ioctl_add_disks ia;
 	ia.devs = devs;
-	ia.uuid = uuid;
 
 	ret = ioctl(bcachefd, BCH_IOCTL_ADD_DISKS, &ia);
 	if (ret < 0) {
@@ -1213,7 +1212,7 @@ char *remove_device(const char *dev, bool force)
 	int ret, bcachefd;
 	char *err = NULL;
 
-	bcachefd = open("/dev/bcache", O_RDWR);
+	bcachefd = open("/dev/bcache_extent0", O_RDWR);
 	if (bcachefd < 0) {
 		err = "Can't open bcache device";
 		goto err;
@@ -1236,22 +1235,20 @@ err:
 	return err;
 }
 
-char *device_set_failed(const char *dev_uuid, const char *set_uuid) {
+char *device_set_failed(const char *dev_uuid) {
 	int ret, bcachefd;
 	char *err = NULL;
-	uuid_le dev, set;
+	uuid_le dev;
 	struct bch_ioctl_disk_failed df;
 
-	bcachefd = open("/dev/bcache", O_RDWR);
+	bcachefd = open("/dev/bcache_extent0", O_RDWR);
 	if (bcachefd < 0) {
 		err = "Can't open bcache device";
 		goto err;
 	}
 
 	uuid_parse(dev_uuid, dev.b);
-	uuid_parse(set_uuid, set.b);
 	df.dev_uuid = dev;
-	df.set_uuid = set;
 
 	ret = ioctl(bcachefd, BCH_IOCTL_SET_DISK_FAILED, &df);
 	if (ret < 0) {

@@ -106,11 +106,11 @@ char *unregister_bcache(char *const *);
 char *probe(char *, int);
 char *read_stat_dir(DIR *, char *, char *, char *);
 char *find_matching_uuid(char *, char *, const char*);
-char *add_devices(char *const *, char *);
+char *add_devices(char *const *);
 char *remove_device(const char *, bool);
 char *bcache_get_capacity(const char *, const char *, bool);
 char *dev_name(const char *);
-char *device_set_failed(const char *dev_uuid, const char *set_uuid);
+char *device_set_failed(const char *dev_uuid);
 
 #define csum_set(i, type)						\
 ({									\
