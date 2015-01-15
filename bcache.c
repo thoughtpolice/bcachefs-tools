@@ -434,7 +434,7 @@ unsigned hatoi_validate(const char *s, const char *msg)
 static void do_write_sb(int fd, struct cache_sb *sb)
 {
 	char zeroes[SB_START] = {0};
-	size_t bytes = ((void *) bset_bkey_last(sb)) - (void *) sb;
+	size_t bytes = ((void *) __bset_bkey_last(sb)) - (void *) sb;
 
 	/* Zero start of disk */
 	if (pwrite(fd, zeroes, SB_START, 0) != SB_START) {
@@ -807,11 +807,6 @@ void show_super_backingdev(struct cache_sb *sb, bool force_csum)
 	if (sb->version == BCACHE_SB_VERSION_BDEV) {
 		first_sector = BDEV_DATA_START_DEFAULT;
 	} else {
-		if (sb->keys == 1 || sb->d[0]) {
-			fprintf(stderr,
-				"Possible experimental format detected, bailing\n");
-			exit(3);
-		}
 		first_sector = sb->data_offset;
 	}
 
@@ -825,7 +820,7 @@ void show_super_backingdev(struct cache_sb *sb, bool force_csum)
 
 static void show_cache_member(struct cache_sb *sb, unsigned i)
 {
-	struct cache_member *m = ((struct cache_member *) sb->d) + i;
+	struct cache_member *m = sb->members + i;
 
 	printf("cache.state\t%s\n",		cache_state[CACHE_STATE(m)]);
 

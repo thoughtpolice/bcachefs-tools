@@ -653,7 +653,7 @@ int bcache_status(NihCommand *command, char *const *args)
 
 	for (i = 0; i < seq_sb->nr_in_set; i++) {
 		char uuid_str[40];
-		struct cache_member *m = ((struct cache_member *) seq_sb->d) + i;
+		struct cache_member *m = seq_sb->members + i;
 		char dev_state[32];
 		int j;
 

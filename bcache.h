@@ -30,6 +30,21 @@ typedef __s64	s64;
 	(void) (&_max1 == &_max2);		\
 	_max1 > _max2 ? _max1 : _max2; })
 
+#define __bkey_idx(_set, _offset)				\
+	((_set)->_data + (_offset))
+
+#define bkey_idx(_set, _offset)					\
+	((typeof(&(_set)->start[0])) __bkey_idx((_set), (_offset)))
+
+#define bkey_next(_k)						\
+	((typeof(_k)) __bkey_idx(_k, (_k)->u64s))
+
+#define __bset_bkey_last(_set)					\
+	 __bkey_idx((_set), (_set)->keys)
+
+#define bset_bkey_last(_set)					\
+	 bkey_idx((_set), (_set)->keys)
+
 extern const char * const cache_state[];
 extern const char * const replacement_policies[];
 extern const char * const csum_types[];
@@ -115,7 +130,7 @@ char *device_set_failed(const char *dev_uuid);
 #define csum_set(i, type)						\
 ({									\
 	void *start = ((void *) (i)) + sizeof(uint64_t);		\
-	void *end = bset_bkey_last(i);					\
+	void *end = __bset_bkey_last(i);				\
 									\
 	bch_checksum(type, start, end - start);				\
 })
