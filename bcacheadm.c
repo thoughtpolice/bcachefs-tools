@@ -41,6 +41,7 @@ int bdev = -1;
 int devs = 0;
 char *cache_devices[MAX_DEVS];
 int tier_mapping[MAX_DEVS];
+unsigned replacement_policy_mapping[MAX_DEVS];
 char *backing_devices[MAX_DEVS];
 char *backing_dev_labels[MAX_DEVS];
 size_t i, nr_backing_devices = 0, nr_cache_devices = 0;
@@ -48,7 +49,8 @@ unsigned block_size = 0;
 unsigned bucket_sizes[MAX_DEVS];
 int num_bucket_sizes = 0;
 int writeback = 0, discard = 0, wipe_bcache = 0;
-unsigned replication_set = 0, replacement_policy = 0;
+unsigned replication_set = 0;
+char *replacement_policy = 0;
 uint64_t data_offset = BDEV_DATA_START_DEFAULT;
 char *label = NULL;
 struct cache_sb *cache_set_sb = NULL;
@@ -117,7 +119,26 @@ static int set_cache(NihOption *option, const char *arg)
 		if(ntier == 0 || ntier == 1)
 			tier_mapping[nr_cache_devices] = ntier;
 		else
-			printf("Invalid tier\n");
+			printf("Invalid tier %s\n", tier);
+	}
+
+	if (!replacement_policy)
+		replacement_policy_mapping[nr_cache_devices] = 0;
+	else {
+		int i = 0;
+
+		while (replacement_policies[i] != NULL) {
+			if (!strcmp(replacement_policy,
+				    replacement_policies[i])) {
+				replacement_policy_mapping[nr_cache_devices] = i;
+				break;
+			}
+			i++;
+		}
+
+		if (replacement_policies[i] == NULL)
+			printf("Invalid replacement policy: %s\n",
+			       replacement_policy);
 	}
 
 	devs++;
@@ -322,7 +343,7 @@ int make_bcache(NihCommand *command, char *const *args)
 		next_cache_device(cache_set_sb,
 				  replication_set,
 				  tier_mapping[i],
-				  replacement_policy,
+				  replacement_policy_mapping[i],
 				  discard);
 
 	if (!cache_set_sb->nr_in_set && !nr_backing_devices) {
