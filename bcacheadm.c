@@ -48,7 +48,7 @@ size_t i, nr_backing_devices = 0, nr_cache_devices = 0;
 unsigned block_size = 0;
 unsigned bucket_sizes[MAX_DEVS];
 int num_bucket_sizes = 0;
-int writeback = 0, discard = 0, wipe_bcache = 0;
+int writeback = 0, writearound = 0, discard = 0, wipe_bcache = 0;
 unsigned replication_set = 0;
 char *replacement_policy = 0;
 uint64_t data_offset = BDEV_DATA_START_DEFAULT;
@@ -204,6 +204,7 @@ static NihOption make_bcache_options[] = {
 	{0, "wipe-bcache",	N_("destroy existing bcache data if present"),		NULL, NULL, &wipe_bcache, NULL},
 	{0, "discard",		N_("enable discards"),		NULL, NULL, &discard,		NULL},
 	{0, "writeback",	N_("enable writeback"),		NULL, NULL, &writeback, 	NULL},
+	{0, "writearound",	N_("enable writearound"),	NULL, NULL, &writearound, 	NULL},
 
 	NIH_OPTION_LAST
 };
@@ -290,6 +291,8 @@ int make_bcache(NihCommand *command, char *const *args)
 	int cache_dev_fd[devs];
 
 	int backing_dev_fd[devs];
+
+	unsigned cache_mode;
 
 	cache_set_sb = calloc(1, sizeof(*cache_set_sb) +
 				     sizeof(struct cache_member) * devs);
@@ -380,10 +383,17 @@ int make_bcache(NihCommand *command, char *const *args)
 	write_cache_sbs(cache_dev_fd, cache_set_sb, block_size,
 					bucket_sizes, num_bucket_sizes);
 
+	if (writeback)
+		cache_mode = CACHE_MODE_WRITEBACK;
+	else if (writearound)
+		cache_mode = CACHE_MODE_WRITEAROUND;
+	else
+		cache_mode = CACHE_MODE_WRITETHROUGH;
+
 	for (i = 0; i < nr_backing_devices; i++)
 		write_backingdev_sb(backing_dev_fd[i],
 				    block_size, bucket_sizes,
-				    writeback, data_offset,
+				    cache_mode, data_offset,
 				    backing_dev_labels[i],
 				    cache_set_sb->set_uuid);
 

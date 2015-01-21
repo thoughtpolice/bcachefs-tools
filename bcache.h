@@ -46,8 +46,8 @@ uint64_t bch_checksum(unsigned, const void *, size_t);
 uint64_t getblocks(int);
 uint64_t hatoi(const char *);
 unsigned hatoi_validate(const char *, const char *);
-void write_backingdev_sb(int, unsigned, unsigned *,	bool, uint64_t,
-				const char *, uuid_le);
+void write_backingdev_sb(int, unsigned, unsigned *, unsigned, uint64_t,
+			 const char *, uuid_le);
 int dev_open(const char *, bool);
 void write_cache_sbs(int *, struct cache_sb *, unsigned, unsigned *, int);
 void next_cache_device(struct cache_sb *, unsigned, int, unsigned, bool);

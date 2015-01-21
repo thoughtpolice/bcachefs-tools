@@ -247,7 +247,10 @@ int main(int argc, char **argv)
 	for (i = 0; i < nr_backing_devices; i++)
 		write_backingdev_sb(backing_dev_fd[i],
 				    block_size, bucket_sizes,
-				    writeback, data_offset,
+				    writeback
+					? CACHE_MODE_WRITEBACK
+					: CACHE_MODE_WRITETHROUGH,
+				    data_offset,
 				    backing_dev_labels[i],
 				    cache_set_sb->set_uuid);
 

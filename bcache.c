@@ -452,7 +452,7 @@ static void do_write_sb(int fd, struct cache_sb *sb)
 }
 
 void write_backingdev_sb(int fd, unsigned block_size, unsigned *bucket_sizes,
-				bool writeback, uint64_t data_offset,
+				unsigned mode, uint64_t data_offset,
 				const char *label,
 				uuid_le set_uuid)
 {
@@ -474,9 +474,7 @@ void write_backingdev_sb(int fd, unsigned block_size, unsigned *bucket_sizes,
 	if (label)
 		memcpy(sb.label, label, SB_LABEL_SIZE);
 
-	SET_BDEV_CACHE_MODE(&sb, writeback
-			    ? CACHE_MODE_WRITEBACK
-			    : CACHE_MODE_WRITETHROUGH);
+	SET_BDEV_CACHE_MODE(&sb, mode);
 
 	if (data_offset != BDEV_DATA_START_DEFAULT) {
 		sb.version = BCACHE_SB_VERSION_BDEV_WITH_OFFSET;
