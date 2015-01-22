@@ -297,16 +297,18 @@ int make_bcache(NihCommand *command, char *const *args)
 	cache_set_sb = calloc(1, sizeof(*cache_set_sb) +
 				     sizeof(struct cache_member) * devs);
 
+	uuid_generate(cache_set_sb->set_uuid.b);
+
 	if (cache_set_uuid) {
-		if(uuid_parse(cache_set_uuid, cache_set_sb->set_uuid.b)) {
+		if(uuid_parse(cache_set_uuid, cache_set_sb->user_uuid.b)) {
 			fprintf(stderr, "Bad uuid\n");
 			return -1;
 		}
 	} else {
-		uuid_generate(cache_set_sb->set_uuid.b);
+		uuid_generate(cache_set_sb->user_uuid.b);
 	}
 
-	if (label) 
+	if (label)
 		memcpy(cache_set_sb->label, label, sizeof(cache_set_sb->label));
 
 	if (csum_type) {
@@ -340,9 +342,10 @@ int make_bcache(NihCommand *command, char *const *args)
 		exit(EXIT_FAILURE);
 	}
 
-	if(!bucket_sizes[0]) bucket_sizes[0] = 1024;
+	if (!bucket_sizes[0])
+		bucket_sizes[0] = 1024;
 
-	for(i = 0; i < nr_cache_devices; i++)
+	for (i = 0; i < nr_cache_devices; i++)
 		next_cache_device(cache_set_sb,
 				  replication_set,
 				  tier_mapping[i],
@@ -381,7 +384,7 @@ int make_bcache(NihCommand *command, char *const *args)
 		backing_dev_fd[i] = dev_open(backing_devices[i], wipe_bcache);
 
 	write_cache_sbs(cache_dev_fd, cache_set_sb, block_size,
-					bucket_sizes, num_bucket_sizes);
+			bucket_sizes, num_bucket_sizes);
 
 	if (writeback)
 		cache_mode = CACHE_MODE_WRITEBACK;
@@ -395,6 +398,7 @@ int make_bcache(NihCommand *command, char *const *args)
 				    block_size, bucket_sizes,
 				    cache_mode, data_offset,
 				    backing_dev_labels[i],
+				    cache_set_sb->user_uuid,
 				    cache_set_sb->set_uuid);
 
 
@@ -583,7 +587,7 @@ int bcache_query_devs(NihCommand *command, char *const *args)
 			char *clus_uuid = (char *)sb->label;
 
 			uuid_unparse(sb->set_uuid.b, set_uuid_str);
-			uuid_unparse(sb->uuid.b, dev_uuid_str);
+			uuid_unparse(sb->disk_uuid.b, dev_uuid_str);
 			if (!strcmp(clus_uuid, ""))
 				clus_uuid = "None";
 

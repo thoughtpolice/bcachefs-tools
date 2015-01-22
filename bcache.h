@@ -40,10 +40,10 @@ typedef __s64	s64;
 	((typeof(_k)) __bkey_idx(_k, (_k)->u64s))
 
 #define __bset_bkey_last(_set)					\
-	 __bkey_idx((_set), (_set)->keys)
+	 __bkey_idx((_set), (_set)->u64s)
 
 #define bset_bkey_last(_set)					\
-	 bkey_idx((_set), (_set)->keys)
+	 bkey_idx((_set), (_set)->u64s)
 
 extern const char * const cache_state[];
 extern const char * const replacement_policies[];
@@ -62,7 +62,7 @@ uint64_t getblocks(int);
 uint64_t hatoi(const char *);
 unsigned hatoi_validate(const char *, const char *);
 void write_backingdev_sb(int, unsigned, unsigned *, unsigned, uint64_t,
-			 const char *, uuid_le);
+			 const char *, uuid_le, uuid_le);
 int dev_open(const char *, bool);
 void write_cache_sbs(int *, struct cache_sb *, unsigned, unsigned *, int);
 void next_cache_device(struct cache_sb *, unsigned, int, unsigned, bool);

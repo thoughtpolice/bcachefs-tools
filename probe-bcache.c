@@ -72,7 +72,7 @@ int main(int argc, char **argv)
 		if (memcmp(&sb.magic, &BCACHE_MAGIC, sizeof(sb.magic)))
 			continue;
 
-		uuid_unparse(sb.uuid.b, uuid);
+		uuid_unparse(sb.disk_uuid.b, uuid);
 
 		if (udev)
 			printf("ID_FS_UUID=%s\n"

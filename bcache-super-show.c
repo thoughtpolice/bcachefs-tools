@@ -70,8 +70,8 @@ int main(int argc, char **argv)
 		exit(2);
 	}
 
-	if (sb->keys) {
-		bytes = sizeof(*sb) + sb->keys * sizeof(uint64_t);
+	if (sb->u64s) {
+		bytes = sizeof(*sb) + sb->u64s * sizeof(uint64_t);
 		sb = malloc(bytes);
 
 		if (pread(fd, sb, bytes, SB_START) != bytes) {

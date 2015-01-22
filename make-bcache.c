@@ -252,6 +252,7 @@ int main(int argc, char **argv)
 					: CACHE_MODE_WRITETHROUGH,
 				    data_offset,
 				    backing_dev_labels[i],
+				    cache_set_sb->user_uuid,
 				    cache_set_sb->set_uuid);
 
 	return 0;

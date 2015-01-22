@@ -452,9 +452,8 @@ static void do_write_sb(int fd, struct cache_sb *sb)
 }
 
 void write_backingdev_sb(int fd, unsigned block_size, unsigned *bucket_sizes,
-				unsigned mode, uint64_t data_offset,
-				const char *label,
-				uuid_le set_uuid)
+			 unsigned mode, uint64_t data_offset, const char *label,
+			 uuid_le user_uuid, uuid_le set_uuid)
 {
 	char uuid_str[40], set_uuid_str[40];
 	struct cache_sb sb;
@@ -464,12 +463,12 @@ void write_backingdev_sb(int fd, unsigned block_size, unsigned *bucket_sizes,
 	sb.offset	= SB_SECTOR;
 	sb.version	= BCACHE_SB_VERSION_BDEV;
 	sb.magic	= BCACHE_MAGIC;
-	uuid_generate(sb.uuid.b);
+	uuid_generate(sb.disk_uuid.b);
+	sb.user_uuid	= user_uuid;
 	sb.set_uuid	= set_uuid;
-	sb.bucket_size	= bucket_sizes[0];
 	sb.block_size	= block_size;
 
-	uuid_unparse(sb.uuid.b, uuid_str);
+	uuid_unparse(sb.disk_uuid.b, uuid_str);
 	uuid_unparse(sb.set_uuid.b, set_uuid_str);
 	if (label)
 		memcpy(sb.label, label, SB_LABEL_SIZE);
@@ -478,7 +477,7 @@ void write_backingdev_sb(int fd, unsigned block_size, unsigned *bucket_sizes,
 
 	if (data_offset != BDEV_DATA_START_DEFAULT) {
 		sb.version = BCACHE_SB_VERSION_BDEV_WITH_OFFSET;
-		sb.data_offset = data_offset;
+		sb.bdev_data_offset = data_offset;
 	}
 
 	sb.csum = csum_set(&sb, BCH_CSUM_CRC64);
@@ -558,8 +557,8 @@ static unsigned min_bucket_size(int num_bucket_sizes, unsigned *bucket_sizes)
 }
 
 void write_cache_sbs(int *fds, struct cache_sb *sb,
-			    unsigned block_size, unsigned *bucket_sizes,
-				int num_bucket_sizes)
+		     unsigned block_size, unsigned *bucket_sizes,
+		     int num_bucket_sizes)
 {
 	char uuid_str[40], set_uuid_str[40];
 	size_t i;
@@ -569,7 +568,7 @@ void write_cache_sbs(int *fds, struct cache_sb *sb,
 	sb->version	= BCACHE_SB_VERSION_CDEV_V3;
 	sb->magic	= BCACHE_MAGIC;
 	sb->block_size	= block_size;
-	sb->keys	= bch_journal_buckets_offset(sb);
+	sb->u64s	= bch_journal_buckets_offset(sb);
 
 	/*
 	 * don't have a userspace crc32c implementation handy, just always use
@@ -581,34 +580,40 @@ void write_cache_sbs(int *fds, struct cache_sb *sb,
 		struct cache_member *m = sb->members + i;
 
 		if (num_bucket_sizes <= 1) {
-			sb->bucket_size = bucket_sizes[0];
+			m->bucket_size = bucket_sizes[0];
 		} else {
 			if (!bucket_sizes[i]) {
 				printf("No bucket size specified for cache %d,"
 				       " using the default of %d",
 				       i, bucket_sizes[0]);
-				sb->bucket_size = bucket_sizes[0];
+				m->bucket_size = bucket_sizes[0];
 			} else {
-				sb->bucket_size	= bucket_sizes[i];
+				m->bucket_size	= bucket_sizes[i];
 			}
 		}
+
+		m->nbuckets		= getblocks(fds[i]) / m->bucket_size;
+		m->first_bucket		= (23 / m->bucket_size) + 1;
+
+		if (m->nbuckets < 1 << 7) {
+			fprintf(stderr, "Not enough buckets: %llu, need %u\n",
+				m->nbuckets, 1 << 7);
+			exit(EXIT_FAILURE);
+		}
+	}
+
+	for (i = 0; i < sb->nr_in_set; i++) {
+		struct cache_member *m = sb->members + i;
+
 		SET_CACHE_BTREE_NODE_SIZE(sb, min_size);
 
 
-		sb->uuid = m->uuid;
-		sb->nbuckets		= getblocks(fds[i]) / sb->bucket_size;
+		sb->disk_uuid = m->uuid;
 		sb->nr_this_dev		= i;
-		sb->first_bucket	= (23 / sb->bucket_size) + 1;
-
-		if (sb->nbuckets < 1 << 7) {
-			fprintf(stderr, "Not enough buckets: %llu, need %u\n",
-				sb->nbuckets, 1 << 7);
-			exit(EXIT_FAILURE);
-		}
 
 		sb->csum = csum_set(sb, CACHE_SB_CSUM_TYPE(sb));
 
-		uuid_unparse(sb->uuid.b, uuid_str);
+		uuid_unparse(sb->disk_uuid.b, uuid_str);
 		uuid_unparse(sb->set_uuid.b, set_uuid_str);
 		printf("UUID:			%s\n"
 		       "Set UUID:		%s\n"
@@ -621,12 +626,12 @@ void write_cache_sbs(int *fds, struct cache_sb *sb,
 		       "first_bucket:		%u\n",
 		       uuid_str, set_uuid_str,
 		       (unsigned) sb->version,
-		       sb->nbuckets,
+		       m->nbuckets,
 		       sb->block_size,
-		       sb->bucket_size,
+		       m->bucket_size,
 		       sb->nr_in_set,
 		       sb->nr_this_dev,
-		       sb->first_bucket);
+		       m->first_bucket);
 
 		do_write_sb(fds[i], sb);
 	}
@@ -716,7 +721,7 @@ static void print_encode(char *in)
 }
 
 static void show_uuid_only(struct cache_sb *sb, char *dev_uuid) {
-	uuid_unparse(sb->uuid.b, dev_uuid);
+	uuid_unparse(sb->disk_uuid.b, dev_uuid);
 }
 
 static void show_super_common(struct cache_sb *sb, bool force_csum)
@@ -789,7 +794,7 @@ static void show_super_common(struct cache_sb *sb, bool force_csum)
 		printf("(empty)");
 	putchar('\n');
 
-	uuid_unparse(sb->uuid.b, uuid);
+	uuid_unparse(sb->disk_uuid.b, uuid);
 	printf("dev.uuid\t\t%s\n", uuid);
 
 	uuid_unparse(sb->set_uuid.b, uuid);
@@ -805,7 +810,7 @@ void show_super_backingdev(struct cache_sb *sb, bool force_csum)
 	if (sb->version == BCACHE_SB_VERSION_BDEV) {
 		first_sector = BDEV_DATA_START_DEFAULT;
 	} else {
-		first_sector = sb->data_offset;
+		first_sector = sb->bdev_data_offset;
 	}
 
 	printf("dev.data.first_sector\t%ju\n"
@@ -818,7 +823,33 @@ void show_super_backingdev(struct cache_sb *sb, bool force_csum)
 
 static void show_cache_member(struct cache_sb *sb, unsigned i)
 {
-	struct cache_member *m = sb->members + i;
+
+}
+
+void show_super_cache(struct cache_sb *sb, bool force_csum)
+{
+	struct cache_member *m = sb->members + sb->nr_this_dev;
+
+	show_super_common(sb, force_csum);
+
+	printf("dev.sectors_per_block\t%u\n"
+	       "dev.sectors_per_bucket\t%u\n",
+	       sb->block_size,
+	       m->bucket_size);
+
+	// total_sectors includes the superblock;
+	printf("dev.cache.first_sector\t%u\n"
+	       "dev.cache.cache_sectors\t%llu\n"
+	       "dev.cache.total_sectors\t%llu\n"
+	       "dev.cache.ordered\t%s\n"
+	       "dev.cache.pos\t\t%u\n"
+	       "dev.cache.setsize\t\t%u\n",
+	       m->bucket_size * m->first_bucket,
+	       m->bucket_size * (m->nbuckets - m->first_bucket),
+	       m->bucket_size * m->nbuckets,
+	       CACHE_SYNC(sb) ? "yes" : "no",
+	       sb->nr_this_dev,
+	       sb->nr_in_set);
 
 	printf("cache.state\t%s\n",		cache_state[CACHE_STATE(m)]);
 
@@ -833,32 +864,6 @@ static void show_cache_member(struct cache_sb *sb, unsigned i)
 
 	printf("cache.replacement\t%s\n",	replacement_policies[CACHE_REPLACEMENT(m)]);
 	printf("cache.discard\t%llu\n",		CACHE_DISCARD(m));
-}
-
-void show_super_cache(struct cache_sb *sb, bool force_csum)
-{
-	show_super_common(sb, force_csum);
-
-	printf("dev.sectors_per_block\t%u\n"
-	       "dev.sectors_per_bucket\t%u\n",
-	       sb->block_size,
-	       sb->bucket_size);
-
-	// total_sectors includes the superblock;
-	printf("dev.cache.first_sector\t%u\n"
-	       "dev.cache.cache_sectors\t%llu\n"
-	       "dev.cache.total_sectors\t%llu\n"
-	       "dev.cache.ordered\t%s\n"
-	       "dev.cache.pos\t\t%u\n"
-	       "dev.cache.setsize\t\t%u\n",
-	       sb->bucket_size * sb->first_bucket,
-	       sb->bucket_size * (sb->nbuckets - sb->first_bucket),
-	       sb->bucket_size * sb->nbuckets,
-	       CACHE_SYNC(sb) ? "yes" : "no",
-	       sb->nr_this_dev,
-	       sb->nr_in_set);
-
-	show_cache_member(sb, sb->nr_this_dev);
 }
 
 static int __sysfs_attr_type(char *attr, const char **attr_arr) {
@@ -915,7 +920,7 @@ struct cache_sb *query_dev(char *dev, bool force_csum,
 			close(fd);
 			free(sb);
 			return NULL;
-		} else if (bytes > sizeof(sb) + sb->keys * sizeof(u64)) {
+		} else if (bytes > sizeof(sb) + sb->u64s * sizeof(u64)) {
 			/* We read the whole superblock */
 			break;
 		}
@@ -1302,7 +1307,7 @@ char *probe(char *dev, int udev)
 		goto err;
 	}
 
-	uuid_unparse(sb.uuid.b, uuid);
+	uuid_unparse(sb.disk_uuid.b, uuid);
 
 	if (udev)
 		printf("ID_FS_UUID=%s\n"
