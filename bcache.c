@@ -1158,13 +1158,13 @@ char *unregister_bcache(char *const *devs)
 	int ret, bcachefd;
 	char *err = NULL;
 
-	bcachefd = open("/dev/bcache", O_RDWR);
+	bcachefd = open("/dev/bcache_extent0", O_RDWR);
 	if (bcachefd < 0) {
 		err = "Can't open bcache device";
 		goto err;
 	}
 
-	ret = ioctl(bcachefd, BCH_IOCTL_UNREGISTER, devs);
+	ret = ioctl(bcachefd, BCH_IOCTL_STOP);
 	if (ret < 0) {
 		char tmp[64];
 		snprintf(tmp, 64, "ioctl unregister error: %s\n",
