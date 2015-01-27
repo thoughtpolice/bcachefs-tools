@@ -64,6 +64,42 @@ const char * const bdev_state[] = {
 	NULL
 };
 
+const char * const set_attrs[] = {
+	"btree_flush_delay",
+	"btree_scan_ratelimit",
+	"bucket_reserve_percent",
+	"cache_reserve_percent",
+	"checksum_type",
+	"congested_read_threshold_us",
+	"congested_write_threshold_us",
+	"data_replicas",
+	"errors",
+	"foreground_target_percent",
+	"gc_sector_percent",
+	"journal_delay_ms",
+	"meta_replicas",
+	"sector_reserve_percent",
+	"tiering_percent",
+	NULL
+};
+
+const char * const cache_attrs[] = {
+	"cache_replacement_policy",
+	"discard",
+	"state",
+	"tier",
+	NULL
+};
+
+const char * const internal_attrs[] = {
+	"btree_shrinker_disabled",
+	"copy_gc_enabled",
+	"foreground_write_rate",
+	"tiering_enabled",
+	"tiering_rate",
+	NULL
+};
+
 char *skip_spaces(const char *str)
 {
 	while (isspace(*str))
@@ -583,8 +619,8 @@ void write_cache_sbs(int *fds, struct cache_sb *sb,
 			m->bucket_size = bucket_sizes[0];
 		} else {
 			if (!bucket_sizes[i]) {
-				printf("No bucket size specified for cache %d,"
-				       " using the default of %d",
+				printf("No bucket size specified for cache %zu,"
+				       " using the default of %u",
 				       i, bucket_sizes[0]);
 				m->bucket_size = bucket_sizes[0];
 			} else {
@@ -821,11 +857,6 @@ void show_super_backingdev(struct cache_sb *sb, bool force_csum)
 	       bdev_state[BDEV_STATE(sb)]);
 }
 
-static void show_cache_member(struct cache_sb *sb, unsigned i)
-{
-
-}
-
 void show_super_cache(struct cache_sb *sb, bool force_csum)
 {
 	struct cache_member *m = sb->members + sb->nr_this_dev;
@@ -866,16 +897,16 @@ void show_super_cache(struct cache_sb *sb, bool force_csum)
 	printf("cache.discard\t%llu\n",		CACHE_DISCARD(m));
 }
 
-static int __sysfs_attr_type(char *attr, const char **attr_arr) {
-	int i, j;
-	for(i = 0; attr_arr[i] != NULL; i++)
+static int __sysfs_attr_type(const char *attr, const char * const *attr_arr)
+{
+	for (unsigned i = 0; attr_arr[i] != NULL; i++)
 		if(!strcmp(attr, attr_arr[i]))
 			return 1;
 	return 0;
 }
 
-enum sysfs_attr sysfs_attr_type(char *attr) {
-	int ret;
+enum sysfs_attr sysfs_attr_type(const char *attr)
+{
 	if(__sysfs_attr_type(attr, set_attrs))
 		return SET_ATTR;
 	if(__sysfs_attr_type(attr, cache_attrs))
@@ -888,13 +919,14 @@ enum sysfs_attr sysfs_attr_type(char *attr) {
 	return -1;
 }
 
-static void __sysfs_attr_list(const char **attr_arr) {
-	int i, j;
-	for (i = 0; attr_arr[i] != NULL; i++)
+static void __sysfs_attr_list(const char * const *attr_arr)
+{
+	for (unsigned i = 0; attr_arr[i] != NULL; i++)
 		printf("%s\n", attr_arr[i]);
 }
 
-void sysfs_attr_list() {
+void sysfs_attr_list()
+{
 	__sysfs_attr_list(set_attrs);
 	__sysfs_attr_list(cache_attrs);
 	__sysfs_attr_list(internal_attrs);
@@ -968,8 +1000,8 @@ char *dev_name(const char *ugly_path) {
 	return strdup(buf);
 }
 
-static void list_cacheset_devs(char *cset_dir, char *cset_name, bool parse_dev_name) {
-	int i = 0;
+static void list_cacheset_devs(char *cset_dir, char *cset_name, bool parse_dev_name)
+{
 	DIR *cachedir, *dir;
 	struct stat cache_stat;
 	char entry[MAX_PATH];
@@ -1017,7 +1049,8 @@ static void list_cacheset_devs(char *cset_dir, char *cset_name, bool parse_dev_n
 	}
 }
 
-char *find_matching_uuid(char *stats_dir, char *subdir, const char *stats_dev_uuid) {
+char *find_matching_uuid(char *stats_dir, char *subdir, const char *stats_dev_uuid)
+{
 	/* Do a query-dev --uuid only to get the uuid
 	 * repeat on each dev until we find a matching one
 	 * append that cache# to subdir and return
@@ -1338,7 +1371,6 @@ char *read_stat_dir(DIR *dir, char *stats_dir, char *stat_name, char *ret)
 	}
 
 	if (S_ISREG(statbuf.st_mode)) {
-		char buf[MAX_PATH];
 		FILE *fp = NULL;
 
 		fp = fopen(entry, "r");
@@ -1356,7 +1388,7 @@ err:
 }
 
 char *bcache_get_capacity(const char *cset_dir, const char *capacity_uuid,
-		bool show_devs)
+			  bool show_devs)
 {
 	char *err = NULL;
 	char bucket_size_path[MAX_PATH];
@@ -1373,7 +1405,6 @@ char *bcache_get_capacity(const char *cset_dir, const char *capacity_uuid,
 	double total_cap = 0, total_free = 0;
 	int precision = 2;
 
-	snprintf(intbuf, 4, "%d", i);
 	snprintf(bucket_size_path, MAX_PATH, "%s/%s/%s/%s", cset_dir,
 			capacity_uuid, "cache0", "bucket_size_bytes");
 	snprintf(nbuckets_path, MAX_PATH, "%s/%s/%s/%s", cset_dir,
@@ -1383,7 +1414,7 @@ char *bcache_get_capacity(const char *cset_dir, const char *capacity_uuid,
 	snprintf(cache_path, MAX_PATH, "%s/%s/%s", cset_dir, capacity_uuid,
 			"cache0");
 
-	while(true) {
+	while (true) {
 		char buf[MAX_PATH];
 		int len;
 		DIR *cache_dir;
@@ -1417,6 +1448,8 @@ char *bcache_get_capacity(const char *cset_dir, const char *capacity_uuid,
 			dev_names[dev_count] = dev_name(buf);
 		}
 
+		snprintf(intbuf, 4, "%d", dev_count);
+
 		/* remove i/stat and append i++/stat */
 		bucket_size_path[strlen(cache_path) - strlen(intbuf)] = 0;
 		nbuckets_path[strlen(cache_path) - strlen(intbuf)] = 0;
@@ -1425,7 +1458,6 @@ char *bcache_get_capacity(const char *cset_dir, const char *capacity_uuid,
 
 		dev_count++;
 
-		snprintf(intbuf, 4, "%d", dev_count);
 		strcat(cache_path, intbuf);
 		strcat(bucket_size_path, intbuf);
 		strcat(nbuckets_path, intbuf);

@@ -1,8 +1,5 @@
-bcache-super-show
-make-bcache
 bcacheadm
 probe-bcache
-bcachectl
 .*
 *.o
 tags

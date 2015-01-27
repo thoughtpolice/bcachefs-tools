@@ -50,6 +50,9 @@ extern const char * const replacement_policies[];
 extern const char * const csum_types[];
 extern const char * const bdev_cache_mode[];
 extern const char * const bdev_state[];
+extern const char * const set_attr[];
+extern const char * const cache_attrs[];
+extern const char * const internal_attrs[];
 
 ssize_t read_string_list(const char *, const char * const[]);
 ssize_t read_string_list_or_die(const char *, const char * const[],
@@ -74,43 +77,7 @@ void show_super_cache(struct cache_sb *, bool);
 
 enum sysfs_attr {SET_ATTR, CACHE_ATTR, INTERNAL_ATTR};
 
-static const char *set_attrs[] = {
-	"btree_flush_delay",
-	"btree_scan_ratelimit",
-	"bucket_reserve_percent",
-	"cache_reserve_percent",
-	"checksum_type",
-	"congested_read_threshold_us",
-	"congested_write_threshold_us",
-	"data_replicas",
-	"errors",
-	"foreground_target_percent",
-	"gc_sector_percent",
-	"journal_delay_ms",
-	"meta_replicas",
-	"sector_reserve_percent",
-	"tiering_percent",
-	NULL
-};
-
-static const char *cache_attrs[] = {
-	"cache_replacement_policy",
-	"discard",
-	"state",
-	"tier",
-	NULL
-};
-
-static const char *internal_attrs[] = {
-	"btree_shrinker_disabled",
-	"copy_gc_enabled",
-	"foreground_write_rate",
-	"tiering_enabled",
-	"tiering_rate",
-	NULL
-};
-
-enum sysfs_attr sysfs_attr_type(char *attr);
+enum sysfs_attr sysfs_attr_type(const char *attr);
 void sysfs_attr_list();
 
 struct cache_sb *query_dev(char *, bool, bool, bool, char *dev_uuid);

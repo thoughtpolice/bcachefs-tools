@@ -20,11 +20,7 @@ make DESTDIR=%buildroot INSTALL=/usr/bin/install -C /bld/$RPM_PACKAGE_NAME insta
 
 %files
 %_bindir/bcacheadm
-%_bindir/bcachectl
-%_bindir/make-bcache
 %_bindir/probe-bcache
-%_bindir/bcache-super-show
-%_libdir/libbcache.a
 %_mandir/man8/*.gz
 %exclude %_prefix/etc/initramfs-tools/hooks/bcache
 %exclude %_prefix/lib/udev/bcache-register

@@ -477,8 +477,6 @@ int bcache_modify(NihCommand *command, char *const *args)
 {
 	char *err;
 	char path[MAX_PATH];
-	DIR *path_dir;
-	struct stat cache_stat;
 	char *attr = args[0];
 	char *val = NULL;
 	int fd = -1;
@@ -604,7 +602,7 @@ int bcache_query_devs(NihCommand *command, char *const *args)
 
 int bcache_status(NihCommand *command, char *const *args)
 {
-	int i, dev_count = 0, seq, nr_in_set = 0;
+	int i, dev_count = 0, seq;
 	struct cache_sb *seq_sb = NULL;
 	char cache_path[MAX_PATH];
 	char *dev_names[MAX_DEVS];
@@ -624,7 +622,6 @@ int bcache_status(NihCommand *command, char *const *args)
 		if (!seq_sb || sb->seq > seq) {
 			seq = sb->seq;
 			seq_sb = sb;
-			nr_in_set = sb->nr_in_set;
 		} else
 			free(sb);
 	}
@@ -825,7 +822,6 @@ err:
 
 int bcache_set_failed(NihCommand *command, char *const *args)
 {
-	int i;
 	char *err = NULL;
 
 	if (!dev_failed_uuid) {
