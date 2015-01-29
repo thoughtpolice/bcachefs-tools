@@ -297,7 +297,18 @@ int make_bcache(NihCommand *command, char *const *args)
 	cache_set_sb = calloc(1, sizeof(*cache_set_sb) +
 				     sizeof(struct cache_member) * devs);
 
-	uuid_generate(cache_set_sb->set_uuid.b);
+	/*
+	 * Currently make the cache-set uuid and user_id same,
+	 * until proper support/usage is added.
+	 */
+        if (cache_set_uuid) {
+		if (uuid_parse(cache_set_uuid, cache_set_sb->set_uuid.b)) {
+			fprintf(stderr, "Bad uuid\n");
+			return -1;
+		}
+        } else {
+		uuid_generate(cache_set_sb->set_uuid.b);
+	}
 
 	if (cache_set_uuid) {
 		if(uuid_parse(cache_set_uuid, cache_set_sb->user_uuid.b)) {
