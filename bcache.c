@@ -505,7 +505,7 @@ void write_backingdev_sb(int fd, unsigned block_size, unsigned *bucket_sizes,
 	sb.block_size	= block_size;
 
 	uuid_unparse(sb.disk_uuid.b, uuid_str);
-	uuid_unparse(sb.set_uuid.b, set_uuid_str);
+	uuid_unparse(sb.user_uuid.b, set_uuid_str);
 	if (label)
 		memcpy(sb.label, label, SB_LABEL_SIZE);
 
@@ -650,7 +650,7 @@ void write_cache_sbs(int *fds, struct cache_sb *sb,
 		sb->csum = csum_set(sb, CACHE_SB_CSUM_TYPE(sb));
 
 		uuid_unparse(sb->disk_uuid.b, uuid_str);
-		uuid_unparse(sb->set_uuid.b, set_uuid_str);
+		uuid_unparse(sb->user_uuid.b, set_uuid_str);
 		printf("UUID:			%s\n"
 		       "Set UUID:		%s\n"
 		       "version:		%u\n"
@@ -833,7 +833,7 @@ static void show_super_common(struct cache_sb *sb, bool force_csum)
 	uuid_unparse(sb->disk_uuid.b, uuid);
 	printf("dev.uuid\t\t%s\n", uuid);
 
-	uuid_unparse(sb->set_uuid.b, uuid);
+	uuid_unparse(sb->user_uuid.b, uuid);
 	printf("cset.uuid\t\t%s\n", uuid);
 }
 

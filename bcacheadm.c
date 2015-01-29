@@ -595,7 +595,7 @@ int bcache_query_devs(NihCommand *command, char *const *args)
 			char set_uuid_str[40], dev_uuid_str[40];
 			char *clus_uuid = (char *)sb->label;
 
-			uuid_unparse(sb->set_uuid.b, set_uuid_str);
+			uuid_unparse(sb->user_uuid.b, set_uuid_str);
 			uuid_unparse(sb->disk_uuid.b, dev_uuid_str);
 			if (!strcmp(clus_uuid, ""))
 				clus_uuid = "None";
@@ -641,7 +641,7 @@ int bcache_status(NihCommand *command, char *const *args)
 		printf("Unable to find a superblock\n");
 		return -1;
 	} else {
-		uuid_unparse(seq_sb->set_uuid.b, set_uuid);
+		uuid_unparse(seq_sb->user_uuid.b, set_uuid);
 		printf("%-50s%-15s%-4s\n", "uuid", "state", "tier");
 	}
 
