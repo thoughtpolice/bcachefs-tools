@@ -613,7 +613,7 @@ int bcache_query_devs(NihCommand *command, char *const *args)
 
 int bcache_status(NihCommand *command, char *const *args)
 {
-	int i, dev_count = 0, seq;
+	int i, dev_count = 0, seq, cache_count = 0;
 	struct cache_sb *seq_sb = NULL;
 	char cache_path[MAX_PATH];
 	char *dev_names[MAX_DEVS];
@@ -653,7 +653,7 @@ int bcache_status(NihCommand *command, char *const *args)
 	 * Get a list of all the devices from sysfs first, then
 	 * compare it to the list we get back from the most up
 	 * to date superblock. If there are any devices in the superblock
-	 * that are not in sysfs, print out 'NOT PRESENT'
+	 * that are not in sysfs, print out 'missing'
 	 */
 	while (true) {
 		char buf[MAX_PATH];
@@ -661,8 +661,11 @@ int bcache_status(NihCommand *command, char *const *args)
 		DIR *cache_dir;
 
 		if(((cache_dir = opendir(cache_path)) == NULL) &&
-		    dev_count < MAX_DEVS)
+		    cache_count > MAX_DEVS)
 			break;
+
+		if (cache_dir)
+			closedir(cache_dir);
 
 		if((len = readlink(cache_path, buf, sizeof(buf) - 1)) != -1) {
 			struct cache_sb *sb;
@@ -682,15 +685,13 @@ int bcache_status(NihCommand *command, char *const *args)
 				free(sb);
 
 			dev_uuids[dev_count] = strdup(dev_uuid);
-		} else {
-			dev_uuids[dev_count] = strdup("Nothing");
-			dev_names[dev_count] = strdup("Nothing");
+		        dev_count++;
 		}
 
 		cache_path[strlen(cache_path) - strlen(intbuf)] = 0;
-		dev_count++;
+		cache_count++;
 
-		snprintf(intbuf, 4, "%d", dev_count);
+		snprintf(intbuf, 4, "%d", cache_count);
 		strcat(cache_path, intbuf);
 	}
 
@@ -701,18 +702,15 @@ int bcache_status(NihCommand *command, char *const *args)
 		int j;
 
 		uuid_unparse(m->uuid.b, uuid_str);
+		snprintf(dev_state, MAX_PATH, "%s",
+                         cache_state[CACHE_STATE(m)]);
 
 		for (j = 0; j < dev_count; j++) {
 			if (!strcmp(uuid_str, dev_uuids[j])) {
-				snprintf(dev_state, MAX_PATH, "%s",
-						cache_state[CACHE_STATE(m)]);
 				break;
 			} else if (j == dev_count - 1) {
 				if (!strcmp(cache_state[CACHE_STATE(m)], "active"))
 					snprintf(dev_state, MAX_PATH, "%s", "missing");
-				else
-					snprintf(dev_state, MAX_PATH, "%s",
-							cache_state[CACHE_STATE(m)]);
 				break;
 			}
 		}
