@@ -835,6 +835,10 @@ static void show_super_common(struct cache_sb *sb, bool force_csum)
 
 	uuid_unparse(sb->user_uuid.b, uuid);
 	printf("cset.uuid\t\t%s\n", uuid);
+
+	uuid_unparse(sb->set_uuid.b, uuid);
+	printf("internal.uuid\t%s\n", uuid);
+
 }
 
 void show_super_backingdev(struct cache_sb *sb, bool force_csum)
@@ -860,8 +864,12 @@ void show_super_backingdev(struct cache_sb *sb, bool force_csum)
 void show_super_cache(struct cache_sb *sb, bool force_csum)
 {
 	struct cache_member *m = sb->members + sb->nr_this_dev;
+	char uuid[16];
 
 	show_super_common(sb, force_csum);
+
+	uuid_unparse(m->uuid.b, uuid);
+	printf("dev.cache.uuid\t%s\n", uuid);
 
 	printf("dev.sectors_per_block\t%u\n"
 	       "dev.sectors_per_bucket\t%u\n",
