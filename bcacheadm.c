@@ -79,6 +79,7 @@ bool udev = false;
 /* list globals */
 char *cset_dir = "/sys/fs/bcache";
 bool list_devs = false;
+static const char *internal_uuid = NULL;
 
 /* status globals */
 bool status_all = false;
@@ -248,6 +249,7 @@ static NihOption query_devs_options[] = {
 static NihOption list_cachesets_options[] = {
 	{'d', "dir", N_("directory"), NULL, NULL, &cset_dir, NULL},
 	{0, "list-devs", N_("list all devices in the cache sets as well"), NULL, NULL, &list_devs, NULL},
+	{0, "internal_uuid", N_("Show the internal UUID for the given cacheset UUID"), NULL, "UUID", &internal_uuid, NULL},
 	NIH_OPTION_LAST
 };
 
@@ -550,13 +552,34 @@ err:
 int bcache_list_cachesets(NihCommand *command, char *const *args)
 {
 	char *err = NULL;
-	err = list_cachesets(cset_dir, list_devs);
-	if (err) {
-		printf("bcache_list_cachesets error :%s\n", err);
-		return -1;
+
+	if (internal_uuid) {
+		char uuid_path[MAX_PATH];
+		DIR *uuid_dir;
+		char buf[MAX_PATH];
+
+		snprintf(uuid_path, MAX_PATH, "%s/%s", cset_dir, internal_uuid);
+
+		err = "uuid does not exist";
+		if((uuid_dir = opendir(uuid_path)) == NULL)
+			goto err;
+
+		err = read_stat_dir(uuid_dir, uuid_path, "/internal/internal_uuid", buf);
+		if (err)
+			goto err;
+		printf("%s", buf);
+		return 0;
 	}
 
+	err = list_cachesets(cset_dir, list_devs);
+	if (err)
+		goto err;
+
 	return 0;
+
+err:
+	printf("bcache_list_cachesets error :%s\n", err);
+	return -1;
 }
 
 int bcache_query_devs(NihCommand *command, char *const *args)
