@@ -24,6 +24,12 @@ typedef __s64	s64;
 #define MAX_PATH		256
 #define MAX_DEVS		MAX_CACHES_PER_SET
 
+#define min(x, y) ({				\
+	typeof(x) _min1 = (x);			\
+	typeof(y) _min2 = (y);			\
+	(void) (&_min1 == &_min2);		\
+	_min1 < _min2 ? _min1 : _min2; })
+
 #define max(x, y) ({				\
 	typeof(x) _max1 = (x);			\
 	typeof(y) _max2 = (y);			\
@@ -67,7 +73,8 @@ unsigned hatoi_validate(const char *, const char *);
 void write_backingdev_sb(int, unsigned, unsigned *, unsigned, uint64_t,
 			 const char *, uuid_le, uuid_le);
 int dev_open(const char *, bool);
-void write_cache_sbs(int *, struct cache_sb *, unsigned, unsigned *, int);
+void write_cache_sbs(int *, struct cache_sb *, unsigned,
+		     unsigned *, int, unsigned);
 void next_cache_device(struct cache_sb *, unsigned, int, unsigned, bool);
 unsigned get_blocksize(const char *);
 long strtoul_or_die(const char *, size_t, const char *);

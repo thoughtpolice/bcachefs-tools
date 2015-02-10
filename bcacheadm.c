@@ -46,6 +46,7 @@ char *backing_devices[MAX_DEVS];
 char *backing_dev_labels[MAX_DEVS];
 size_t i, nr_backing_devices = 0, nr_cache_devices = 0;
 unsigned block_size = 0;
+unsigned btree_node_size = 0;
 unsigned bucket_sizes[MAX_DEVS];
 int num_bucket_sizes = 0;
 int writeback = 0, writearound = 0, discard = 0, wipe_bcache = 0;
@@ -106,6 +107,12 @@ static const char *dev_failed_uuid = NULL;
 static int set_block_size(NihOption *option, const char *arg)
 {
 	block_size = hatoi_validate(arg, "block size");
+	return 0;
+}
+
+static int set_btree_node_size(NihOption *option, const char *arg)
+{
+	btree_node_size = hatoi_validate(arg, "btree node size");
 	return 0;
 }
 
@@ -191,7 +198,10 @@ static NihOption make_bcache_options[] = {
 	//Only one bucket_size supported until a list of bucket sizes is parsed correctly
 	{'b', "bucket",	N_("bucket size"), NULL, "size", NULL, set_bucket_sizes},
 	//Does the default setter automatically convert strings to an int?
-	{'w', "block",	N_("block size (hard sector size of SSD, often 2k"), NULL,"size", NULL, set_block_size},
+	{'w', "block",	N_("block size (hard sector size of SSD, often 2k"), NULL, "size", NULL, set_block_size},
+
+	{'n', "btree-node",	N_("Btree node size, default 256k"), NULL, "size", NULL, set_btree_node_size},
+
 	{'t', "tier",	N_("tier of subsequent devices"), NULL,"#", &tier, NULL},
 	{'p', "cache_replacement_policy", N_("one of (lru|fifo|random)"), NULL,"policy", &replacement_policy, NULL},
 	{'o', "data_offset", N_("data offset in sectors"), NULL,"offset", &data_offset, NULL},
@@ -386,7 +396,7 @@ int make_bcache(NihCommand *command, char *const *args)
 		backing_dev_fd[i] = dev_open(backing_devices[i], wipe_bcache);
 
 	write_cache_sbs(cache_dev_fd, cache_set_sb, block_size,
-			bucket_sizes, num_bucket_sizes);
+			bucket_sizes, num_bucket_sizes, btree_node_size);
 
 	if (writeback)
 		cache_mode = CACHE_MODE_WRITEBACK;

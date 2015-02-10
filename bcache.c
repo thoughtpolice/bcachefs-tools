@@ -581,24 +581,20 @@ int dev_open(const char *dev, bool wipe_bcache)
 		exit(EXIT_FAILURE);
 }
 
-static unsigned min_bucket_size(int num_bucket_sizes, unsigned *bucket_sizes)
-{
-	int i;
-	unsigned min = bucket_sizes[0];
-
-	for (i = 0; i < num_bucket_sizes; i++)
-		min = bucket_sizes[i] < min ? bucket_sizes[i] : min;
-
-	return min;
-}
-
 void write_cache_sbs(int *fds, struct cache_sb *sb,
 		     unsigned block_size, unsigned *bucket_sizes,
-		     int num_bucket_sizes)
+		     int num_bucket_sizes, unsigned btree_node_size)
 {
 	char uuid_str[40], set_uuid_str[40];
 	size_t i;
-	unsigned min_size = min_bucket_size(num_bucket_sizes, bucket_sizes);
+
+	if (!btree_node_size) {
+		btree_node_size = 512;
+
+		for (i = 0; i < num_bucket_sizes; i++)
+			btree_node_size = min(btree_node_size,
+					      bucket_sizes[i]);
+	}
 
 	sb->offset	= SB_SECTOR;
 	sb->version	= BCACHE_SB_VERSION_CDEV_V3;
@@ -641,7 +637,7 @@ void write_cache_sbs(int *fds, struct cache_sb *sb,
 	for (i = 0; i < sb->nr_in_set; i++) {
 		struct cache_member *m = sb->members + i;
 
-		SET_CACHE_BTREE_NODE_SIZE(sb, min_size);
+		SET_CACHE_BTREE_NODE_SIZE(sb, btree_node_size);
 
 
 		sb->disk_uuid = m->uuid;
