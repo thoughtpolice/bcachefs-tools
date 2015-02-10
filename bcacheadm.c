@@ -476,6 +476,11 @@ int bcache_rm_device(NihCommand *command, char *const *args)
 {
 	char *err;
 
+	if (!args[0]) {
+		printf("Must provide a device name\n");
+		return -1;
+	}
+
 	err = remove_device(args[0], force_remove);
 	if (err) {
 		printf("bcache_rm_devices error: %s\n", err);
