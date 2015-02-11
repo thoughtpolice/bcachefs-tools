@@ -270,7 +270,7 @@ static NihOption status_options[] = {
 
 static NihOption capacity_options[] = {
 	{'u', "set", N_("cache_set UUID"), NULL, "UUID", &capacity_uuid, NULL},
-	{'d', "devs", N_("dev UUID"), NULL, NULL, &capacity_devs, NULL},
+	{'d', "devs", N_("Individual device capacities"), NULL, NULL, &capacity_devs, NULL},
 	NIH_OPTION_LAST
 };
 

@@ -1405,23 +1405,23 @@ char *bcache_get_capacity(const char *cset_dir, const char *capacity_uuid,
 	double avail_buckets[MAX_DEVS];
 	char *dev_names[MAX_DEVS];
 	int dev_count = 0, i;
-	char intbuf[4];
 	double total_cap = 0, total_free = 0;
 	int precision = 2;
 
-	snprintf(bucket_size_path, MAX_PATH, "%s/%s/%s/%s", cset_dir,
-			capacity_uuid, "cache0", "bucket_size_bytes");
-	snprintf(nbuckets_path, MAX_PATH, "%s/%s/%s/%s", cset_dir,
-			capacity_uuid, "cache0", "nbuckets");
-	snprintf(avail_buckets_path, MAX_PATH, "%s/%s/%s/%s", cset_dir,
-			capacity_uuid, "cache0", "available_buckets");
-	snprintf(cache_path, MAX_PATH, "%s/%s/%s", cset_dir, capacity_uuid,
-			"cache0");
 
 	while (true) {
 		char buf[MAX_PATH];
 		int len;
 		DIR *cache_dir;
+
+		snprintf(bucket_size_path, sizeof(bucket_size_path), "%s/%s/%s%d/%s", cset_dir,
+				capacity_uuid, "cache", dev_count, "bucket_size_bytes");
+		snprintf(nbuckets_path, sizeof(nbuckets_path), "%s/%s/%s%d/%s", cset_dir,
+				capacity_uuid, "cache", dev_count, "nbuckets");
+		snprintf(avail_buckets_path, sizeof(avail_buckets_path), "%s/%s/%s%d/%s", cset_dir,
+				capacity_uuid, "cache", dev_count, "available_buckets");
+		snprintf(cache_path, sizeof(cache_path), "%s/%s/%s%d", cset_dir, capacity_uuid,
+				"cache", dev_count);
 
 		if((cache_dir = opendir(cache_path)) == NULL)
 			break;
@@ -1452,20 +1452,7 @@ char *bcache_get_capacity(const char *cset_dir, const char *capacity_uuid,
 			dev_names[dev_count] = dev_name(buf);
 		}
 
-		snprintf(intbuf, 4, "%d", dev_count);
-
-		/* remove i/stat and append i++/stat */
-		bucket_size_path[strlen(cache_path) - strlen(intbuf)] = 0;
-		nbuckets_path[strlen(cache_path) - strlen(intbuf)] = 0;
-		avail_buckets_path[strlen(cache_path) - strlen(intbuf)] = 0;
-		cache_path[strlen(cache_path) - strlen(intbuf)] = 0;
-
 		dev_count++;
-
-		strcat(cache_path, intbuf);
-		strcat(bucket_size_path, intbuf);
-		strcat(nbuckets_path, intbuf);
-		strcat(avail_buckets_path, intbuf);
 	}
 
 	printf("%-15s%-25s%-25s\n", "Device Name", "Capacity (512 Blocks)", "Free (512 Blocks)");
