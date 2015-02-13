@@ -891,8 +891,6 @@ void show_super_cache(struct cache_sb *sb, bool force_csum)
 	printf("cache.tier\t%llu\n",		CACHE_TIER(m));
 
 	printf("cache.replication_set\t%llu\n",	CACHE_REPLICATION_SET(m));
-	printf("cache.cur_meta_replicas\t%llu\n", REPLICATION_SET_CUR_META_REPLICAS(m));
-	printf("cache.cur_data_replicas\t%llu\n", REPLICATION_SET_CUR_DATA_REPLICAS(m));
 
 	printf("cache.has_metadata\t%llu\n",	CACHE_HAS_METADATA(m));
 	printf("cache.has_data\t%llu\n",	CACHE_HAS_DATA(m));

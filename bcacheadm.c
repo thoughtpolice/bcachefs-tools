@@ -301,6 +301,7 @@ static NihOption options[] = {
 int make_bcache(NihCommand *command, char *const *args)
 {
 	int cache_dev_fd[devs];
+	int data_replicas_num, metadata_replicas_num;
 
 	int backing_dev_fd[devs];
 
@@ -332,22 +333,32 @@ int make_bcache(NihCommand *command, char *const *args)
 	}
 
 	if (metadata_replicas) {
-		SET_CACHE_SET_META_REPLICAS_WANT(cache_set_sb,
-				strtoul_or_die(metadata_replicas,
-					CACHE_SET_META_REPLICAS_WANT_MAX,
-					"meta replicas"));
+		metadata_replicas_num =
+			strtoul_or_die(metadata_replicas,
+				CACHE_SET_META_REPLICAS_WANT_MAX,
+				"meta replicas");
 	} else {
-		SET_CACHE_SET_META_REPLICAS_WANT(cache_set_sb, 1);
+		metadata_replicas_num = 1;
 	}
 
+	SET_CACHE_SET_META_REPLICAS_WANT(cache_set_sb,
+					 metadata_replicas_num);
+	SET_CACHE_SET_META_REPLICAS_HAVE(cache_set_sb,
+					 metadata_replicas_num);
+
 	if (data_replicas) {
-		SET_CACHE_SET_DATA_REPLICAS_WANT(cache_set_sb,
+		data_replicas_num =
 			strtoul_or_die(data_replicas,
 				CACHE_SET_DATA_REPLICAS_WANT_MAX,
-				"data replicas"));
+				"data replicas");
 	} else {
-		SET_CACHE_SET_DATA_REPLICAS_WANT(cache_set_sb, 1);
+		data_replicas_num = 1;
 	}
+
+	SET_CACHE_SET_DATA_REPLICAS_WANT(cache_set_sb,
+					 data_replicas_num);
+	SET_CACHE_SET_DATA_REPLICAS_HAVE(cache_set_sb,
+					 data_replicas_num);
 
 	if (bdev == -1) {
 		fprintf(stderr, "Please specify -C or -B\n");
