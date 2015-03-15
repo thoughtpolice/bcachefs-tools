@@ -22,13 +22,12 @@
 #include <stdint.h>
 #include <blkid.h>
 #include <string.h>
-#include <linux/fs.h>
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <uuid/uuid.h>
 #include <dirent.h>
-#include <bcache.h> //libbcache
+#include "bcache.h" //libbcache
 
 #define PACKAGE_NAME "bcacheadm"
 #define PACKAGE_VERSION "1.0"

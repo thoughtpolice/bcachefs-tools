@@ -3,7 +3,8 @@ PREFIX=/usr
 UDEVLIBDIR=/lib/udev
 DRACUTLIBDIR=/lib/dracut
 INSTALL=install
-CFLAGS+=-std=gnu99 -O2 -Wall -Werror -g -I.
+CFLAGS+=-std=gnu99 -O2 -Wall -Werror -g -Iinclude
+LDFLAGS+=-static
 
 all: bcacheadm probe-bcache
 
