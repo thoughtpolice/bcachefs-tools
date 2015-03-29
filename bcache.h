@@ -54,6 +54,7 @@ typedef __s64	s64;
 extern const char * const cache_state[];
 extern const char * const replacement_policies[];
 extern const char * const csum_types[];
+extern const char * const error_actions[];
 extern const char * const bdev_cache_mode[];
 extern const char * const bdev_state[];
 extern const char * const set_attr[];
@@ -70,13 +71,11 @@ uint64_t bch_checksum(unsigned, const void *, size_t);
 uint64_t getblocks(int);
 uint64_t hatoi(const char *);
 unsigned hatoi_validate(const char *, const char *);
-void write_backingdev_sb(int, unsigned, unsigned *, unsigned, uint64_t,
+void do_write_sb(int, struct cache_sb *);
+void write_backingdev_sb(int, unsigned, unsigned, uint64_t,
 			 const char *, uuid_le, uuid_le);
-int dev_open(const char *, bool);
-void write_cache_sbs(int *, struct cache_sb *, unsigned,
-		     unsigned *, int, unsigned);
-void next_cache_device(struct cache_sb *, unsigned, int, unsigned, bool);
-unsigned get_blocksize(const char *);
+int dev_open(const char *);
+unsigned get_blocksize(const char *, int);
 long strtoul_or_die(const char *, size_t, const char *);
 
 void show_super_backingdev(struct cache_sb *, bool);
@@ -108,5 +107,11 @@ char *device_set_failed(const char *dev_uuid);
 									\
 	bch_checksum(type, start, end - start);				\
 })
+
+#define die(arg, ...)					\
+do {							\
+	fprintf(stderr, arg "\n", ##__VA_ARGS__);	\
+	exit(EXIT_FAILURE);				\
+} while (0)
 
 #endif

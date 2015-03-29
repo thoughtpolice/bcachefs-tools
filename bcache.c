@@ -48,6 +48,13 @@ const char * const csum_types[] = {
 	NULL
 };
 
+const char * const error_actions[] = {
+	"continue",
+	"readonly",
+	"panic",
+	NULL
+};
+
 const char * const bdev_cache_mode[] = {
 	"writethrough",
 	"writeback",
@@ -150,11 +157,8 @@ ssize_t read_string_list_or_die(const char *opt, const char * const list[],
 				const char *msg)
 {
 	ssize_t v = read_string_list(opt, list);
-	if (v < 0) {
-		fprintf(stderr, "Bad %s %s\n", msg, opt);
-		exit(EXIT_FAILURE);
-
-	}
+	if (v < 0)
+		die("Bad %s %s", msg, opt);
 
 	return v;
 }
@@ -391,8 +395,7 @@ static uint64_t bch_checksum_update(unsigned type, uint64_t crc, const void *dat
 	case BCH_CSUM_CRC64:
 		return bch_crc64_update(crc, data, len);
 	default:
-		fprintf(stderr, "Unknown checksum type %u\n", type);
-		exit(EXIT_FAILURE);
+		die("Unknown checksum type %u", type);
 	}
 }
 
@@ -447,27 +450,21 @@ unsigned hatoi_validate(const char *s, const char *msg)
 {
 	uint64_t v = hatoi(s);
 
-	if (v & (v - 1)) {
-		fprintf(stderr, "%s must be a power of two\n", msg);
-		exit(EXIT_FAILURE);
-	}
+	if (v & (v - 1))
+		die("%s must be a power of two", msg);
 
 	v /= 512;
 
-	if (v > USHRT_MAX) {
-		fprintf(stderr, "%s too large\n", msg);
-		exit(EXIT_FAILURE);
-	}
+	if (v > USHRT_MAX)
+		die("%s too large\n", msg);
 
-	if (!v) {
-		fprintf(stderr, "%s too small\n", msg);
-		exit(EXIT_FAILURE);
-	}
+	if (!v)
+		die("%s too small\n", msg);
 
 	return v;
 }
 
-static void do_write_sb(int fd, struct cache_sb *sb)
+void do_write_sb(int fd, struct cache_sb *sb)
 {
 	char zeroes[SB_START] = {0};
 	size_t bytes = ((void *) __bset_bkey_last(sb)) - (void *) sb;
@@ -487,8 +484,8 @@ static void do_write_sb(int fd, struct cache_sb *sb)
 	close(fd);
 }
 
-void write_backingdev_sb(int fd, unsigned block_size, unsigned *bucket_sizes,
-			 unsigned mode, uint64_t data_offset, const char *label,
+void write_backingdev_sb(int fd, unsigned block_size, unsigned mode,
+			 uint64_t data_offset, const char *label,
 			 uuid_le user_uuid, uuid_le set_uuid)
 {
 	char uuid_str[40], set_uuid_str[40];
@@ -531,170 +528,37 @@ void write_backingdev_sb(int fd, unsigned block_size, unsigned *bucket_sizes,
 	do_write_sb(fd, &sb);
 }
 
-int dev_open(const char *dev, bool wipe_bcache)
+int dev_open(const char *dev)
 {
-	struct cache_sb sb;
 	blkid_probe pr;
 	int fd;
-	char err[MAX_PATH];
 
-	if ((fd = open(dev, O_RDWR|O_EXCL)) == -1) {
-		sprintf(err, "Can't open dev %s: %s\n", dev, strerror(errno));
-		goto err;
-	}
+	if ((fd = open(dev, O_RDWR|O_EXCL)) == -1)
+		die("Can't open dev %s: %s\n", dev, strerror(errno));
 
-	if (pread(fd, &sb, sizeof(sb), SB_START) != sizeof(sb)) {
-		sprintf(err, "Failed to read superblock");
-		goto err;
-	}
+	if (!(pr = blkid_new_probe()))
+		die("Failed to create a new probe");
+	if (blkid_probe_set_device(pr, fd, 0, 0))
+		die("failed to set probe to device");
 
-	if (!memcmp(&sb.magic, &BCACHE_MAGIC, 16) && !wipe_bcache) {
-		sprintf(err, "Already a bcache device on %s, "
-			"overwrite with --wipe-bcache\n", dev);
-		goto err;
-	}
-
-	if (!(pr = blkid_new_probe())) {
-		sprintf(err, "Failed to create a new probe");
-		goto err;
-	}
-	if (blkid_probe_set_device(pr, fd, 0, 0)) {
-		sprintf(err, "failed to set probe to device");
-		goto err;
-	}
 	/* enable ptable probing; superblock probing is enabled by default */
-	if (blkid_probe_enable_partitions(pr, true)) {
-		sprintf(err, "Failed to enable partitions on probe");
-		goto err;
-	}
-	if (!blkid_do_probe(pr)) {
+	if (blkid_probe_enable_partitions(pr, true))
+		die("Failed to enable partitions on probe");
+
+	if (!blkid_do_probe(pr))
 		/* XXX wipefs doesn't know how to remove partition tables */
-		sprintf(err, "Device %s already has a non-bcache superblock, "
-			"remove it using wipefs and wipefs -a\n", dev);
-		goto err;
-	}
+		die("Device %s already has a non-bcache superblock, "
+		    "remove it using wipefs and wipefs -a\n", dev);
 
 	return fd;
-
-	err:
-		fprintf(stderr, "dev_open failed with: %s", err);
-		exit(EXIT_FAILURE);
 }
 
-void write_cache_sbs(int *fds, struct cache_sb *sb,
-		     unsigned block_size, unsigned *bucket_sizes,
-		     int num_bucket_sizes, unsigned btree_node_size)
-{
-	char uuid_str[40], set_uuid_str[40];
-	size_t i;
-
-	if (!btree_node_size) {
-		btree_node_size = 512;
-
-		for (i = 0; i < num_bucket_sizes; i++)
-			btree_node_size = min(btree_node_size,
-					      bucket_sizes[i]);
-	}
-
-	sb->offset	= SB_SECTOR;
-	sb->version	= BCACHE_SB_VERSION_CDEV_V3;
-	sb->magic	= BCACHE_MAGIC;
-	sb->block_size	= block_size;
-	sb->u64s	= bch_journal_buckets_offset(sb);
-
-	/*
-	 * don't have a userspace crc32c implementation handy, just always use
-	 * crc64
-	 */
-	SET_CACHE_SB_CSUM_TYPE(sb, BCH_CSUM_CRC64);
-
-	for (i = 0; i < sb->nr_in_set; i++) {
-		struct cache_member *m = sb->members + i;
-
-		if (num_bucket_sizes <= 1) {
-			m->bucket_size = bucket_sizes[0];
-		} else {
-			if (!bucket_sizes[i]) {
-				printf("No bucket size specified for cache %zu,"
-				       " using the default of %u",
-				       i, bucket_sizes[0]);
-				m->bucket_size = bucket_sizes[0];
-			} else {
-				m->bucket_size	= bucket_sizes[i];
-			}
-		}
-
-		m->nbuckets		= getblocks(fds[i]) / m->bucket_size;
-		m->first_bucket		= (23 / m->bucket_size) + 1;
-
-		if (m->nbuckets < 1 << 7) {
-			fprintf(stderr, "Not enough buckets: %llu, need %u\n",
-				m->nbuckets, 1 << 7);
-			exit(EXIT_FAILURE);
-		}
-	}
-
-	for (i = 0; i < sb->nr_in_set; i++) {
-		struct cache_member *m = sb->members + i;
-
-		SET_CACHE_BTREE_NODE_SIZE(sb, btree_node_size);
-
-
-		sb->disk_uuid = m->uuid;
-		sb->nr_this_dev		= i;
-
-		sb->csum = csum_set(sb, CACHE_SB_CSUM_TYPE(sb));
-
-		uuid_unparse(sb->disk_uuid.b, uuid_str);
-		uuid_unparse(sb->user_uuid.b, set_uuid_str);
-		printf("UUID:			%s\n"
-		       "Set UUID:		%s\n"
-		       "version:		%u\n"
-		       "nbuckets:		%llu\n"
-		       "block_size:		%u\n"
-		       "bucket_size:		%u\n"
-		       "nr_in_set:		%u\n"
-		       "nr_this_dev:		%u\n"
-		       "first_bucket:		%u\n",
-		       uuid_str, set_uuid_str,
-		       (unsigned) sb->version,
-		       m->nbuckets,
-		       sb->block_size,
-		       m->bucket_size,
-		       sb->nr_in_set,
-		       sb->nr_this_dev,
-		       m->first_bucket);
-
-		do_write_sb(fds[i], sb);
-	}
-}
-
-void next_cache_device(struct cache_sb *sb,
-			      unsigned replication_set,
-			      int tier,
-			      unsigned replacement_policy,
-			      bool discard)
-{
-	struct cache_member *m = sb->members + sb->nr_in_set;
-
-	SET_CACHE_REPLICATION_SET(m, replication_set);
-	SET_CACHE_TIER(m, tier);
-	SET_CACHE_REPLACEMENT(m, replacement_policy);
-	SET_CACHE_DISCARD(m, discard);
-	uuid_generate(m->uuid.b);
-
-	sb->nr_in_set++;
-}
-
-unsigned get_blocksize(const char *path)
+unsigned get_blocksize(const char *path, int fd)
 {
 	struct stat statbuf;
 
-	if (stat(path, &statbuf)) {
-		fprintf(stderr, "Error statting %s: %s\n",
-			path, strerror(errno));
-		exit(EXIT_FAILURE);
-	}
+	if (fstat(fd, &statbuf))
+		die("Error statting %s: %s", path, strerror(errno));
 
 	if (S_ISBLK(statbuf.st_mode)) {
 		/* check IO limits:
@@ -710,17 +574,9 @@ unsigned get_blocksize(const char *path)
 		 * we want to use logical_block_size.
 		 */
 		unsigned int logical_block_size;
-		int fd = open(path, O_RDONLY);
+		if (ioctl(fd, BLKSSZGET, &logical_block_size))
+			die("ioctl(%s, BLKSSZGET) failed: %m", path);
 
-		if (fd < 0) {
-			fprintf(stderr, "open(%s) failed: %m\n", path);
-			exit(EXIT_FAILURE);
-		}
-		if (ioctl(fd, BLKSSZGET, &logical_block_size)) {
-			fprintf(stderr, "ioctl(%s, BLKSSZGET) failed: %m\n", path);
-			exit(EXIT_FAILURE);
-		}
-		close(fd);
 		return logical_block_size / 512;
 
 	}
@@ -734,10 +590,8 @@ long strtoul_or_die(const char *p, size_t max, const char *msg)
 {
 	errno = 0;
 	long v = strtol(p, NULL, 10);
-	if (errno || v < 0 || v >= max) {
-		fprintf(stderr, "Invalid %s %zi\n", msg, v);
-		exit(EXIT_FAILURE);
-	}
+	if (errno || v < 0 || v >= max)
+		die("Invalid %s %zi", msg, v);
 
 	return v;
 }
@@ -767,8 +621,7 @@ static void show_super_common(struct cache_sb *sb, bool force_csum)
 		printf("ok\n");
 	} else {
 		printf("bad magic\n");
-		fprintf(stderr, "Invalid superblock (bad magic)\n");
-		exit(2);
+		die("Invalid superblock (bad magic)");
 	}
 
 	printf("sb.first_sector\t\t%ju", (uint64_t) sb->offset);
@@ -776,8 +629,7 @@ static void show_super_common(struct cache_sb *sb, bool force_csum)
 		printf(" [match]\n");
 	} else {
 		printf(" [expected %ds]\n", SB_SECTOR);
-		fprintf(stderr, "Invalid superblock (bad sector)\n");
-		exit(2);
+		die("Invalid superblock (bad sector)");
 	}
 
 	printf("sb.csum\t\t\t%ju", (uint64_t) sb->csum);
@@ -789,10 +641,8 @@ static void show_super_common(struct cache_sb *sb, bool force_csum)
 		printf(" [match]\n");
 	} else {
 		printf(" [expected %" PRIX64 "]\n", expected_csum);
-		if (force_csum) {
-			fprintf(stderr, "Corrupt superblock (bad csum)\n");
-			exit(2);
-		}
+		if (force_csum)
+			die("Corrupt superblock (bad csum)");
 	}
 
 	printf("sb.version\t\t%ju", (uint64_t) sb->version);
