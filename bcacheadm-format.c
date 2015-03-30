@@ -58,9 +58,7 @@ static size_t nr_backing_devices = 0, nr_cache_devices = 0;
 static char *label = NULL;
 
 /* All in units of 512 byte sectors */
-static unsigned block_size;
-static unsigned bucket_size = 2048;
-static unsigned btree_node_size;
+static unsigned block_size, bucket_size, btree_node_size;
 static uint64_t filesystem_size;
 static unsigned tier, replacement_policy;
 
@@ -76,6 +74,7 @@ static unsigned cache_mode = CACHE_MODE_WRITEBACK;
 static int set_cache(NihOption *option, const char *arg)
 {
 	cache_devices[nr_cache_devices++] = (struct cache_opts) {
+		.fd			= dev_open(arg),
 		.dev			= strdup(arg),
 		.bucket_size		= bucket_size,
 		.tier			= tier,
@@ -89,6 +88,7 @@ static int set_cache(NihOption *option, const char *arg)
 static int set_bdev(NihOption *option, const char *arg)
 {
 	backing_devices[nr_backing_devices++] = (struct backingdev_opts) {
+		.fd			= dev_open(arg),
 		.dev			= strdup(arg),
 		.label			= strdup(label),
 	};
@@ -235,22 +235,36 @@ NihOption bcacheadm_format_options[] = {
 	NIH_OPTION_LAST
 };
 
+static unsigned rounddown_pow_of_two(unsigned n)
+{
+	unsigned ret;
+
+	do {
+		ret = n;
+		n &= n - 1;
+	} while (n);
+
+	return ret;
+}
+
+static unsigned ilog2(uint64_t n)
+{
+	unsigned ret = 0;
+
+	while (n) {
+		ret++;
+		n >>= 1;
+	}
+
+	return ret;
+}
+
 int bcacheadm_format(NihCommand *command, char *const *args)
 {
 	struct cache_sb *cache_set_sb;
 
 	if (!nr_cache_devices && !nr_backing_devices)
 		die("Please supply a device");
-
-	for (struct cache_opts *i = cache_devices;
-	     i < cache_devices + nr_cache_devices;
-	     i++)
-		i->fd = dev_open(i->dev);
-
-	for (struct backingdev_opts *i = backing_devices;
-	     i < backing_devices + nr_backing_devices;
-	     i++)
-		i->fd = dev_open(i->dev);
 
 	if (!block_size) {
 		for (struct cache_opts *i = cache_devices;
@@ -264,7 +278,22 @@ int bcacheadm_format(NihCommand *command, char *const *args)
 			block_size = max(block_size, get_blocksize(i->dev, i->fd));
 	}
 
+	for (struct cache_opts *i = cache_devices;
+	     i < cache_devices + nr_cache_devices;
+	     i++)
+		if (!i->bucket_size) {
+			uint64_t size = (i->filesystem_size ?:
+					 getblocks(i->fd)) << 9;
+
+			if (size < 1 << 20) /* 1M device - 256 4k buckets*/
+				i->bucket_size = rounddown_pow_of_two(size >> 17);
+			else
+				/* Max 1M bucket at around 256G */
+				i->bucket_size = 8 << min((ilog2(size >> 20) / 2), 9U);
+		}
+
 	if (!btree_node_size) {
+		/* 256k default btree node size */
 		btree_node_size = 512;
 
 		for (struct cache_opts *i = cache_devices;
