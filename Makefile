@@ -25,7 +25,8 @@ bcache.o: CFLAGS += `pkg-config --cflags uuid blkid`
 
 bcacheadm.o: CFLAGS += `pkg-config --cflags uuid blkid libnih`
 bcacheadm: LDLIBS += `pkg-config --libs uuid blkid libnih`
-bcacheadm: bcacheadm.o bcacheadm-format.o bcache.o
+bcacheadm: bcacheadm.o bcacheadm-format.o bcacheadm-assemble.o bcacheadm-run.o\
+	bcacheadm-query.o bcache.o
 
 probe-bcache.o: CFLAGS += `pkg-config --cflags uuid blkid`
 probe-bcache: LDLIBS += `pkg-config --libs uuid blkid`

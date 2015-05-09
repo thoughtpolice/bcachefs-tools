@@ -29,87 +29,19 @@
 #include <dirent.h>
 
 #include "bcache.h"
-#include "bcacheadm.h"
+#include "bcacheadm-format.h"
+#include "bcacheadm-assemble.h"
+#include "bcacheadm-run.h"
+#include "bcacheadm-query.h"
 
 #define PACKAGE_NAME "bcacheadm"
 #define PACKAGE_VERSION "1.0"
-#define PACKAGE_BUGREPORT "bugreport"
+#define PACKAGE_BUGREPORT "linux-bcache@vger.kernel.org"
 
-/* rm-dev globals */
-bool force_remove = false;
-
-/* Modify globals */
-bool modify_list_attrs = false;
+#if 0
+static bool modify_list_attrs = false;
 static const char *modify_set_uuid = NULL;
 static const char *modify_dev_uuid = NULL;
-
-/* query-dev globals */
-bool force_csum = false;
-bool uuid_only = false;
-bool query_brief = false;
-
-/* probe globals */
-bool udev = false;
-
-/* list globals */
-char *cset_dir = "/sys/fs/bcache";
-bool list_devs = false;
-static const char *internal_uuid = NULL;
-
-/* status globals */
-bool status_all = false;
-
-/* capacity globals */
-static const char *capacity_uuid = NULL;
-bool capacity_devs = false;
-
-/* stats globals */
-bool stats_all = false;
-bool stats_list = false;
-static const char *stats_uuid = NULL;
-static const char *stats_dev_uuid = NULL;
-static const char *stats_cache_num = NULL;
-bool stats_five_min = false;
-bool stats_hour = false;
-bool stats_day = false;
-bool stats_total = false;
-
-/* set_failed globals */
-static const char *dev_failed_uuid = NULL;
-
-/* probe setters */
-static int set_udev(NihOption *option, const char *arg)
-{
-	if (strcmp("udev", arg)) {
-		printf("Invalid output format %s\n", arg);
-		exit(EXIT_FAILURE);
-	}
-	udev = true;
-	return 0;
-}
-
-/* options */
-static NihOption probe_bcache_options[] = {
-	{'o', "udev", N_("udev"), NULL, NULL, NULL, set_udev},
-	NIH_OPTION_LAST
-};
-
-static NihOption bcache_register_options[] = {
-	NIH_OPTION_LAST
-};
-
-static NihOption bcache_unregister_options[] = {
-	NIH_OPTION_LAST
-};
-
-static NihOption bcache_add_device_options[] = {
-	NIH_OPTION_LAST
-};
-
-static NihOption bcache_rm_device_options[] = {
-	{'f', "force", N_("force cache removal"), NULL, NULL, &force_remove, NULL},
-	NIH_OPTION_LAST
-};
 
 static NihOption bcache_modify_options[] = {
 	{'l', "list", N_("list attributes"), NULL, NULL, &modify_list_attrs, NULL},
@@ -117,127 +49,6 @@ static NihOption bcache_modify_options[] = {
 	{'d', "dev", N_("device uuid"), NULL, "UUID", &modify_dev_uuid, NULL},
 	NIH_OPTION_LAST
 };
-
-static NihOption query_devs_options[] = {
-	{'f', "force_csum", N_("force_csum"), NULL, NULL, &force_csum, NULL},
-	{'u', "uuid-only", N_("only print out the uuid for the devices, not the whole superblock"), NULL, NULL, &uuid_only, NULL},
-	{'b', "brief", N_("only print out the cluster,server,and disk uuids"), NULL, NULL, &query_brief, NULL},
-	NIH_OPTION_LAST
-};
-
-static NihOption list_cachesets_options[] = {
-	{'d', "dir", N_("directory"), NULL, NULL, &cset_dir, NULL},
-	{0, "list-devs", N_("list all devices in the cache sets as well"), NULL, NULL, &list_devs, NULL},
-	{0, "internal_uuid", N_("Show the internal UUID for the given cacheset UUID"), NULL, "UUID", &internal_uuid, NULL},
-	NIH_OPTION_LAST
-};
-
-static NihOption status_options[] = {
-	{'a', "all", N_("all"), NULL, NULL, &status_all, NULL},
-	NIH_OPTION_LAST
-};
-
-static NihOption capacity_options[] = {
-	{'u', "set", N_("cache_set UUID"), NULL, "UUID", &capacity_uuid, NULL},
-	{'d', "devs", N_("Individual device capacities"), NULL, NULL, &capacity_devs, NULL},
-	NIH_OPTION_LAST
-};
-
-static NihOption stats_options[] = {
-	{'a', "all", N_("all"), NULL, NULL, &stats_all, NULL},
-	{'l', "list", N_("list"), NULL, NULL, &stats_list, NULL},
-	{'u', "set", N_("cache_set UUID"), NULL, "UUID", &stats_uuid, NULL},
-	{'d', "dev", N_("dev UUID"), NULL, "UUID", &stats_dev_uuid, NULL},
-	{'c', "cache", N_("cache number (starts from 0)"), NULL, "CACHE#", &stats_cache_num, NULL},
-	{0, "five-min-stats", N_("stats accumulated in last 5 minutes"), NULL, NULL, &stats_five_min, NULL},
-	{0, "hour-stats", N_("stats accumulated in last hour"), NULL, NULL, &stats_hour, NULL},
-	{0, "day-stats", N_("stats accumulated in last day"), NULL, NULL, &stats_day, NULL},
-	{0, "total-stats", N_("stats accumulated in total"), NULL, NULL, &stats_total, NULL},
-	NIH_OPTION_LAST
-};
-
-static NihOption set_failed_options[] = {
-	{'d', "dev", N_("dev UUID"), NULL, "UUID", &dev_failed_uuid, NULL},
-	NIH_OPTION_LAST
-};
-
-static NihOption options[] = {
-	NIH_OPTION_LAST
-};
-
-/* commands */
-int probe_bcache(NihCommand *command, char *const *args)
-{
-	int i;
-	char *err = NULL;
-
-	for (i = 0; args[i] != NULL; i++) {
-		err = probe(args[i], udev);
-		if(err) {
-			printf("probe_bcache error: %s\n", err);
-			return -1;
-		}
-	}
-
-	return 0;
-}
-
-int bcache_register(NihCommand *command, char *const *args)
-{
-	char *err = NULL;
-
-	err = register_bcache(args);
-	if (err) {
-		printf("bcache_register error: %s\n", err);
-		return -1;
-	}
-
-	return 0;
-}
-
-int bcache_unregister(NihCommand *command, char *const *args)
-{
-	char *err = NULL;
-
-	err = unregister_bcache(args);
-	if (err) {
-		printf("bcache_unregister error: %s\n", err);
-		return -1;
-	}
-
-	return 0;
-}
-
-int bcache_add_devices(NihCommand *command, char *const *args)
-{
-	char *err;
-
-	err = add_devices(args);
-	if (err) {
-		printf("bcache_add_devices error: %s\n", err);
-		return -1;
-	}
-
-	return 0;
-}
-
-int bcache_rm_device(NihCommand *command, char *const *args)
-{
-	char *err;
-
-	if (!args[0]) {
-		printf("Must provide a device name\n");
-		return -1;
-	}
-
-	err = remove_device(args[0], force_remove);
-	if (err) {
-		printf("bcache_rm_devices error: %s\n", err);
-		return -1;
-	}
-
-	return 0;
-}
 
 int bcache_modify(NihCommand *command, char *const *args)
 {
@@ -312,386 +123,80 @@ err:
 		close(fd);
 	return 0;
 }
+#endif
 
-int bcache_list_cachesets(NihCommand *command, char *const *args)
-{
-	char *err = NULL;
-
-	if (internal_uuid) {
-		char uuid_path[MAX_PATH];
-		DIR *uuid_dir;
-		char buf[MAX_PATH];
-
-		snprintf(uuid_path, MAX_PATH, "%s/%s", cset_dir, internal_uuid);
-
-		err = "uuid does not exist";
-		if((uuid_dir = opendir(uuid_path)) == NULL)
-			goto err;
-
-		err = read_stat_dir(uuid_dir, uuid_path, "/internal/internal_uuid", buf);
-		if (err)
-			goto err;
-		printf("%s", buf);
-		return 0;
-	}
-
-	err = list_cachesets(cset_dir, list_devs);
-	if (err)
-		goto err;
-
-	return 0;
-
-err:
-	printf("bcache_list_cachesets error :%s\n", err);
-	return -1;
-}
-
-int bcache_query_devs(NihCommand *command, char *const *args)
-{
-	int i;
-
-	if (query_brief)
-		printf("%-10s%-40s%-40s%-40s\n", "dev name", "disk uuid",
-				"server uuid", "cluster uuid");
-
-	for (i = 0; args[i] != NULL; i++) {
-		char dev_uuid[40];
-		struct cache_sb *sb = query_dev(args[i], force_csum,
-				!query_brief, uuid_only, dev_uuid);
-
-		if (!sb) {
-			printf("error opening the superblock for %s\n",
-					args[i]);
-			return -1;
-		}
-
-		if (uuid_only) {
-			printf("%s\n", dev_uuid);
-		} else if (query_brief) {
-			char set_uuid_str[40], dev_uuid_str[40];
-			char *clus_uuid = (char *)sb->label;
-
-			uuid_unparse(sb->user_uuid.b, set_uuid_str);
-			uuid_unparse(sb->disk_uuid.b, dev_uuid_str);
-			if (!strcmp(clus_uuid, ""))
-				clus_uuid = "None";
-
-			printf("%-10s%-40s%-40s%-40s\n", args[i],
-					dev_uuid_str,
-					set_uuid_str,
-					clus_uuid);
-		}
-		free(sb);
-	}
-
-	return 0;
-}
-
-int bcache_status(NihCommand *command, char *const *args)
-{
-	int i, dev_count = 0, seq, cache_count = 0;
-	struct cache_sb *seq_sb = NULL;
-	char cache_path[MAX_PATH];
-	char *dev_names[MAX_DEVS];
-	char *dev_uuids[MAX_DEVS];
-	char intbuf[4];
-	char set_uuid[40];
-
-	for (i = 0; args[i] != NULL; i++) {
-		struct cache_sb *sb = query_dev(args[i], false, false,
-				false, NULL);
-
-		if (!sb) {
-			printf("Unable to open superblock, bad path\n");
-			return -1;
-		}
-
-		if (!seq_sb || sb->seq > seq) {
-			seq = sb->seq;
-			seq_sb = sb;
-		} else
-			free(sb);
-	}
-
-	if (!seq_sb) {
-		printf("Unable to find a superblock\n");
-		return -1;
-	} else {
-		uuid_unparse(seq_sb->user_uuid.b, set_uuid);
-		printf("%-50s%-15s%-4s\n", "uuid", "state", "tier");
-	}
-
-	snprintf(intbuf, 4, "%d", i);
-	snprintf(cache_path, MAX_PATH, "%s/%s/%s", cset_dir, set_uuid,
-			"cache0");
-
-	/*
-	 * Get a list of all the devices from sysfs first, then
-	 * compare it to the list we get back from the most up
-	 * to date superblock. If there are any devices in the superblock
-	 * that are not in sysfs, print out 'missing'
-	 */
-	while (true) {
-		char buf[MAX_PATH];
-		int len;
-		DIR *cache_dir;
-
-		if(((cache_dir = opendir(cache_path)) == NULL) &&
-		    cache_count > MAX_DEVS)
-			break;
-
-		if (cache_dir)
-			closedir(cache_dir);
-
-		if((len = readlink(cache_path, buf, sizeof(buf) - 1)) != -1) {
-			struct cache_sb *sb;
-			char dev_uuid[40];
-			char dev_path[32];
-
-			buf[len] = '\0';
-			dev_names[dev_count] = dev_name(buf);
-			snprintf(dev_path, MAX_PATH, "%s/%s", "/dev",
-					dev_names[dev_count]);
-			sb = query_dev(dev_path, false, false,
-					true, dev_uuid);
-			if (!sb) {
-				printf("error reading %s\n", dev_path);
-				return -1;
-			} else
-				free(sb);
-
-			dev_uuids[dev_count] = strdup(dev_uuid);
-		        dev_count++;
-		}
-
-		cache_path[strlen(cache_path) - strlen(intbuf)] = 0;
-		cache_count++;
-
-		snprintf(intbuf, 4, "%d", cache_count);
-		strcat(cache_path, intbuf);
-	}
-
-	for (i = 0; i < seq_sb->nr_in_set; i++) {
-		char uuid_str[40];
-		struct cache_member *m = seq_sb->members + i;
-		char dev_state[32];
-		int j;
-
-		uuid_unparse(m->uuid.b, uuid_str);
-		snprintf(dev_state, MAX_PATH, "%s",
-                         cache_state[CACHE_STATE(m)]);
-
-		for (j = 0; j < dev_count; j++) {
-			if (!strcmp(uuid_str, dev_uuids[j])) {
-				break;
-			} else if (j == dev_count - 1) {
-				if (!strcmp(cache_state[CACHE_STATE(m)], "active"))
-					snprintf(dev_state, MAX_PATH, "%s", "missing");
-				break;
-			}
-		}
-
-		printf("%-50s%-15s%-4llu\n", uuid_str, dev_state,
-				CACHE_TIER(m));
-	}
-
-	if (seq_sb)
-		free(seq_sb);
-	for (i = 0; i < dev_count; i++) {
-		free(dev_names[i]);
-		free(dev_uuids[i]);
-	}
-
-	return 0;
-}
-
-int bcache_capacity(NihCommand *command, char *const *args)
-{
-	char *err = "Must provide a cacheset uuid";
-	if(!capacity_uuid)
-		goto err;
-
-	err = bcache_get_capacity(cset_dir, capacity_uuid, capacity_devs);
-	if (err)
-		goto err;
-
-	return 0;
-
-err:
-	printf("bcache_capacity failed with error: %s\n", err);
-	return -1;
-
-}
-
-static char *stats_subdir(char* stats_dir)
-{
-	char tmp[50] = "/";
-	char *err = NULL;
-	if(stats_dev_uuid) {
-		strcat(tmp, "cache");
-		err = find_matching_uuid(stats_dir, tmp, stats_dev_uuid);
-		if(err)
-			goto err;
-	} else if(stats_cache_num) {
-		strcat(tmp, "cache");
-		strcat(tmp, stats_cache_num);
-	} else if (stats_five_min)
-		strcat(tmp, "stats_five_minute");
-	else if (stats_hour)
-		strcat(tmp, "stats_hour");
-	else if (stats_day)
-		strcat(tmp, "stats_day");
-	else if (stats_total)
-		strcat(tmp, "stats_total");
-	else
-		return err;
-
-	strcat(stats_dir, tmp);
-
-err:
-	return err;
-}
-
-int bcache_stats(NihCommand *command, char *const *args)
-{
-	int i;
-	char stats_dir[MAX_PATH];
-	DIR *dir = NULL;
-	struct dirent *ent = NULL;
-	char *err = NULL;
-	char buf[MAX_PATH];
-
-	if (stats_uuid) {
-		snprintf(stats_dir, MAX_PATH, "%s/%s", cset_dir, stats_uuid);
-		err = stats_subdir(stats_dir);
-		if(err)
-			goto err;
-
-		dir = opendir(stats_dir);
-		if (!dir) {
-			err = "Failed to open dir";
-			goto err;
-		}
-	} else {
-		err = "Must provide a cacheset uuid";
-		goto err;
-	}
-
-	if(stats_list || stats_all) {
-		while ((ent = readdir(dir)) != NULL) {
-			err = read_stat_dir(dir, stats_dir, ent->d_name, buf);
-			if (err)
-				goto err;
-			if(stats_list)
-				printf("%s\n", ent->d_name);
-			if(stats_all)
-				printf("\t%s\n", buf);
-		}
-	}
-
-	for (i = 0; args[i] != NULL; i++) {
-		err = read_stat_dir(dir, stats_dir, args[i], buf);
-		if (err)
-			goto err;
-		printf("%s\n", buf);
-	}
-
-	closedir(dir);
-	return 0;
-
-err:
-	closedir(dir);
-	printf("bcache_stats error: %s\n", err);
-	return -1;
-}
-
-int bcache_set_failed(NihCommand *command, char *const *args)
-{
-	char *err = NULL;
-
-	if (!dev_failed_uuid) {
-		printf("Pass in a dev uuid\n");
-		return -1;
-	}
-
-	err = device_set_failed(dev_failed_uuid);
-	if (err) {
-		printf("bcache_set_failed_ioctl error: %s\n", err);
-		return -1;
-	}
-
-	return 0;
+#define CMD(_command, _usage, _synopsis, _help)				\
+{									\
+	.command	= #_command,					\
+	.usage		= _usage,					\
+	.synopsis	= _synopsis,					\
+	.help		= _help,					\
+	.group		= NULL,						\
+	.options	= opts_##_command,				\
+	.action		= cmd_##_command,				\
 }
 
 static NihCommand commands[] = {
-	{"format", N_("format <list of drives>"),
-		  "Format one or a list of devices with bcache datastructures."
-		  " You need to do this before you create a volume",
-		  N_("format drive[s] with bcache"),
-		  NULL, bcacheadm_format_options, bcacheadm_format},
-	{"probe", N_("probe <list of devices>"),
-		  "Does a blkid_probe on a device",
-		  N_("Does a blkid_probe on a device"),
-		  NULL, probe_bcache_options, probe_bcache},
-	{"register", N_("register <list of devices>"),
-		     "Registers a list of devices",
-		     N_("Registers a list of devices"),
-		     NULL, bcache_register_options, bcache_register},
-	{"unregister", N_("unregister <list of devices>"),
-		     "Unregisters a list of devices",
-		     N_("Unregisters a list of devices"),
-		     NULL, bcache_unregister_options, bcache_unregister},
-	{"add-devs", N_("add-devs --tier=# <list of devices>"),
-		"Adds a list of devices to a cacheset",
-		N_("Adds a list of devices to a cacheset"),
-		NULL, bcache_add_device_options, bcache_add_devices},
-	{"rm-dev", N_("rm-dev <dev>"),
-		"Removes a device from its cacheset",
-		N_("Removes a device from its cacheset"),
-		NULL, bcache_rm_device_options, bcache_rm_device},
-	{"modify", N_("modify --set=UUID (dev=UUID) name value"),
-		"Modifies attributes related to the cacheset",
-		N_("Modifies attributes related to the cacheset"),
-		NULL, bcache_modify_options, bcache_modify},
-	{"list-cachesets", N_("list-cachesets"),
-			   "Lists cachesets in /sys/fs/bcache",
-			   N_("Lists cachesets in /sys/fs/bcache"),
-			   NULL, list_cachesets_options, bcache_list_cachesets},
-	{"query-devs", N_("query <list of devices>"),
-		       "Gives info about the superblock of a list of devices",
-		       N_("show superblock on each of the listed drive"),
-		       NULL, query_devs_options, bcache_query_devs},
-	{"status", N_("status <list of devices>"),
-		   "Finds the status of the most up to date superblock",
-		   N_("Finds the status of the most up to date superblock"),
-		   NULL, status_options, bcache_status},
-	{"capacity", N_("capacity --set=UUID"),
-		"Shows the capacity of the cacheset",
-		N_("Shows the capacity of the cacheset"),
-		NULL, capacity_options, bcache_capacity},
-	{"stats", N_("stats <list of devices>"),
-		  "List various bcache statistics",
-		  N_("List various bcache statistics"),
-		  NULL, stats_options, bcache_stats},
-	{"set-failed", N_("set-failed --dev=UUID"),
-		"Sets a device to the FAILED state",
-		N_("Sets a device to the FAILED state"),
-		NULL, set_failed_options, bcache_set_failed},
+	CMD(format, N_("<list of devices>"),
+	    "Create a new bcache volume from one or more devices",
+	    N_("format drive[s] for bcache")),
+
+	CMD(assemble, N_("<devices>"),
+	    "Assembles one or more devices into a bcache volume",
+	    N_("Registers a list of devices")),
+	CMD(incremental, N_("<device"),
+	    "Incremental assemble bcache volumes",
+	    N_("Incrementally registers a single device")),
+
+	CMD(run, N_("<volume>"),
+	    "Start a partially assembled volume",
+	    N_("Registers a list of devices")),
+	CMD(stop, N_("<volume>"),
+	    "Stops a running bcache volume",
+	    N_("Unregisters a list of devices")),
+	CMD(add, N_("<volume> <devices>"),
+	    "Adds a list of devices to a volume",
+	    N_("Adds a list of devices to a volume")),
+	CMD(readd, N_("<volume> <devices>"),
+	    "Adds previously used members of a volume",
+	    N_("Adds a list of devices to a volume")),
+	CMD(remove, N_("<volume> <devices>"),
+	    "Removes a device from its volume",
+	    N_("Removes a device from its volume")),
+	CMD(fail, N_("<volume> <devices>"),
+	    "Sets a device to the FAILED state",
+	    N_("Sets a device to the FAILED state")),
+
+#if 0
+	CMD(modify, N_("<options>"),
+	    "Modifies attributes related to the volume",
+	    N_("Modifies attributes related to the volume")),
+#endif
+	CMD(list, N_("list-cachesets"),
+	    "Lists cachesets in /sys/fs/bcache",
+	    N_("Lists cachesets in /sys/fs/bcache")),
+	CMD(query, N_("query <list of devices>"),
+	    "Gives info about the superblock of a list of devices",
+	    N_("show superblock on each of the listed drive")),
+	CMD(status, N_("status <list of devices>"),
+	    "Finds the status of the most up to date superblock",
+	    N_("Finds the status of the most up to date superblock")),
 	NIH_COMMAND_LAST
+};
+
+static NihOption options[] = {
+	NIH_OPTION_LAST
 };
 
 int main(int argc, char *argv[])
 {
-	int ret = 0;
-	nih_main_init (argv[0]);
+	nih_main_init(argv[0]);
+	nih_option_set_synopsis(_("Manage bcache devices"));
+	nih_option_set_help( _("Helps you manage bcache devices"));
 
-	nih_option_set_synopsis (_("Manage bcache devices"));
-	nih_option_set_help (
-			_("Helps you manage bcache devices"));
-
-	ret = nih_command_parser (NULL, argc, argv, options, commands);
+	int ret = nih_command_parser(NULL, argc, argv, options, commands);
 	if (ret < 0)
-		exit (1);
+		exit(EXIT_FAILURE);
 
 	nih_signal_reset();
 

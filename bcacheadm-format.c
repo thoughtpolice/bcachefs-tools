@@ -35,7 +35,7 @@
 #include <nih/option.h>
 
 #include "bcache.h"
-#include "bcacheadm.h"
+#include "bcacheadm-format.h"
 
 static struct cache_opts {
 	int		fd;
@@ -180,7 +180,7 @@ static int set_cache_mode(NihOption *option, const char *arg)
 	return 0;
 }
 
-NihOption bcacheadm_format_options[] = {
+NihOption opts_format[] = {
 //	{ int shortoption, char *longoption, char *help, NihOptionGroup, char *argname, void *value, NihOptionSetter}
 
 	{ 'C',	"cache",		N_("Format a cache device"),
@@ -259,12 +259,14 @@ static unsigned ilog2(uint64_t n)
 	return ret;
 }
 
-int bcacheadm_format(NihCommand *command, char *const *args)
+static int format_v0(void)
+{
+	return 0;
+}
+
+static int format_v1(void)
 {
 	struct cache_sb *cache_set_sb;
-
-	if (!nr_cache_devices && !nr_backing_devices)
-		die("Please supply a device");
 
 	if (!block_size) {
 		for (struct cache_opts *i = cache_devices;
@@ -402,4 +404,12 @@ int bcacheadm_format(NihCommand *command, char *const *args)
 
 
 	return 0;
+}
+
+int cmd_format(NihCommand *command, char *const *args)
+{
+	if (!nr_cache_devices && !nr_backing_devices)
+		die("Please supply a device");
+
+	return format_v1();
 }
