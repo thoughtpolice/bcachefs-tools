@@ -8,8 +8,12 @@
 #define _BCACHE_H
 
 #include <stdint.h>
-#include <linux/bcache.h>
 #include <dirent.h>
+
+#define __packed	__attribute__((__packed__))
+
+#include "bcache-ondisk.h"
+#include "bcache-ioctl.h"
 
 typedef __u8	u8;
 typedef __u16	u16;
@@ -72,9 +76,6 @@ uint64_t bch_checksum(unsigned, const void *, size_t);
 uint64_t getblocks(int);
 uint64_t hatoi(const char *);
 unsigned hatoi_validate(const char *, const char *);
-void do_write_sb(int, struct cache_sb *);
-void write_backingdev_sb(int, unsigned, unsigned, uint64_t,
-			 const char *, uuid_le, uuid_le);
 int dev_open(const char *);
 unsigned get_blocksize(const char *, int);
 long strtoul_or_die(const char *, size_t, const char *);

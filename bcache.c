@@ -22,10 +22,6 @@
 
 #include "bcache.h"
 
-#define __KERNEL__
-#include <linux/bcache-ioctl.h>
-#undef __KERNEL__
-
 const char * const cache_state[] = {
 	"active",
 	"ro",
@@ -462,70 +458,6 @@ unsigned hatoi_validate(const char *s, const char *msg)
 		die("%s too small\n", msg);
 
 	return v;
-}
-
-void do_write_sb(int fd, struct cache_sb *sb)
-{
-	char zeroes[SB_START] = {0};
-	size_t bytes = ((void *) __bset_bkey_last(sb)) - (void *) sb;
-
-	/* Zero start of disk */
-	if (pwrite(fd, zeroes, SB_START, 0) != SB_START) {
-		perror("write error trying to zero start of disk\n");
-		exit(EXIT_FAILURE);
-	}
-	/* Write superblock */
-	if (pwrite(fd, sb, bytes, SB_START) != bytes) {
-		perror("write error trying to write superblock\n");
-		exit(EXIT_FAILURE);
-	}
-
-	fsync(fd);
-	close(fd);
-}
-
-void write_backingdev_sb(int fd, unsigned block_size, unsigned mode,
-			 uint64_t data_offset, const char *label,
-			 uuid_le user_uuid, uuid_le set_uuid)
-{
-	char uuid_str[40], set_uuid_str[40];
-	struct cache_sb sb;
-
-	memset(&sb, 0, sizeof(struct cache_sb));
-
-	sb.offset	= SB_SECTOR;
-	sb.version	= BCACHE_SB_VERSION_BDEV;
-	sb.magic	= BCACHE_MAGIC;
-	uuid_generate(sb.disk_uuid.b);
-	sb.user_uuid	= user_uuid;
-	sb.set_uuid	= set_uuid;
-	sb.block_size	= block_size;
-
-	uuid_unparse(sb.disk_uuid.b, uuid_str);
-	uuid_unparse(sb.user_uuid.b, set_uuid_str);
-	if (label)
-		memcpy(sb.label, label, SB_LABEL_SIZE);
-
-	SET_BDEV_CACHE_MODE(&sb, mode);
-
-	if (data_offset != BDEV_DATA_START_DEFAULT) {
-		sb.version = BCACHE_SB_VERSION_BDEV_WITH_OFFSET;
-		sb.bdev_data_offset = data_offset;
-	}
-
-	sb.csum = csum_set(&sb, BCH_CSUM_CRC64);
-
-	printf("UUID:			%s\n"
-	       "Set UUID:		%s\n"
-	       "version:		%u\n"
-	       "block_size:		%u\n"
-	       "data_offset:		%ju\n",
-	       uuid_str, set_uuid_str,
-	       (unsigned) sb.version,
-	       sb.block_size,
-	       data_offset);
-
-	do_write_sb(fd, &sb);
 }
 
 int dev_open(const char *dev)

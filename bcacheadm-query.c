@@ -13,8 +13,6 @@
 #include <nih/command.h>
 #include <nih/option.h>
 
-#include <linux/bcache-ioctl.h>
-
 #include <uuid/uuid.h>
 
 #include "bcache.h"

@@ -11,8 +11,6 @@
 #include <nih/command.h>
 #include <nih/option.h>
 
-#include <linux/bcache-ioctl.h>
-
 #include "bcache.h"
 #include "bcacheadm-assemble.h"
 
