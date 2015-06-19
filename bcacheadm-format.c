@@ -67,7 +67,10 @@ static u64 filesystem_size;
 static unsigned tier, replacement_policy;
 
 static uuid_le set_uuid, user_uuid;
-static unsigned csum_type = BCH_CSUM_CRC32C;
+static unsigned meta_csum_type = BCH_CSUM_CRC32C;
+static unsigned data_csum_type = BCH_CSUM_CRC32C;
+static unsigned compression_type = BCH_COMPRESSION_NONE;
+
 static unsigned replication_set, meta_replicas = 1, data_replicas = 1;
 static unsigned on_error_action;
 static int discard;
@@ -140,7 +143,16 @@ static int set_replacement_policy(NihOption *option, const char *arg)
 
 static int set_csum_type(NihOption *option, const char *arg)
 {
-	csum_type = read_string_list_or_die(arg, csum_types, "checksum type");
+	unsigned *csum_type = option->value;
+
+	*csum_type = read_string_list_or_die(arg, csum_types, "checksum type");
+	return 0;
+}
+
+static int set_compression_type(NihOption *option, const char *arg)
+{
+	compression_type = read_string_list_or_die(arg, compression_types,
+						   "compression type");
 	return 0;
 }
 
@@ -208,22 +220,28 @@ NihOption opts_format[] = {
 		NULL, "size",	NULL,	set_block_size },
 	{ 'b',	"bucket",		N_("bucket size"),
 		NULL, "size",	NULL,	set_bucket_sizes },
-	{ 'n',	"btree-node",		N_("Btree node size, default 256k"),
+	{ 'n',	"btree_node",		N_("Btree node size, default 256k"),
 		NULL, "size",	NULL,	set_btree_node_size },
-	{ 0,	"fs-size",		N_("Size of filesystem on device" ),
+	{ 0,	"fs_size",		N_("Size of filesystem on device" ),
 		NULL, "size",	NULL,	set_filesystem_size },
 
 	{ 'p',	"cache_replacement_policy", NULL,
 		NULL, "(lru|fifo|random)", NULL, set_replacement_policy },
 
-	{ 0,	"csum-type",		N_("Checksum type"),
-		NULL, "(none|crc32c|crc64)", NULL, set_csum_type },
+	{ 0,	"metadata_csum_type",	N_("Checksum type"),
+		NULL, "(none|crc32c|crc64)", &meta_csum_type, set_csum_type },
 
-	{ 0,	"on-error",		N_("Action to take on filesystem error"),
+	{ 0,	"data_csum_type",	N_("Checksum type"),
+		NULL, "(none|crc32c|crc64)", &data_csum_type, set_csum_type },
+
+	{ 0,	"compression_type",	N_("Checksum type"),
+		NULL, "(none|crc32c|crc64)", NULL, set_compression_type },
+
+	{ 0,	"error_action",		N_("Action to take on filesystem error"),
 		NULL, "(continue|readonly|panic)", NULL, set_on_error_action },
 
 	{ 0,	"discard",		N_("Enable discards"),
-		NULL, NULL,	&discard,		NULL },
+		NULL, NULL,		&discard,	NULL },
 
 	{ 't',	"tier",			N_("tier of subsequent devices"),
 		NULL, "#",	NULL,	set_tier },
@@ -231,10 +249,10 @@ NihOption opts_format[] = {
 	{ 0,	"replication_set",	N_("replication set of subsequent devices"),
 		NULL, "#",	NULL,	set_replication_set },
 
-	{ 0,	"meta-replicas",	N_("number of metadata replicas"),
+	{ 0,	"meta_replicas",	N_("number of metadata replicas"),
 		NULL, "#",	NULL,	set_meta_replicas },
 
-	{ 0,	"data-replicas",	N_("number of data replicas"),
+	{ 0,	"data_replicas",	N_("number of data replicas"),
 		NULL, "#",	NULL,	set_data_replicas },
 
 	{ 0,	"cache_mode",		N_("Cache mode (for backing devices)"),
@@ -413,7 +431,9 @@ static void format_v1(void)
 	 * crc64
 	 */
 	SET_CACHE_SB_CSUM_TYPE(sb,		BCH_CSUM_CRC64);
-	SET_CACHE_PREFERRED_CSUM_TYPE(sb,	csum_type);
+	SET_CACHE_META_PREFERRED_CSUM_TYPE(sb,	meta_csum_type);
+	SET_CACHE_DATA_PREFERRED_CSUM_TYPE(sb,	data_csum_type);
+	SET_CACHE_COMPRESSION_TYPE(sb,		compression_type);
 
 	SET_CACHE_BTREE_NODE_SIZE(sb,		btree_node_size);
 	SET_CACHE_SET_META_REPLICAS_WANT(sb,	meta_replicas);

@@ -44,6 +44,14 @@ const char * const csum_types[] = {
 	NULL
 };
 
+const char * const compression_types[] = {
+	"none",
+	"lzo1x",
+	"gzip",
+	"xz",
+	NULL
+};
+
 const char * const error_actions[] = {
 	"continue",
 	"readonly",
