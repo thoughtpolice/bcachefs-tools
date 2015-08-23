@@ -8,7 +8,7 @@
 #define __USE_FILE_OFFSET64
 #define _XOPEN_SOURCE 500
 
-#include <blkid.h>
+#include <blkid/blkid.h>
 #include <fcntl.h>
 #include <linux/fs.h>
 #include <stdbool.h>

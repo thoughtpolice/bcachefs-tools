@@ -303,7 +303,7 @@ int cmd_status(NihCommand *command, char *const *args)
 
 			buf[len] = '\0';
 			dev_names[dev_count] = dev_name(buf);
-			snprintf(dev_path, MAX_PATH, "%s/%s", "/dev",
+			snprintf(dev_path, sizeof(dev_path), "%s/%s", "/dev",
 					dev_names[dev_count]);
 			sb = query_dev(dev_path, false, false,
 					true, dev_uuid);
@@ -331,7 +331,7 @@ int cmd_status(NihCommand *command, char *const *args)
 		int j;
 
 		uuid_unparse(m->uuid.b, uuid_str);
-		snprintf(dev_state, MAX_PATH, "%s",
+		snprintf(dev_state, sizeof(dev_state), "%s",
                          cache_state[CACHE_STATE(m)]);
 
 		for (j = 0; j < dev_count; j++) {
@@ -339,7 +339,7 @@ int cmd_status(NihCommand *command, char *const *args)
 				break;
 			} else if (j == dev_count - 1) {
 				if (!strcmp(cache_state[CACHE_STATE(m)], "active"))
-					snprintf(dev_state, MAX_PATH, "%s", "missing");
+					snprintf(dev_state, sizeof(dev_state), "%s", "missing");
 				break;
 			}
 		}
