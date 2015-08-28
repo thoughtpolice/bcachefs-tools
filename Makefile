@@ -10,8 +10,8 @@ all: bcacheadm probe-bcache
 
 install: bcacheadm probe-bcache
 	$(INSTALL) -m0755 bcacheadm $(DESTDIR)${PREFIX}/sbin/
-	$(INSTALL) -m0755 probe-bcache bcache-register		$(DESTDIR)$(UDEVLIBDIR)/
-	$(INSTALL) -m0644 69-bcache.rules	$(DESTDIR)$(UDEVLIBDIR)/rules.d/
+	#$(INSTALL) -m0755 probe-bcache bcache-register		$(DESTDIR)$(UDEVLIBDIR)/
+	#$(INSTALL) -m0644 69-bcache.rules	$(DESTDIR)$(UDEVLIBDIR)/rules.d/
 	#-$(INSTALL) -T -m0755 initramfs/hook	$(DESTDIR)/usr/share/initramfs-tools/hooks/bcache
 	if [ -d $(DESTDIR)$(DRACUTLIBDIR)/modules.d ]; then\
 		$(INSTALL) -D -m0755 dracut/module-setup.sh $(DESTDIR)$(DRACUTLIBDIR)/modules.d/90bcache/module-setup.sh; \
