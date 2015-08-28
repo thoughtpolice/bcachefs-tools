@@ -234,8 +234,8 @@ NihOption opts_format[] = {
 	{ 0,	"data_csum_type",	N_("Checksum type"),
 		NULL, "(none|crc32c|crc64)", &data_csum_type, set_csum_type },
 
-	{ 0,	"compression_type",	N_("Checksum type"),
-		NULL, "(none|crc32c|crc64)", NULL, set_compression_type },
+	{ 0,	"compression_type",	N_("Compression type"),
+		NULL, "(none|gzip)", NULL, set_compression_type },
 
 	{ 0,	"error_action",		N_("Action to take on filesystem error"),
 		NULL, "(continue|readonly|panic)", NULL, set_on_error_action },
