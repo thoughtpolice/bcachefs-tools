@@ -283,7 +283,7 @@ void write_backingdev_sb(int fd, unsigned block_size, unsigned mode,
 			 uuid_le set_uuid)
 {
 	char uuid_str[40];
-	struct cache_sb sb;
+	struct backingdev_sb sb;
 
 	memset(&sb, 0, sizeof(struct cache_sb));
 
@@ -302,7 +302,7 @@ void write_backingdev_sb(int fd, unsigned block_size, unsigned mode,
 
 	if (data_offset != BDEV_DATA_START_DEFAULT) {
 		sb.version = BCACHE_SB_VERSION_BDEV_WITH_OFFSET;
-		sb.bdev_data_offset = data_offset;
+		sb.data_offset = data_offset;
 	}
 
 	sb.csum = csum_set(&sb, BCH_CSUM_CRC64);

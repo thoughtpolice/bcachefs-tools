@@ -60,9 +60,8 @@ const char * const csum_types[] = {
 
 const char * const compression_types[] = {
 	"none",
-	"lzo1x",
+	"lz4",
 	"gzip",
-	"xz",
 	NULL
 };
 
