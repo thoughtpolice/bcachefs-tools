@@ -72,13 +72,15 @@ u64 bch_checksum(unsigned, const void *, size_t);
 #define __bset_bkey_last(_set)						\
 	 __bkey_idx((_set), (_set)->u64s)
 
-#define csum_set(i, type)						\
+#define __csum_set(i, u64s, type)					\
 ({									\
-	void *start = ((void *) (i)) + sizeof(uint64_t);		\
-	void *end = __bset_bkey_last(i);				\
+	const void *start = ((const void *) (i)) + sizeof(u64);		\
+	const void *end = __bkey_idx(i, u64s);				\
 									\
 	bch_checksum(type, start, end - start);				\
 })
+
+#define csum_set(i, type)	__csum_set(i, (i)->u64s, type)
 
 int bcachectl_open(void);
 

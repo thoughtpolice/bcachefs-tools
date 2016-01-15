@@ -331,8 +331,8 @@ static void format_v0(void)
 	sb->offset		= SB_SECTOR;
 	sb->version		= BCACHE_SB_VERSION_CDEV_WITH_UUID;
 	sb->magic		= BCACHE_MAGIC;
-	sb->block_size	= block_size;
-	sb->bucket_size	= bucket_size;
+	sb->block_size		= block_size;
+	sb->bucket_size		= bucket_size;
 	sb->set_uuid		= set_uuid;
 	sb->nr_in_set		= darray_size(cache_devices);
 
@@ -380,10 +380,10 @@ static void format_v1(void)
 	sb = calloc(1, sizeof(*sb) + sizeof(struct cache_member) *
 		    darray_size(cache_devices));
 
-	sb->offset	= SB_SECTOR;
-	sb->version	= BCACHE_SB_VERSION_CDEV_V3;
+	sb->offset	= __cpu_to_le64(SB_SECTOR);
+	sb->version	= __cpu_to_le64(BCACHE_SB_VERSION_CDEV_V3);
 	sb->magic	= BCACHE_MAGIC;
-	sb->block_size	= block_size;
+	sb->block_size	= __cpu_to_le16(block_size);
 	sb->set_uuid	= set_uuid;
 	sb->user_uuid	= user_uuid;
 	sb->nr_in_set	= darray_size(cache_devices);
@@ -412,13 +412,13 @@ static void format_v1(void)
 			(i - cache_devices.item);
 
 		uuid_generate(m->uuid.b);
-		m->nbuckets	= i->nbuckets;
-		m->first_bucket	= i->first_bucket;
-		m->bucket_size	= i->bucket_size;
+		m->nbuckets	= __cpu_to_le64(i->nbuckets);
+		m->first_bucket	= __cpu_to_le16(i->first_bucket);
+		m->bucket_size	= __cpu_to_le16(i->bucket_size);
 
-		if (m->nbuckets < 1 << 7)
+		if (__le64_to_cpu(m->nbuckets < 1 << 7))
 			die("Not enough buckets: %llu, need %u",
-			    m->nbuckets, 1 << 7);
+			    __le64_to_cpu(m->nbuckets), 1 << 7);
 
 		SET_CACHE_TIER(m,		i->tier);
 		SET_CACHE_REPLICATION_SET(m,	i->replication_set);
@@ -426,7 +426,7 @@ static void format_v1(void)
 		SET_CACHE_DISCARD(m,		discard);
 	}
 
-	sb->u64s = bch_journal_buckets_offset(sb);
+	sb->u64s = __cpu_to_le16(bch_journal_buckets_offset(sb));
 
 	darray_foreach(i, cache_devices) {
 		char uuid_str[40], set_uuid_str[40];
@@ -435,7 +435,8 @@ static void format_v1(void)
 
 		sb->disk_uuid	= m->uuid;
 		sb->nr_this_dev	= i - cache_devices.item;
-		sb->csum	= csum_set(sb, CACHE_SB_CSUM_TYPE(sb));
+		sb->csum	= __cpu_to_le64(__csum_set(sb, __le16_to_cpu(sb->u64s),
+							   CACHE_SB_CSUM_TYPE(sb)));
 
 		uuid_unparse(sb->disk_uuid.b, uuid_str);
 		uuid_unparse(sb->user_uuid.b, set_uuid_str);
@@ -450,12 +451,12 @@ static void format_v1(void)
 		       "first_bucket:		%u\n",
 		       uuid_str, set_uuid_str,
 		       (unsigned) sb->version,
-		       m->nbuckets,
-		       sb->block_size,
-		       m->bucket_size,
+		       __le64_to_cpu(m->nbuckets),
+		       __le16_to_cpu(sb->block_size),
+		       __le16_to_cpu(m->bucket_size),
 		       sb->nr_in_set,
 		       sb->nr_this_dev,
-		       m->first_bucket);
+		       __le16_to_cpu(m->first_bucket));
 
 		do_write_sb(i->fd, sb);
 	}
