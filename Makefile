@@ -9,7 +9,7 @@ LDFLAGS+=-static
 all: bcache probe-bcache
 
 install: bcache probe-bcache
-	$(INSTALL) -m0755 bcache $(DESTDIR)${PREFIX}/sbin/
+	$(INSTALL) -m0755 bcache $(DESTDIR)${PREFIX}/bin/
 	#$(INSTALL) -m0755 probe-bcache bcache-register		$(DESTDIR)$(UDEVLIBDIR)/
 	#$(INSTALL) -m0644 69-bcache.rules	$(DESTDIR)$(UDEVLIBDIR)/rules.d/
 	#-$(INSTALL) -T -m0755 initramfs/hook	$(DESTDIR)/usr/share/initramfs-tools/hooks/bcache
