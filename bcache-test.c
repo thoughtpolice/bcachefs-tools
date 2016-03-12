@@ -1,5 +1,5 @@
 /*
- * Author: Kent Overstreet <kmo@daterainc.com>
+ * Author: Kent Overstreet <kent.overstreet@gmail.com>
  *
  * GPLv2
  */

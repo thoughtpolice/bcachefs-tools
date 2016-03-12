@@ -12,7 +12,7 @@
 #include <nih/option.h>
 
 #include "bcache.h"
-#include "bcacheadm-assemble.h"
+#include "bcache-assemble.h"
 
 NihOption opts_assemble[] = {
 	NIH_OPTION_LAST

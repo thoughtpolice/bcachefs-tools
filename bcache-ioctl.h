@@ -1,5 +1,5 @@
-#ifndef _BCACHE_TOOLS_IOCTL_H
-#define _BCACHE_TOOLS_IOCTL_H
+#ifndef _LINUX_BCACHE_IOCTL_H
+#define _LINUX_BCACHE_IOCTL_H
 
 #include <linux/uuid.h>
 
@@ -28,6 +28,8 @@ extern "C" {
 	_IOW('r', 5, struct bch_ioctl_disk_remove_by_uuid)
 #define BCH_IOCTL_DISK_FAIL_BY_UUID					\
 	_IOW('r', 6, struct bch_ioctl_disk_fail_by_uuid)
+
+#define BCH_IOCTL_QUERY_UUID	_IOR('r', 6, struct bch_ioctl_query_uuid)
 
 struct bch_ioctl_assemble {
 	__u32			flags;
@@ -72,8 +74,12 @@ struct bch_ioctl_disk_fail_by_uuid {
 	uuid_le			dev;
 };
 
+struct bch_ioctl_query_uuid {
+	uuid_le			uuid;
+};
+
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* _BCACHE_TOOLS_IOCTL_H */
+#endif /* _LINUX_BCACHE_IOCTL_H */

@@ -1,5 +1,5 @@
 /*
- * Author: Kent Overstreet <kmo@daterainc.com>
+ * Author: Kent Overstreet <kent.overstreet@gmail.com>
  *
  * GPLv2
  */
@@ -66,7 +66,7 @@ int main(int argc, char **argv)
 			continue;
 		}
 
-		if (pread(fd, &sb, sizeof(sb), SB_START) != sizeof(sb))
+		if (pread(fd, &sb, sizeof(sb), SB_SECTOR << 9) != sizeof(sb))
 			continue;
 
 		if (memcmp(&sb.magic, &BCACHE_MAGIC, sizeof(sb.magic)))

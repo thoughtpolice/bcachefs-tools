@@ -1,25 +1,10 @@
 /*
- * Authors: Kent Overstreet <kmo@daterainc.com>
+ * Authors: Kent Overstreet <kent.overstreet@gmail.com>
  *	    Gabriel de Perthuis <g2p.code@gmail.com>
  *	    Jacob Malevich <jam@datera.io>
  *
  * GPLv2
  */
-
-#if 0
-#include <nih/main.h>
-#include <nih/logging.h>
-#include <ctype.h>
-#include <errno.h>
-#include <inttypes.h>
-#include <limits.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <blkid.h>
-#include <sys/ioctl.h>
-#include <sys/stat.h>
-#include <dirent.h>
-#endif
 
 #include <errno.h>
 #include <stdbool.h>
@@ -35,29 +20,33 @@
 #include <nih/command.h>
 #include <nih/option.h>
 
-#include "bcache.h"
-#include "bcacheadm-format.h"
+#include "ccan/ilog/ilog.h"
+#include "ccan/darray/darray.h"
 
-static struct cache_opts {
+#include "bcache.h"
+#include "bcache-format.h"
+
+struct cache_opts {
 	int		fd;
 	const char	*dev;
 	unsigned	bucket_size;
 	unsigned	tier;
 	unsigned	replacement_policy;
 	unsigned	replication_set;
-	u64		filesystem_size;
+	u64		size; /* 512 byte sectors */
 
 	u64		first_bucket;
 	u64		nbuckets;
-} cache_devices[MAX_DEVS];
+};
 
-static struct backingdev_opts {
+struct backingdev_opts {
 	int		fd;
 	const char	*dev;
 	const char	*label;
-} backing_devices[MAX_DEVS];
+};
 
-static size_t nr_backing_devices = 0, nr_cache_devices = 0;
+static darray(struct cache_opts) cache_devices;
+static darray(struct backingdev_opts) backing_devices;
 
 static char *label = NULL;
 
@@ -81,25 +70,25 @@ static unsigned cache_mode = CACHE_MODE_WRITEBACK;
 
 static int set_cache(NihOption *option, const char *arg)
 {
-	cache_devices[nr_cache_devices++] = (struct cache_opts) {
+	darray_append(cache_devices, (struct cache_opts) {
 		.fd			= dev_open(arg),
 		.dev			= strdup(arg),
 		.bucket_size		= bucket_size,
 		.tier			= tier,
 		.replacement_policy	= replacement_policy,
 		.replication_set	= replication_set,
-		.filesystem_size	= filesystem_size,
-	};
+		.size			= filesystem_size,
+	});
 	return 0;
 }
 
 static int set_bdev(NihOption *option, const char *arg)
 {
-	backing_devices[nr_backing_devices++] = (struct backingdev_opts) {
+	darray_append(backing_devices, (struct backingdev_opts) {
 		.fd			= dev_open(arg),
 		.dev			= strdup(arg),
 		.label			= label ? strdup(label) : NULL,
-	};
+	});
 	return 0;
 }
 
@@ -267,41 +256,17 @@ NihOption opts_format[] = {
 	NIH_OPTION_LAST
 };
 
-static unsigned rounddown_pow_of_two(unsigned n)
-{
-	unsigned ret;
-
-	do {
-		ret = n;
-		n &= n - 1;
-	} while (n);
-
-	return ret;
-}
-
-static unsigned ilog2(u64 n)
-{
-	unsigned ret = 0;
-
-	while (n) {
-		ret++;
-		n >>= 1;
-	}
-
-	return ret;
-}
-
 void __do_write_sb(int fd, void *sb, size_t bytes)
 {
-	char zeroes[SB_START] = {0};
+	char zeroes[SB_SECTOR << 9] = {0};
 
 	/* Zero start of disk */
-	if (pwrite(fd, zeroes, SB_START, 0) != SB_START) {
+	if (pwrite(fd, zeroes, SB_SECTOR << 9, 0) != SB_SECTOR << 9) {
 		perror("write error trying to zero start of disk\n");
 		exit(EXIT_FAILURE);
 	}
 	/* Write superblock */
-	if (pwrite(fd, sb, bytes, SB_START) != bytes) {
+	if (pwrite(fd, sb, bytes, SB_SECTOR << 9) != bytes) {
 		perror("write error trying to write superblock\n");
 		exit(EXIT_FAILURE);
 	}
@@ -354,11 +319,11 @@ void write_backingdev_sb(int fd, unsigned block_size, unsigned mode,
 
 static void format_v0(void)
 {
+	struct cache_opts *i;
+
 	set_uuid = user_uuid;
 
-	for (struct cache_opts *i = cache_devices;
-	     i < cache_devices + nr_cache_devices;
-	     i++)
+	darray_foreach(i, cache_devices)
 		bucket_size = min(bucket_size, i->bucket_size);
 
 	struct cache_sb_v0 *sb = calloc(1, sizeof(*sb));
@@ -369,20 +334,18 @@ static void format_v0(void)
 	sb->block_size	= block_size;
 	sb->bucket_size	= bucket_size;
 	sb->set_uuid		= set_uuid;
-	sb->nr_in_set		= nr_cache_devices;
+	sb->nr_in_set		= darray_size(cache_devices);
 
 	if (label)
 		memcpy(sb->label, label, sizeof(sb->label));
 
-	for (struct cache_opts *i = cache_devices;
-	     i < cache_devices + nr_cache_devices;
-	     i++) {
+	darray_foreach(i, cache_devices) {
 		char uuid_str[40], set_uuid_str[40];
 
 		uuid_generate(sb->uuid.b);
 		sb->nbuckets		= i->nbuckets;
 		sb->first_bucket	= i->first_bucket;
-		sb->nr_this_dev		= i - cache_devices;
+		sb->nr_this_dev		= i - cache_devices.item;
 		sb->csum		= csum_set(sb, BCH_CSUM_CRC64);
 
 		uuid_unparse(sb->uuid.b, uuid_str);
@@ -412,16 +375,18 @@ static void format_v0(void)
 static void format_v1(void)
 {
 	struct cache_sb *sb;
+	struct cache_opts *i;
 
 	sb = calloc(1, sizeof(*sb) + sizeof(struct cache_member) *
-		    nr_cache_devices);
+		    darray_size(cache_devices));
 
-	sb->offset		= SB_SECTOR;
-	sb->version		= BCACHE_SB_VERSION_CDEV_V3;
-	sb->magic		= BCACHE_MAGIC;
+	sb->offset	= SB_SECTOR;
+	sb->version	= BCACHE_SB_VERSION_CDEV_V3;
+	sb->magic	= BCACHE_MAGIC;
 	sb->block_size	= block_size;
-	sb->set_uuid		= set_uuid;
-	sb->user_uuid		= user_uuid;
+	sb->set_uuid	= set_uuid;
+	sb->user_uuid	= user_uuid;
+	sb->nr_in_set	= darray_size(cache_devices);
 
 	if (label)
 		memcpy(sb->label, label, sizeof(sb->label));
@@ -442,10 +407,9 @@ static void format_v1(void)
 	SET_CACHE_SET_DATA_REPLICAS_HAVE(sb,	data_replicas);
 	SET_CACHE_ERROR_ACTION(sb,		on_error_action);
 
-	for (struct cache_opts *i = cache_devices;
-	     i < cache_devices + nr_cache_devices;
-	     i++) {
-		struct cache_member *m = sb->members + sb->nr_in_set++;
+	darray_foreach(i, cache_devices) {
+		struct cache_member *m = sb->members +
+			(i - cache_devices.item);
 
 		uuid_generate(m->uuid.b);
 		m->nbuckets	= i->nbuckets;
@@ -464,14 +428,14 @@ static void format_v1(void)
 
 	sb->u64s = bch_journal_buckets_offset(sb);
 
-	for (unsigned i = 0; i < sb->nr_in_set; i++) {
+	darray_foreach(i, cache_devices) {
 		char uuid_str[40], set_uuid_str[40];
-		struct cache_member *m = sb->members + i;
+		struct cache_member *m = sb->members +
+			(i - cache_devices.item);
 
-		sb->disk_uuid		= m->uuid;
-		sb->nr_this_dev	= i;
-		sb->csum		= csum_set(sb,
-						CACHE_SB_CSUM_TYPE(sb));
+		sb->disk_uuid	= m->uuid;
+		sb->nr_this_dev	= i - cache_devices.item;
+		sb->csum	= csum_set(sb, CACHE_SB_CSUM_TYPE(sb));
 
 		uuid_unparse(sb->disk_uuid.b, uuid_str);
 		uuid_unparse(sb->user_uuid.b, set_uuid_str);
@@ -493,13 +457,17 @@ static void format_v1(void)
 		       sb->nr_this_dev,
 		       m->first_bucket);
 
-		do_write_sb(cache_devices[i].fd, sb);
+		do_write_sb(i->fd, sb);
 	}
 }
 
-int cmd_format(NihCommand *command, char *const *args)
+int cmd_format(NihCommand *command, char * const *args)
 {
-	if (!nr_cache_devices && !nr_backing_devices)
+	struct cache_opts *i;
+	struct backingdev_opts *ib;
+
+	if (!darray_size(cache_devices) &&
+	    !darray_size(backing_devices))
 		die("Please supply a device");
 
 	if (uuid_is_null(user_uuid.b))
@@ -508,36 +476,33 @@ int cmd_format(NihCommand *command, char *const *args)
 	uuid_generate(set_uuid.b);
 
 	if (!block_size) {
-		for (struct cache_opts *i = cache_devices;
-		     i < cache_devices + nr_cache_devices;
-		     i++)
-			block_size = max(block_size, get_blocksize(i->dev, i->fd));
+		darray_foreach(i, cache_devices)
+			block_size = max(block_size,
+					 get_blocksize(i->dev, i->fd));
 
-		for (struct backingdev_opts *i = backing_devices;
-		     i < backing_devices + nr_backing_devices;
-		     i++)
-			block_size = max(block_size, get_blocksize(i->dev, i->fd));
+		darray_foreach(ib, backing_devices)
+			block_size = max(block_size,
+					 get_blocksize(ib->dev, ib->fd));
 	}
 
-	for (struct cache_opts *i = cache_devices;
-	     i < cache_devices + nr_cache_devices;
-	     i++) {
-		if (!i->bucket_size) {
-			u64 size = (i->filesystem_size ?:
-				    getblocks(i->fd)) << 9;
+	darray_foreach(i, cache_devices) {
+		if (!i->size)
+			i->size = get_size(i->dev, i->fd);
 
-			if (size < 1 << 20) /* 1M device - 256 4k buckets*/
-				i->bucket_size = rounddown_pow_of_two(size >> 17);
+		if (!i->bucket_size) {
+			u64 bytes = i->size << 9;
+
+			if (bytes < 1 << 20) /* 1M device - 256 4k buckets*/
+				i->bucket_size = rounddown_pow_of_two(bytes >> 17);
 			else
 				/* Max 1M bucket at around 256G */
-				i->bucket_size = 8 << min((ilog2(size >> 20) / 2), 9U);
+				i->bucket_size = 8 << min((ilog2(bytes >> 20) / 2), 9U);
 		}
 
 		if (i->bucket_size < block_size)
 			die("Bucket size cannot be smaller than block size");
 
-		i->nbuckets	= (i->filesystem_size ?:
-				   getblocks(i->fd)) / i->bucket_size;
+		i->nbuckets	= i->size / i->bucket_size;
 		i->first_bucket	= (23 / i->bucket_size) + 3;
 
 		if (i->nbuckets < 1 << 7)
@@ -549,9 +514,7 @@ int cmd_format(NihCommand *command, char *const *args)
 		/* 256k default btree node size */
 		btree_node_size = 512;
 
-		for (struct cache_opts *i = cache_devices;
-		     i < cache_devices + nr_cache_devices;
-		     i++)
+		darray_foreach(i, cache_devices)
 			btree_node_size = min(btree_node_size, i->bucket_size);
 	}
 
@@ -564,11 +527,9 @@ int cmd_format(NihCommand *command, char *const *args)
 		break;
 	}
 
-	for (struct backingdev_opts *i = backing_devices;
-	     i < backing_devices + nr_backing_devices;
-	     i++)
-		write_backingdev_sb(i->fd, block_size, cache_mode,
-				    data_offset, i->label,
+	darray_foreach(ib, backing_devices)
+		write_backingdev_sb(ib->fd, block_size, cache_mode,
+				    data_offset, ib->label,
 				    set_uuid);
 
 	return 0;

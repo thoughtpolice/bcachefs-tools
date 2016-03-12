@@ -459,7 +459,7 @@ struct bch_inode_blockdev {
 
 	uuid_le			i_uuid;
 	__u8			i_label[32];
-} __packed;
+} __attribute__((packed));
 BKEY_VAL_TYPE(inode_blockdev,	BCH_INODE_BLOCKDEV);
 
 /* Dirents */
@@ -493,7 +493,7 @@ struct bch_dirent {
 	__u8			d_type;
 
 	__u8			d_name[];
-} __packed;
+} __attribute__((packed));
 BKEY_VAL_TYPE(dirent,		BCH_DIRENT);
 
 /* Xattrs */
@@ -515,7 +515,7 @@ struct bch_xattr {
 	__u8			x_name_len;
 	__u16			x_val_len;
 	__u8			x_name[];
-} __packed;
+} __attribute__((packed));
 BKEY_VAL_TYPE(xattr,		BCH_XATTR);
 
 /* Superblock */
