@@ -1,0 +1,44 @@
+bcache-tools (1.0.8-2~bpo8+1) jessie-backports; urgency=medium
+
+  * Rebuild for jessie-backports.
+
+ -- Mathieu Parent <sathieu@debian.org>  Mon, 21 Sep 2015 21:18:39 +0200
+
+bcache-tools (1.0.8-2) unstable; urgency=medium
+
+  * Only run update-initramfs if installed. Fix dracut. (Closes: #788442)
+
+ -- David Mohr <david@mcbf.net>  Thu, 11 Jun 2015 10:23:48 -0600
+
+bcache-tools (1.0.8-1) unstable; urgency=medium
+
+  [ James Page ]
+  * d/control: Add Vcs fields.
+
+  [ David Mohr ]
+  * Don't depend on initramfs-tools, instead recommend it (Closes: #775674)
+  * New upstream release 1.0.8
+  * Update changelog
+  * Add patch to clean bcache-register
+  * Update changelog
+  * Adding dep3 headers to the 0001 patch
+  * Update watch to use http://evilpiepirate.org/git/bcache-tools.git
+  * Add patch for gcc-5 compatability.
+    Thanks to James Cowgill (Closes: #777798)
+
+ -- David Mohr <david@mcbf.net>  Tue, 26 May 2015 20:57:58 -0600
+
+bcache-tools (1.0.7-1) unstable; urgency=medium
+
+  [ David Mohr ]
+  * Based on work by Gabriel de Perthuis <g2p.code+debian@gmail.com>
+  * Initial release. (Closes: #708132)
+
+  [ Robie Basak ]
+  * Remove unnecessary file bcache-tools.postrm.
+  * debian/copyright fixes.
+  * Add shebang to bcache-tools.preinst.
+  * Drop Vcs-* for now.
+  * Add self to Uploaders.
+
+ -- Robie Basak <robie@justgohome.co.uk>  Mon, 27 Oct 2014 13:32:08 +0000
