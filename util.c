@@ -487,3 +487,9 @@ struct bcache_handle bcache_fs_open(const char *path)
 
 	return ret;
 }
+
+void memzero_explicit(void *buf, size_t len)
+{
+    void *(* volatile memset_s)(void *s, int c, size_t n) = memset;
+    memset_s(buf, 0, len);
+}

@@ -74,7 +74,7 @@ u64 bch_checksum(unsigned, const void *, size_t);
 
 #define __csum_set(i, u64s, type)					\
 ({									\
-	const void *start = ((const void *) (i)) + sizeof(u64);		\
+	const void *start = ((const void *) (i)) + sizeof(i->csum);	\
 	const void *end = __bkey_idx(i, u64s);				\
 									\
 	bch_checksum(type, start, end - start);				\
@@ -92,5 +92,7 @@ struct bcache_handle {
 };
 
 struct bcache_handle bcache_fs_open(const char *);
+
+void memzero_explicit(void *, size_t);
 
 #endif /* _UTIL_H */

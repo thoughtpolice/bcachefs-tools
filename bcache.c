@@ -31,6 +31,7 @@
 #include "bcache-format.h"
 #include "bcache-fs.h"
 #include "bcache-run.h"
+#include "bcache-key.h"
 
 #define PACKAGE_NAME "bcache"
 #define PACKAGE_VERSION "1.0"
@@ -129,6 +130,11 @@ static NihCommand commands[] = {
 	    "Adds a list of devices to a volume"),
 	CMD(device_remove, N_("<volume> <devices>"),
 	    "Removes a device from its volume"),
+
+	/* Crypto */
+
+	CMD(unlock, N_("<device>"),
+	    "Unlock an encrypted filesystem"),
 
 #if 0
 	CMD(modify, N_("<options>"),

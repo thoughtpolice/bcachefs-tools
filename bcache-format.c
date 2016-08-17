@@ -20,81 +20,51 @@
 #include <nih/command.h>
 #include <nih/option.h>
 
-#include "ccan/ilog/ilog.h"
 #include "ccan/darray/darray.h"
 
 #include "bcache.h"
+#include "libbcache.h"
 #include "bcache-format.h"
-
-struct cache_opts {
-	int		fd;
-	const char	*dev;
-	unsigned	bucket_size;
-	unsigned	tier;
-	unsigned	replacement_policy;
-	unsigned	replication_set;
-	u64		size; /* 512 byte sectors */
-
-	u64		first_bucket;
-	u64		nbuckets;
-};
-
-struct backingdev_opts {
-	int		fd;
-	const char	*dev;
-	const char	*label;
-};
-
-static darray(struct cache_opts) cache_devices;
-static darray(struct backingdev_opts) backing_devices;
-
-static char *label = NULL;
+#include "crypto.h"
 
 /* All in units of 512 byte sectors */
-static unsigned block_size, bucket_size, btree_node_size;
-static u64 filesystem_size;
-static unsigned tier, replacement_policy;
 
-static uuid_le set_uuid, user_uuid;
+static darray(struct dev_opts) cache_devices;
+
+static unsigned block_size, btree_node_size;
 static unsigned meta_csum_type = BCH_CSUM_CRC32C;
 static unsigned data_csum_type = BCH_CSUM_CRC32C;
 static unsigned compression_type = BCH_COMPRESSION_NONE;
-
-static unsigned replication_set, meta_replicas = 1, data_replicas = 1;
+static int encrypted;
+static unsigned meta_replicas = 1, data_replicas = 1;
 static unsigned on_error_action;
-static int discard;
-static unsigned version = 1;
+static char *label = NULL;
+static uuid_le uuid;
 
-static u64 data_offset = BDEV_DATA_START_DEFAULT;
-static unsigned cache_mode = CACHE_MODE_WRITEBACK;
+/* Device specific options: */
+static u64 filesystem_size;
+static unsigned bucket_size;
+static unsigned tier;
+static unsigned replacement_policy;
+static int discard;
 
 static int set_cache(NihOption *option, const char *arg)
 {
-	darray_append(cache_devices, (struct cache_opts) {
+	darray_append(cache_devices, (struct dev_opts) {
 		.fd			= dev_open(arg),
 		.dev			= strdup(arg),
+		.size			= filesystem_size,
 		.bucket_size		= bucket_size,
 		.tier			= tier,
 		.replacement_policy	= replacement_policy,
-		.replication_set	= replication_set,
-		.size			= filesystem_size,
+		.discard		= discard,
 	});
 	return 0;
 }
 
-static int set_bdev(NihOption *option, const char *arg)
+static int set_uuid(NihOption *option, const char *arg)
 {
-	darray_append(backing_devices, (struct backingdev_opts) {
-		.fd			= dev_open(arg),
-		.dev			= strdup(arg),
-		.label			= label ? strdup(label) : NULL,
-	});
-	return 0;
-}
-
-static int set_cache_set_uuid(NihOption *option, const char *arg)
-{
-	if (uuid_parse(arg, user_uuid.b))
+	if (uuid_parse(arg, uuid.b))
 		die("Bad uuid");
 	return 0;
 }
@@ -158,13 +128,6 @@ static int set_tier(NihOption *option, const char *arg)
 	return 0;
 }
 
-static int set_replication_set(NihOption *option, const char *arg)
-{
-	replication_set = strtoul_or_die(arg, CACHE_REPLICATION_SET_MAX,
-					 "replication set");
-	return 0;
-}
-
 static int set_meta_replicas(NihOption *option, const char *arg)
 {
 	meta_replicas = strtoul_or_die(arg, CACHE_SET_META_REPLICAS_WANT_MAX,
@@ -179,359 +142,97 @@ static int set_data_replicas(NihOption *option, const char *arg)
 	return 0;
 }
 
-static int set_cache_mode(NihOption *option, const char *arg)
-{
-	cache_mode = read_string_list_or_die(arg, bdev_cache_mode,
-					     "cache mode");
-	return 0;
-}
-
-static int set_version(NihOption *option, const char *arg)
-{
-	version = strtoul_or_die(arg, 2, "version");
-	return 0;
-}
-
 NihOption opts_format[] = {
 //	{ int shortoption, char *longoption, char *help, NihOptionGroup, char *argname, void *value, NihOptionSetter}
 
 	{ 'C',	"cache",		N_("Format a cache device"),
 		NULL, "dev",	NULL,	set_cache },
-	{ 'B',	"bdev",			N_("Format a backing device"),
-		NULL, "dev",	NULL,	set_bdev },
 
-	{ 'l',	"label",		N_("label"),
-		NULL, "label",	&label, NULL},
-	{ 0,	"cset_uuid",		N_("UUID for the cache set"),
-		NULL, "uuid",	NULL,	set_cache_set_uuid },
-
-	{ 'w',	"block",		N_("block size (hard sector size of SSD, often 2k"),
+	{ 'w',	"block",		N_("block size"),
 		NULL, "size",	NULL,	set_block_size },
-	{ 'b',	"bucket",		N_("bucket size"),
-		NULL, "size",	NULL,	set_bucket_sizes },
 	{ 'n',	"btree_node",		N_("Btree node size, default 256k"),
 		NULL, "size",	NULL,	set_btree_node_size },
-	{ 0,	"fs_size",		N_("Size of filesystem on device" ),
-		NULL, "size",	NULL,	set_filesystem_size },
-
-	{ 'p',	"cache_replacement_policy", NULL,
-		NULL, "(lru|fifo|random)", NULL, set_replacement_policy },
 
 	{ 0,	"metadata_csum_type",	N_("Checksum type"),
 		NULL, "(none|crc32c|crc64)", &meta_csum_type, set_csum_type },
-
 	{ 0,	"data_csum_type",	N_("Checksum type"),
 		NULL, "(none|crc32c|crc64)", &data_csum_type, set_csum_type },
-
 	{ 0,	"compression_type",	N_("Compression type"),
 		NULL, "(none|gzip)", NULL, set_compression_type },
+	{ 0,	"encrypted",		N_("enable encryption"),
+		NULL, NULL,		&encrypted,	NULL },
+
+	{ 0,	"meta_replicas",	N_("number of metadata replicas"),
+		NULL, "#",	NULL,	set_meta_replicas },
+	{ 0,	"data_replicas",	N_("number of data replicas"),
+		NULL, "#",	NULL,	set_data_replicas },
 
 	{ 0,	"error_action",		N_("Action to take on filesystem error"),
 		NULL, "(continue|readonly|panic)", NULL, set_on_error_action },
 
-	{ 0,	"discard",		N_("Enable discards"),
-		NULL, NULL,		&discard,	NULL },
+	{ 'l',	"label",		N_("label"),
+		NULL, "label",	&label, NULL},
+	{ 0,	"uuid",			N_("filesystem UUID"),
+		NULL, "uuid",	NULL,	set_uuid },
 
+	/* Device specific options: */
+	{ 0,	"fs_size",		N_("Size of filesystem on device" ),
+		NULL, "size",	NULL,	set_filesystem_size },
+	{ 'b',	"bucket",		N_("bucket size"),
+		NULL, "size",	NULL,	set_bucket_sizes },
 	{ 't',	"tier",			N_("tier of subsequent devices"),
 		NULL, "#",	NULL,	set_tier },
-
-	{ 0,	"replication_set",	N_("replication set of subsequent devices"),
-		NULL, "#",	NULL,	set_replication_set },
-
-	{ 0,	"meta_replicas",	N_("number of metadata replicas"),
-		NULL, "#",	NULL,	set_meta_replicas },
-
-	{ 0,	"data_replicas",	N_("number of data replicas"),
-		NULL, "#",	NULL,	set_data_replicas },
-
-	{ 0,	"cache_mode",		N_("Cache mode (for backing devices)"),
-		NULL, "(writethrough|writeback|writearound", NULL, set_cache_mode },
-
-	{ 'o',	"data_offset",		N_("data offset in sectors"),
-		NULL, "offset",	&data_offset, NULL},
-
-	{ 'v',	"version",		N_("superblock version"),
-		NULL, "#",	NULL,	set_version},
+	{ 'p',	"cache_replacement_policy", NULL,
+		NULL, "(lru|fifo|random)", NULL, set_replacement_policy },
+	{ 0,	"discard",		N_("Enable discards"),
+		NULL, NULL,		&discard,	NULL },
 
 	NIH_OPTION_LAST
 };
 
-void __do_write_sb(int fd, void *sb, size_t bytes)
-{
-	char zeroes[SB_SECTOR << 9] = {0};
-
-	/* Zero start of disk */
-	if (pwrite(fd, zeroes, SB_SECTOR << 9, 0) != SB_SECTOR << 9) {
-		perror("write error trying to zero start of disk\n");
-		exit(EXIT_FAILURE);
-	}
-	/* Write superblock */
-	if (pwrite(fd, sb, bytes, SB_SECTOR << 9) != bytes) {
-		perror("write error trying to write superblock\n");
-		exit(EXIT_FAILURE);
-	}
-
-	fsync(fd);
-	close(fd);
-}
-
-#define do_write_sb(_fd, _sb)			\
-	__do_write_sb(_fd, _sb, ((void *) __bset_bkey_last(_sb)) - (void *) _sb);
-
-void write_backingdev_sb(int fd, unsigned block_size, unsigned mode,
-			 u64 data_offset, const char *label,
-			 uuid_le set_uuid)
-{
-	char uuid_str[40];
-	struct backingdev_sb sb;
-
-	memset(&sb, 0, sizeof(struct cache_sb));
-
-	sb.offset	= SB_SECTOR;
-	sb.version	= BCACHE_SB_VERSION_BDEV;
-	sb.magic	= BCACHE_MAGIC;
-	uuid_generate(sb.disk_uuid.b);
-	sb.set_uuid	= set_uuid;
-	sb.block_size	= block_size;
-
-	uuid_unparse(sb.disk_uuid.b, uuid_str);
-	if (label)
-		memcpy(sb.label, label, SB_LABEL_SIZE);
-
-	SET_BDEV_CACHE_MODE(&sb, mode);
-
-	if (data_offset != BDEV_DATA_START_DEFAULT) {
-		sb.version = BCACHE_SB_VERSION_BDEV_WITH_OFFSET;
-		sb.data_offset = data_offset;
-	}
-
-	sb.csum = csum_set(&sb, BCH_CSUM_CRC64);
-
-	printf("UUID:			%s\n"
-	       "version:		%u\n"
-	       "block_size:		%u\n"
-	       "data_offset:		%llu\n",
-	       uuid_str, (unsigned) sb.version,
-	       sb.block_size, data_offset);
-
-	do_write_sb(fd, &sb);
-}
-
-static void format_v0(void)
-{
-	struct cache_opts *i;
-
-	set_uuid = user_uuid;
-
-	darray_foreach(i, cache_devices)
-		bucket_size = min(bucket_size, i->bucket_size);
-
-	struct cache_sb_v0 *sb = calloc(1, sizeof(*sb));
-
-	sb->offset		= SB_SECTOR;
-	sb->version		= BCACHE_SB_VERSION_CDEV_WITH_UUID;
-	sb->magic		= BCACHE_MAGIC;
-	sb->block_size		= block_size;
-	sb->bucket_size		= bucket_size;
-	sb->set_uuid		= set_uuid;
-	sb->nr_in_set		= darray_size(cache_devices);
-
-	if (label)
-		memcpy(sb->label, label, sizeof(sb->label));
-
-	darray_foreach(i, cache_devices) {
-		char uuid_str[40], set_uuid_str[40];
-
-		uuid_generate(sb->uuid.b);
-		sb->nbuckets		= i->nbuckets;
-		sb->first_bucket	= i->first_bucket;
-		sb->nr_this_dev		= i - cache_devices.item;
-		sb->csum		= csum_set(sb, BCH_CSUM_CRC64);
-
-		uuid_unparse(sb->uuid.b, uuid_str);
-		uuid_unparse(sb->set_uuid.b, set_uuid_str);
-		printf("UUID:			%s\n"
-		       "Set UUID:		%s\n"
-		       "version:		%u\n"
-		       "nbuckets:		%llu\n"
-		       "block_size:		%u\n"
-		       "bucket_size:		%u\n"
-		       "nr_in_set:		%u\n"
-		       "nr_this_dev:		%u\n"
-		       "first_bucket:		%u\n",
-		       uuid_str, set_uuid_str,
-		       (unsigned) sb->version,
-		       sb->nbuckets,
-		       sb->block_size,
-		       sb->bucket_size,
-		       sb->nr_in_set,
-		       sb->nr_this_dev,
-		       sb->first_bucket);
-
-		do_write_sb(i->fd, sb);
-	}
-}
-
-static void format_v1(void)
-{
-	struct cache_sb *sb;
-	struct cache_opts *i;
-
-	sb = calloc(1, sizeof(*sb) + sizeof(struct cache_member) *
-		    darray_size(cache_devices));
-
-	sb->offset	= __cpu_to_le64(SB_SECTOR);
-	sb->version	= __cpu_to_le64(BCACHE_SB_VERSION_CDEV_V3);
-	sb->magic	= BCACHE_MAGIC;
-	sb->block_size	= __cpu_to_le16(block_size);
-	sb->set_uuid	= set_uuid;
-	sb->user_uuid	= user_uuid;
-	sb->nr_in_set	= darray_size(cache_devices);
-
-	if (label)
-		memcpy(sb->label, label, sizeof(sb->label));
-
-	/*
-	 * don't have a userspace crc32c implementation handy, just always use
-	 * crc64
-	 */
-	SET_CACHE_SB_CSUM_TYPE(sb,		BCH_CSUM_CRC64);
-	SET_CACHE_META_PREFERRED_CSUM_TYPE(sb,	meta_csum_type);
-	SET_CACHE_DATA_PREFERRED_CSUM_TYPE(sb,	data_csum_type);
-	SET_CACHE_COMPRESSION_TYPE(sb,		compression_type);
-
-	SET_CACHE_BTREE_NODE_SIZE(sb,		btree_node_size);
-	SET_CACHE_SET_META_REPLICAS_WANT(sb,	meta_replicas);
-	SET_CACHE_SET_META_REPLICAS_HAVE(sb,	meta_replicas);
-	SET_CACHE_SET_DATA_REPLICAS_WANT(sb,	data_replicas);
-	SET_CACHE_SET_DATA_REPLICAS_HAVE(sb,	data_replicas);
-	SET_CACHE_ERROR_ACTION(sb,		on_error_action);
-
-	darray_foreach(i, cache_devices) {
-		struct cache_member *m = sb->members +
-			(i - cache_devices.item);
-
-		uuid_generate(m->uuid.b);
-		m->nbuckets	= __cpu_to_le64(i->nbuckets);
-		m->first_bucket	= __cpu_to_le16(i->first_bucket);
-		m->bucket_size	= __cpu_to_le16(i->bucket_size);
-
-		if (__le64_to_cpu(m->nbuckets < 1 << 7))
-			die("Not enough buckets: %llu, need %u",
-			    __le64_to_cpu(m->nbuckets), 1 << 7);
-
-		SET_CACHE_TIER(m,		i->tier);
-		SET_CACHE_REPLICATION_SET(m,	i->replication_set);
-		SET_CACHE_REPLACEMENT(m,	i->replacement_policy);
-		SET_CACHE_DISCARD(m,		discard);
-	}
-
-	sb->u64s = __cpu_to_le16(bch_journal_buckets_offset(sb));
-
-	darray_foreach(i, cache_devices) {
-		char uuid_str[40], set_uuid_str[40];
-		struct cache_member *m = sb->members +
-			(i - cache_devices.item);
-
-		sb->disk_uuid	= m->uuid;
-		sb->nr_this_dev	= i - cache_devices.item;
-		sb->csum	= __cpu_to_le64(__csum_set(sb, __le16_to_cpu(sb->u64s),
-							   CACHE_SB_CSUM_TYPE(sb)));
-
-		uuid_unparse(sb->disk_uuid.b, uuid_str);
-		uuid_unparse(sb->user_uuid.b, set_uuid_str);
-		printf("UUID:			%s\n"
-		       "Set UUID:		%s\n"
-		       "version:		%u\n"
-		       "nbuckets:		%llu\n"
-		       "block_size:		%u\n"
-		       "bucket_size:		%u\n"
-		       "nr_in_set:		%u\n"
-		       "nr_this_dev:		%u\n"
-		       "first_bucket:		%u\n",
-		       uuid_str, set_uuid_str,
-		       (unsigned) sb->version,
-		       __le64_to_cpu(m->nbuckets),
-		       __le16_to_cpu(sb->block_size),
-		       __le16_to_cpu(m->bucket_size),
-		       sb->nr_in_set,
-		       sb->nr_this_dev,
-		       __le16_to_cpu(m->first_bucket));
-
-		do_write_sb(i->fd, sb);
-	}
-}
-
 int cmd_format(NihCommand *command, char * const *args)
 {
-	struct cache_opts *i;
-	struct backingdev_opts *ib;
+	char *passphrase = NULL;
 
-	if (!darray_size(cache_devices) &&
-	    !darray_size(backing_devices))
+	if (!darray_size(cache_devices))
 		die("Please supply a device");
 
-	if (uuid_is_null(user_uuid.b))
-		uuid_generate(user_uuid.b);
+	if (uuid_is_null(uuid.b))
+		uuid_generate(uuid.b);
 
-	uuid_generate(set_uuid.b);
+	if (encrypted) {
+		char *pass2;
 
-	if (!block_size) {
-		darray_foreach(i, cache_devices)
-			block_size = max(block_size,
-					 get_blocksize(i->dev, i->fd));
+		passphrase = read_passphrase("Enter passphrase: ");
+		pass2 = read_passphrase("Enter same passphrase again: ");
 
-		darray_foreach(ib, backing_devices)
-			block_size = max(block_size,
-					 get_blocksize(ib->dev, ib->fd));
-	}
-
-	darray_foreach(i, cache_devices) {
-		if (!i->size)
-			i->size = get_size(i->dev, i->fd);
-
-		if (!i->bucket_size) {
-			u64 bytes = i->size << 9;
-
-			if (bytes < 1 << 20) /* 1M device - 256 4k buckets*/
-				i->bucket_size = rounddown_pow_of_two(bytes >> 17);
-			else
-				/* Max 1M bucket at around 256G */
-				i->bucket_size = 8 << min((ilog2(bytes >> 20) / 2), 9U);
+		if (strcmp(passphrase, pass2)) {
+			memzero_explicit(passphrase, strlen(passphrase));
+			memzero_explicit(pass2, strlen(pass2));
+			die("Passphrases do not match");
 		}
 
-		if (i->bucket_size < block_size)
-			die("Bucket size cannot be smaller than block size");
-
-		i->nbuckets	= i->size / i->bucket_size;
-		i->first_bucket	= (23 / i->bucket_size) + 3;
-
-		if (i->nbuckets < 1 << 7)
-			die("Not enough buckets: %llu, need %u",
-			    i->nbuckets, 1 << 7);
+		memzero_explicit(pass2, strlen(pass2));
+		free(pass2);
 	}
 
-	if (!btree_node_size) {
-		/* 256k default btree node size */
-		btree_node_size = 512;
+	bcache_format(cache_devices.item, darray_size(cache_devices),
+		      block_size,
+		      btree_node_size,
+		      meta_csum_type,
+		      data_csum_type,
+		      compression_type,
+		      passphrase,
+		      meta_replicas,
+		      data_replicas,
+		      on_error_action,
+		      label,
+		      uuid);
 
-		darray_foreach(i, cache_devices)
-			btree_node_size = min(btree_node_size, i->bucket_size);
+	if (passphrase) {
+		memzero_explicit(passphrase, strlen(passphrase));
+		free(passphrase);
 	}
-
-	switch (version) {
-	case 0:
-		format_v0();
-		break;
-	case 1:
-		format_v1();
-		break;
-	}
-
-	darray_foreach(ib, backing_devices)
-		write_backingdev_sb(ib->fd, block_size, cache_mode,
-				    data_offset, ib->label,
-				    set_uuid);
 
 	return 0;
 }

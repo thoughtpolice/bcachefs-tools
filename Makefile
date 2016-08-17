@@ -29,9 +29,9 @@ util.o: CFLAGS += `pkg-config --cflags blkid uuid`
 bcache.o: CFLAGS += `pkg-config --cflags libnih`
 
 bcache-objs = bcache.o bcache-assemble.o bcache-device.o bcache-format.o\
-	bcache-fs.o bcache-run.o
+	bcache-fs.o bcache-run.o bcache-key.o libbcache.o crypto.o
 
-bcache: LDLIBS += `pkg-config --libs uuid blkid libnih`
+bcache: LDLIBS += `pkg-config --libs uuid blkid libnih` -lscrypt -lsodium -lkeyutils
 bcache: $(bcache-objs) util.o libccan.a
 
 bcache-test: LDLIBS += `pkg-config --libs openssl`
