@@ -56,14 +56,18 @@ void derive_passphrase(struct bcache_key *key, const char *passphrase)
 		die("scrypt error: %i", ret);
 }
 
-void disk_key_encrypt(struct bcache_disk_key *disk_key,
+void disk_key_encrypt(struct cache_sb *sb,
+		      struct bcache_disk_key *disk_key,
 		      struct bcache_key *key)
 {
+	__le32 nonce[2];
 	int ret;
+
+	memcpy(nonce, &sb->set_magic, sizeof(sb->set_magic));
 
 	ret = crypto_stream_chacha20_xor((void *) disk_key,
 					 (void *) disk_key, sizeof(*disk_key),
-					 (void *) &bch_master_key_nonce,
+					 (void *) nonce,
 					 (void *) key);
 	if (ret)
 		die("chacha20 error: %i", ret);

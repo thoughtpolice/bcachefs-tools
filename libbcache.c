@@ -126,13 +126,15 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 	SET_CACHE_SET_DATA_REPLICAS_HAVE(sb,	data_replicas);
 	SET_CACHE_SET_ERROR_ACTION(sb,		on_error_action);
 
+	SET_CACHE_SET_STR_HASH_TYPE(sb, BCH_STR_HASH_SIPHASH);
+
 	if (passphrase) {
 		struct bcache_key key;
 		struct bcache_disk_key disk_key;
 
 		derive_passphrase(&key, passphrase);
 		disk_key_init(&disk_key);
-		disk_key_encrypt(&disk_key, &key);
+		disk_key_encrypt(sb, &disk_key, &key);
 
 		memcpy(sb->encryption_key, &disk_key, sizeof(disk_key));
 		SET_CACHE_SET_ENCRYPTION_TYPE(sb, 1);
