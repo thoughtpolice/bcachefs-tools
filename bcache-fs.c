@@ -1,9 +1,7 @@
 
-#include <nih/command.h>
 #include <nih/option.h>
 
 #include "bcache.h"
-#include "bcache-fs.h"
 
 struct bcache_fs {
 	/* options... */
@@ -20,13 +18,14 @@ static struct bcache_fs fill_fs(struct bcache_handle fs)
 	};
 }
 
-NihOption opts_fs_show[] = {
-//	{ int shortoption, char *longoption, char *help, NihOptionGroup, char *argname, void *value, NihOptionSetter}
-	NIH_OPTION_LAST
-};
-
-int cmd_fs_show(NihCommand *command, char *const *args)
+int cmd_fs_show(int argc, char *argv[])
 {
+	NihOption opts[] = {
+	//	{ int shortoption, char *longoption, char *help, NihOptionGroup, char *argname, void *value, NihOptionSetter}
+		NIH_OPTION_LAST
+	};
+	char **args = bch_nih_init(argc, argv, opts);
+
 	if (nr_args(args) != 1)
 		die("Please supply a filesystem");
 
@@ -35,13 +34,14 @@ int cmd_fs_show(NihCommand *command, char *const *args)
 	return 0;
 }
 
-NihOption opts_fs_set[] = {
-//	{ int shortoption, char *longoption, char *help, NihOptionGroup, char *argname, void *value, NihOptionSetter}
-	NIH_OPTION_LAST
-};
-
-int cmd_fs_set(NihCommand *command, char *const *args)
+int cmd_fs_set(int argc, char *argv[])
 {
+	NihOption opts[] = {
+	//	{ int shortoption, char *longoption, char *help, NihOptionGroup, char *argname, void *value, NihOptionSetter}
+		NIH_OPTION_LAST
+	};
+	char **args = bch_nih_init(argc, argv, opts);
+
 	if (nr_args(args) < 1)
 		die("Please supply a filesystem");
 

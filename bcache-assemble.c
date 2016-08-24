@@ -8,19 +8,14 @@
 
 #include <sys/ioctl.h>
 
-#include <nih/command.h>
-#include <nih/option.h>
-
 #include "bcache.h"
-#include "bcache-assemble.h"
 
-NihOption opts_assemble[] = {
-	NIH_OPTION_LAST
-};
-
-int cmd_assemble(NihCommand *command, char *const *args)
+int cmd_assemble(int argc, char *argv[])
 {
-	unsigned nr_devs = nr_args(args);
+	unsigned nr_devs = argc - 1;
+
+	if (argc <= 1)
+		die("Please supply at least one device");
 
 	struct bch_ioctl_assemble *assemble =
 		alloca(sizeof(*assemble) + sizeof(__u64) * nr_devs);
@@ -28,8 +23,8 @@ int cmd_assemble(NihCommand *command, char *const *args)
 	memset(assemble, 0, sizeof(*assemble));
 	assemble->nr_devs = nr_devs;
 
-	for (unsigned i = 0; i < nr_devs; i++)
-	     assemble->devs[i] = (__u64) args[i];
+	for (unsigned i = 1; i < argc; i++)
+	     assemble->devs[i] = (__u64) argv[i];
 
 	int ret = ioctl(bcachectl_open(), BCH_IOCTL_ASSEMBLE, assemble);
 	if (ret < 0)
@@ -38,17 +33,13 @@ int cmd_assemble(NihCommand *command, char *const *args)
 	return 0;
 }
 
-NihOption opts_incremental[] = {
-	NIH_OPTION_LAST
-};
-
-int cmd_incremental(NihCommand *command, char *const *args)
+int cmd_incremental(int argc, char *argv[])
 {
-	if (nr_args(args) != 1)
+	if (argc != 2)
 		die("Please supply exactly one device");
 
 	struct bch_ioctl_incremental incremental = {
-		.dev = (__u64) args[0],
+		.dev = (__u64) argv[1],
 	};
 
 	int ret = ioctl(bcachectl_open(), BCH_IOCTL_INCREMENTAL, &incremental);

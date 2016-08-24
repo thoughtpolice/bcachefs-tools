@@ -12,7 +12,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <blkid.h>
 #include <uuid/uuid.h>
 
 #include "ccan/crc/crc.h"
@@ -248,32 +247,6 @@ unsigned get_blocksize(const char *path, int fd)
 	return ret >> 9;
 }
 
-/* Open a block device, do magic blkid stuff: */
-int dev_open(const char *dev)
-{
-	blkid_probe pr;
-	int fd;
-
-	if ((fd = open(dev, O_RDWR|O_EXCL)) == -1)
-		die("Can't open dev %s: %s\n", dev, strerror(errno));
-
-	if (!(pr = blkid_new_probe()))
-		die("Failed to create a new probe");
-	if (blkid_probe_set_device(pr, fd, 0, 0))
-		die("failed to set probe to device");
-
-	/* enable ptable probing; superblock probing is enabled by default */
-	if (blkid_probe_enable_partitions(pr, true))
-		die("Failed to enable partitions on probe");
-
-	if (!blkid_do_probe(pr))
-		/* XXX wipefs doesn't know how to remove partition tables */
-		die("Device %s already has a non-bcache superblock, "
-		    "remove it using wipefs and wipefs -a\n", dev);
-
-	return fd;
-}
-
 /* Checksums: */
 
 /*
@@ -488,8 +461,43 @@ struct bcache_handle bcache_fs_open(const char *path)
 	return ret;
 }
 
+bool ask_proceed(void)
+{
+	const char *short_yes = "yY";
+	char *buf = NULL;
+	size_t buflen = 0;
+	bool ret;
+
+	fputs("Proceed anyway? (y,n) ", stdout);
+
+	if (getline(&buf, &buflen, stdin) < 0)
+		die("error reading from standard input");
+
+	ret = strchr(short_yes, buf[0]);
+	free(buf);
+	return ret;
+}
+
 void memzero_explicit(void *buf, size_t len)
 {
     void *(* volatile memset_s)(void *s, int c, size_t n) = memset;
     memset_s(buf, 0, len);
+}
+
+/* libnih options: */
+
+#include <nih/option.h>
+#include <nih/main.h>
+
+#define PACKAGE_NAME "bcache"
+#define PACKAGE_VERSION "1.0"
+#define PACKAGE_BUGREPORT "linux-bcache@vger.kernel.org"
+
+char **bch_nih_init(int argc, char *argv[], NihOption *options)
+{
+	nih_main_init(argv[0]);
+	nih_option_set_synopsis(_("Manage bcache devices"));
+	nih_option_set_help( _("Helps you manage bcache devices"));
+
+	return nih_option_parser(NULL, argc, argv, options, 0);
 }

@@ -4,6 +4,10 @@ INSTALL=install
 CFLAGS+=-std=gnu99 -O2 -Wall -g -D_FILE_OFFSET_BITS=64 -I.
 LDFLAGS+=-static
 
+PKGCONFIG_LIBS="blkid uuid libnih"
+CFLAGS+=`pkg-config --cflags	${PKGCONFIG_LIBS}`
+LDLIBS+=`pkg-config --libs	${PKGCONFIG_LIBS}` -lscrypt -lsodium -lkeyutils
+
 ifeq ($(PREFIX), "/usr")
 	ROOT_SBINDIR=/sbin
 else
@@ -17,7 +21,7 @@ install: bcache
 	$(INSTALL) -m0644 -- bcache.8 $(DESTDIR)$(PREFIX)/share/man/man8/
 
 clean:
-	$(RM) -f bcache *.o *.a
+	$(RM) bcache *.o *.a
 
 CCANSRCS=$(wildcard ccan/*/*.c)
 CCANOBJS=$(patsubst %.c,%.o,$(CCANSRCS))
@@ -25,16 +29,10 @@ CCANOBJS=$(patsubst %.c,%.o,$(CCANSRCS))
 libccan.a: $(CCANOBJS)
 	$(AR) r $@ $(CCANOBJS)
 
-util.o: CFLAGS += `pkg-config --cflags blkid uuid`
-bcache.o: CFLAGS += `pkg-config --cflags libnih`
-
 bcache-objs = bcache.o bcache-assemble.o bcache-device.o bcache-format.o\
-	bcache-fs.o bcache-run.o bcache-key.o libbcache.o crypto.o
+	bcache-fs.o bcache-run.o bcache-key.o libbcache.o crypto.o util.o
 
-bcache: LDLIBS += `pkg-config --libs uuid blkid libnih` -lscrypt -lsodium -lkeyutils
-bcache: $(bcache-objs) util.o libccan.a
-
-bcache-test: LDLIBS += `pkg-config --libs openssl`
+bcache: $(bcache-objs) libccan.a
 
 deb:
 	debuild -nc -us -uc -i -I

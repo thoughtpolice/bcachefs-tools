@@ -9,12 +9,13 @@
 #include "libbcache.h"
 #include "crypto.h"
 
-NihOption opts_unlock[] = {
-	NIH_OPTION_LAST
-};
-
-int cmd_unlock(NihCommand *command, char * const *args)
+int cmd_unlock(int argc, char *argv[])
 {
+	NihOption opts[] = {
+		NIH_OPTION_LAST
+	};
+	char **args = bch_nih_init(argc, argv, opts);
+
 	struct bcache_disk_key disk_key;
 	struct bcache_key key;
 	struct cache_sb sb;
@@ -38,7 +39,7 @@ int cmd_unlock(NihCommand *command, char * const *args)
 	passphrase = read_passphrase("Enter passphrase: ");
 
 	derive_passphrase(&key, passphrase);
-	disk_key_encrypt(&disk_key, &key);
+	disk_key_encrypt(&sb, &disk_key, &key);
 
 	if (memcmp(&disk_key, bch_key_header, sizeof(bch_key_header)))
 		die("incorrect passphrase");

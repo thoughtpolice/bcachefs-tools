@@ -6,10 +6,6 @@
  * GPLv2
  */
 
-#include <nih/option.h>
-#include <nih/command.h>
-#include <nih/main.h>
-#include <nih/logging.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <ctype.h>
@@ -26,16 +22,6 @@
 #include <sys/stat.h>
 
 #include "bcache.h"
-#include "bcache-assemble.h"
-#include "bcache-device.h"
-#include "bcache-format.h"
-#include "bcache-fs.h"
-#include "bcache-run.h"
-#include "bcache-key.h"
-
-#define PACKAGE_NAME "bcache"
-#define PACKAGE_VERSION "1.0"
-#define PACKAGE_BUGREPORT "linux-bcache@vger.kernel.org"
 
 const char * const cache_state[] = {
 	"active",
@@ -89,82 +75,70 @@ const char * const bdev_state[] = {
 	NULL
 };
 
-#define CMD(_command, _usage, _synopsis)				\
-{									\
-	.command	= #_command,					\
-	.usage		= _usage,					\
-	.synopsis	= _synopsis,					\
-	.help		= NULL,						\
-	.group		= NULL,						\
-	.options	= opts_##_command,				\
-	.action		= cmd_##_command,				\
+static void usage(void)
+{
+	puts("bcache - tool for managing bcache volumes/filesystems\n"
+	     "usage: bcache <command> [<args>]\n"
+	     "\n"
+	     "Commands for formatting, startup and shutdown\n"
+	     "  format         Format a new filesystem\n"
+	     "  unlock         Unlock an encrypted filesystem prior to running/mounting\n"
+	     "  assemble       Assemble an existing multi device filesystem\n"
+	     "  incremental    Incrementally assemble an existing multi device filesystem\n"
+	     "  run            Start a partially assembled filesystem\n"
+	     "  stop	       Stop a running filesystem\n"
+	     "\n"
+	     "Commands for managing a running filesystem\n"
+	     "  fs_show        Show various information about a filesystem\n"
+	     "  fs_set         Modify filesystem options\n"
+	     "\n"
+	     "Commands for managing a specific device in a filesystem\n"
+	     "  device_show    Show information about a formatted device\n"
+	     "  device_add     Add a device to an existing (running) filesystem\n"
+	     "  device_remove  Remove a device from an existing (running) filesystem\n");
+	exit(EXIT_SUCCESS);
 }
-
-static NihCommand commands[] = {
-	CMD(format, N_("<list of devices>"),
-	    "Create a new bcache volume from one or more devices"),
-
-	/* Bringup, shutdown */
-
-	CMD(assemble, N_("<devices>"),
-	    "Assembles one or more devices into a bcache volume"),
-	CMD(incremental, N_("<device"),
-	    "Incrementally assemble a bcache filesystem"),
-	CMD(run, N_("<volume>"),
-	    "Start a partially assembled volume"),
-	CMD(stop, N_("<volume>"),
-	    "Stops a running bcache volume"),
-
-	/* Filesystem commands: */
-
-	CMD(fs_show, N_("<fs>"),
-	    "Show information about a filesystem"),
-	CMD(fs_set, N_("<fs>"),
-	    "Change various filesystem options"),
-
-	/* Device commands: */
-
-	CMD(device_show, N_("<fs>"),
-	    "Show information about component devices of a filesystem"),
-	CMD(device_add, N_("<volume> <devices>"),
-	    "Adds a list of devices to a volume"),
-	CMD(device_remove, N_("<volume> <devices>"),
-	    "Removes a device from its volume"),
-
-	/* Crypto */
-
-	CMD(unlock, N_("<device>"),
-	    "Unlock an encrypted filesystem"),
-
-#if 0
-	CMD(modify, N_("<options>"),
-	    "Modifies attributes related to the volume",
-	    N_("Modifies attributes related to the volume")),
-	CMD(list, N_("list-cachesets"),
-	    "Lists cachesets in /sys/fs/bcache"),
-	CMD(query, N_("query <list of devices>"),
-	    "Gives info about the superblock of a list of devices"),
-	CMD(status, N_("status <list of devices>"),
-	    "Finds the status of the most up to date superblock"),
-#endif
-	NIH_COMMAND_LAST
-};
-
-static NihOption options[] = {
-	NIH_OPTION_LAST
-};
 
 int main(int argc, char *argv[])
 {
-	nih_main_init(argv[0]);
-	nih_option_set_synopsis(_("Manage bcache devices"));
-	nih_option_set_help( _("Helps you manage bcache devices"));
+	char *cmd;
 
-	int ret = nih_command_parser(NULL, argc, argv, options, commands);
-	if (ret < 0)
+	if (argc < 2) {
+		printf("%s: missing command\n", argv[0]);
 		exit(EXIT_FAILURE);
+	}
 
-	nih_signal_reset();
+	cmd = argv[1];
 
+	memmove(&argv[1], &argv[2], argc * sizeof(argv[0]));
+	argc--;
+
+	if (!strcmp(cmd, "format"))
+		return cmd_format(argc, argv);
+	if (!strcmp(cmd, "assemble"))
+		return cmd_assemble(argc, argv);
+	if (!strcmp(cmd, "incremental"))
+		return cmd_incremental(argc, argv);
+	if (!strcmp(cmd, "run"))
+		return cmd_run(argc, argv);
+	if (!strcmp(cmd, "stop"))
+		return cmd_stop(argc, argv);
+
+	if (!strcmp(cmd, "fs_show"))
+		return cmd_fs_show(argc, argv);
+	if (!strcmp(cmd, "fs_set"))
+		return cmd_fs_set(argc, argv);
+
+	if (!strcmp(cmd, "device_show"))
+		return cmd_device_show(argc, argv);
+	if (!strcmp(cmd, "device_add"))
+		return cmd_device_add(argc, argv);
+	if (!strcmp(cmd, "device_remove"))
+		return cmd_device_remove(argc, argv);
+
+	if (!strcmp(cmd, "unlock"))
+		return cmd_unlock(argc, argv);
+
+	usage();
 	return 0;
 }

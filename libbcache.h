@@ -6,11 +6,10 @@
 
 struct dev_opts {
 	int		fd;
-	const char	*dev;
+	const char	*path;
 	u64		size; /* 512 byte sectors */
 	unsigned	bucket_size;
 	unsigned	tier;
-	unsigned	replacement_policy;
 	bool		discard;
 
 	u64		first_bucket;

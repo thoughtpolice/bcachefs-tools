@@ -9,29 +9,29 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
-#include <nih/command.h>
 #include <nih/option.h>
 
 #include <uuid/uuid.h>
 
 #include "bcache.h"
-#include "bcache-run.h"
 
-NihOption opts_run[] = {
-	NIH_OPTION_LAST
-};
-
-int cmd_run(NihCommand *command, char *const *args)
+int cmd_run(int argc, char *argv[])
 {
+	NihOption opts[] = {
+		NIH_OPTION_LAST
+	};
+	bch_nih_init(argc, argv, opts);
+
 	return 0;
 }
 
-NihOption opts_stop[] = {
-	NIH_OPTION_LAST
-};
-
-int cmd_stop(NihCommand *command, char *const *args)
+int cmd_stop(int argc, char *argv[])
 {
+	NihOption opts[] = {
+		NIH_OPTION_LAST
+	};
+	char **args = bch_nih_init(argc, argv, opts);
+
 	if (nr_args(args) != 1)
 		die("Please supply a filesystem");
 

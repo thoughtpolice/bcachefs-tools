@@ -21,7 +21,6 @@ char *read_passphrase(const char *prompt)
 	struct termios old, new;
 	char *buf = NULL;
 	size_t buflen = 0;
-	ssize_t ret;
 
 	fprintf(stderr, "%s", prompt);
 	fflush(stderr);
@@ -34,8 +33,7 @@ char *read_passphrase(const char *prompt)
 	if (tcsetattr(fileno(stdin), TCSAFLUSH, &new))
 		die("error setting terminal attrs");
 
-	ret = getline(&buf, &buflen, stdin);
-	if (ret <= 0)
+	if (getline(&buf, &buflen, stdin) <= 0)
 		die("error reading passphrase");
 
 	tcsetattr(fileno(stdin), TCSAFLUSH, &old);

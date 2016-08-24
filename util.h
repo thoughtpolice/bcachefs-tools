@@ -1,6 +1,7 @@
 #ifndef _UTIL_H
 #define _UTIL_H
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -59,8 +60,6 @@ void print_string_list(const char * const[], size_t);
 u64 get_size(const char *, int);
 unsigned get_blocksize(const char *, int);
 
-int dev_open(const char *);
-
 #include "bcache-ondisk.h"
 #include "bcache-ioctl.h"
 
@@ -93,6 +92,11 @@ struct bcache_handle {
 
 struct bcache_handle bcache_fs_open(const char *);
 
+bool ask_proceed(void);
+
 void memzero_explicit(void *, size_t);
+
+struct nih_option;
+char **bch_nih_init(int argc, char *argv[], struct nih_option *options);
 
 #endif /* _UTIL_H */

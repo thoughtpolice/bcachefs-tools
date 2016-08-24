@@ -13,11 +13,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <nih/command.h>
 #include <nih/option.h>
 
 #include "bcache.h"
-#include "bcache-device.h"
 
 struct bcache_dev {
 	unsigned	nr;
@@ -82,23 +80,20 @@ static void show_dev(struct bcache_dev *dev)
 	       (dev->bytes_dirty * 100) / capacity);
 }
 
-static int human_readable;
-
-NihOption opts_device_show[] = {
-//	{ int shortoption, char *longoption, char *help, NihOptionGroup, char *argname, void *value, NihOptionSetter}
-
-	{ 'h',	"human-readable",		N_("print sizes in powers of 1024 (e.g., 1023M)"),
-		NULL, NULL,	&human_readable,	NULL},
-	NIH_OPTION_LAST
-};
-
-int cmd_device_show(NihCommand *command, char * const *args)
+int cmd_device_show(int argc, char *argv[])
 {
-	if (!args[0])
-		die("Please supply a filesystem");
+	int human_readable = 0;
+	NihOption opts[] = {
+	//	{ int shortoption, char *longoption, char *help, NihOptionGroup, char *argname, void *value, NihOptionSetter}
 
-	if (args[1])
-		die("Please supply a single filesystem");
+		{ 'h',	"human-readable",		N_("print sizes in powers of 1024 (e.g., 1023M)"),
+			NULL, NULL,	&human_readable,	NULL},
+		NIH_OPTION_LAST
+	};
+	char **args = bch_nih_init(argc, argv, opts);
+
+	if (nr_args(args) != 1)
+		die("Please supply a single device");
 
 	struct bcache_handle fs = bcache_fs_open(args[0]);
 	struct dirent *entry;
@@ -168,13 +163,14 @@ int cmd_device_show(NihCommand *command, char * const *args)
 	return 0;
 }
 
-NihOption opts_device_add[] = {
-//	{ int shortoption, char *longoption, char *help, NihOptionGroup, char *argname, void *value, NihOptionSetter}
-	NIH_OPTION_LAST
-};
-
-int cmd_device_add(NihCommand *command, char * const *args)
+int cmd_device_add(int argc, char *argv[])
 {
+	NihOption opts[] = {
+	//	{ int shortoption, char *longoption, char *help, NihOptionGroup, char *argname, void *value, NihOptionSetter}
+		NIH_OPTION_LAST
+	};
+	char **args = bch_nih_init(argc, argv, opts);
+
 	if (nr_args(args) < 2)
 		die("Please supply a filesystem and at least one device to add");
 
@@ -192,20 +188,20 @@ int cmd_device_add(NihCommand *command, char * const *args)
 	return 0;
 }
 
-static int force_data, force_metadata;
-
-NihOption opts_device_remove[] = {
-//	{ int shortoption, char *longoption, char *help, NihOptionGroup, char *argname, void *value, NihOptionSetter}
-
-	{ 'f', "force",			N_("force if data present"),
-		NULL, NULL,	&force_data, NULL },
-	{ '\0', "force-metadata",	N_("force if metadata present"),
-		NULL, NULL,	&force_metadata, NULL},
-	NIH_OPTION_LAST
-};
-
-int cmd_device_remove(NihCommand *command, char *const *args)
+int cmd_device_remove(int argc, char *argv[])
 {
+	int force_data = 0, force_metadata = 0;
+	NihOption opts[] = {
+	//	{ int shortoption, char *longoption, char *help, NihOptionGroup, char *argname, void *value, NihOptionSetter}
+
+		{ 'f', "force",			N_("force if data present"),
+			NULL, NULL,	&force_data, NULL },
+		{ '\0', "force-metadata",	N_("force if metadata present"),
+			NULL, NULL,	&force_metadata, NULL},
+		NIH_OPTION_LAST
+	};
+	char **args = bch_nih_init(argc, argv, opts);
+
 	if (nr_args(args) < 2)
 		die("Please supply a filesystem and at least one device to add");
 

@@ -59,12 +59,12 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 	if (!block_size)
 		for (i = devs; i < devs + nr_devs; i++)
 			block_size = max(block_size,
-					 get_blocksize(i->dev, i->fd));
+					 get_blocksize(i->path, i->fd));
 
 	/* calculate bucket sizes: */
 	for (i = devs; i < devs + nr_devs; i++) {
 		if (!i->size)
-			i->size = get_size(i->dev, i->fd);
+			i->size = get_size(i->path, i->fd);
 
 		if (!i->bucket_size) {
 			u64 bytes = i->size << 9;
@@ -125,8 +125,7 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 	SET_CACHE_SET_DATA_REPLICAS_WANT(sb,	data_replicas);
 	SET_CACHE_SET_DATA_REPLICAS_HAVE(sb,	data_replicas);
 	SET_CACHE_SET_ERROR_ACTION(sb,		on_error_action);
-
-	SET_CACHE_SET_STR_HASH_TYPE(sb, BCH_STR_HASH_SIPHASH);
+	SET_CACHE_SET_STR_HASH_TYPE(sb,		BCH_STR_HASH_SIPHASH);
 
 	if (passphrase) {
 		struct bcache_key key;
@@ -153,7 +152,7 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 		m->bucket_size	= __cpu_to_le16(i->bucket_size);
 
 		SET_CACHE_TIER(m,		i->tier);
-		SET_CACHE_REPLACEMENT(m,	i->replacement_policy);
+		SET_CACHE_REPLACEMENT(m,	CACHE_REPLACEMENT_LRU);
 		SET_CACHE_DISCARD(m,		i->discard);
 	}
 
