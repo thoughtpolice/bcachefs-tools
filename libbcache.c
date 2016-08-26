@@ -17,6 +17,11 @@
 #include "libbcache.h"
 #include "crypto.h"
 
+#define BCH_MIN_NR_NBUCKETS	(1 << 10)
+
+/* first bucket should start 1 mb in, in sectors: */
+#define FIRST_BUCKET_OFFSET	(1 << 11)
+
 void __do_write_sb(int fd, void *sb, size_t bytes)
 {
 	char zeroes[SB_SECTOR << 9] = {0};
@@ -67,24 +72,46 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 			i->size = get_size(i->path, i->fd);
 
 		if (!i->bucket_size) {
-			u64 bytes = i->size << 9;
+			/*
+			 * minimum size filesystem we can create, given a bucket
+			 * size:
+			 */
+			u64 min_size(unsigned bucket_size) {
+				return (DIV_ROUND_UP(FIRST_BUCKET_OFFSET, bucket_size) +
+					BCH_MIN_NR_NBUCKETS) * bucket_size;
+			}
 
-			if (bytes < 1 << 20) /* 1M device - 256 4k buckets*/
-				i->bucket_size = rounddown_pow_of_two(bytes >> 17);
-			else
-				/* Max 1M bucket at around 256G */
-				i->bucket_size = 8 << min((ilog2(bytes >> 20) / 2), 9U);
+			if (i->size < min_size(block_size))
+				die("cannot format %s, too small (%llu sectors, min %llu)",
+				    i->path, i->size, min_size(block_size));
+
+			/* Want a bucket size of at least 128k, if possible: */
+			i->bucket_size = max(block_size, 256U);
+
+			if (i->size >= min_size(i->bucket_size)) {
+				unsigned scale = max(1U,
+					ilog2(i->size / min_size(i->bucket_size)) / 4);
+
+				/* max bucket size 1 mb */
+				i->bucket_size = min(i->bucket_size * scale, 1U << 11);
+			} else {
+				do {
+					i->bucket_size /= 2;
+				} while (i->size < min_size(i->bucket_size));
+			}
 		}
+
+		/* first bucket: 1 mb in */
+		i->first_bucket	= DIV_ROUND_UP(FIRST_BUCKET_OFFSET, i->bucket_size);
+		i->nbuckets	= i->size / i->bucket_size;
 
 		if (i->bucket_size < block_size)
 			die("Bucket size cannot be smaller than block size");
 
-		i->nbuckets	= i->size / i->bucket_size;
-		i->first_bucket	= (23 / i->bucket_size) + 3;
-
-		if (i->nbuckets < 1 << 7)
-			die("Not enough buckets: %llu, need %u",
-			    i->nbuckets, 1 << 7);
+		if (i->nbuckets - i->first_bucket < BCH_MIN_NR_NBUCKETS)
+			die("Not enough buckets: %llu, need %u (bucket size %u)",
+			    i->nbuckets - i->first_bucket, BCH_MIN_NR_NBUCKETS,
+			    i->bucket_size);
 	}
 
 	/* calculate btree node size: */

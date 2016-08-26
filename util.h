@@ -20,6 +20,8 @@ typedef __s16	s16;
 typedef __s32	s32;
 typedef __s64	s64;
 
+#define DIV_ROUND_UP(n,d) (((n) + (d) - 1) / (d))
+
 #define min(x, y) ({				\
 	typeof(x) _min1 = (x);			\
 	typeof(y) _min2 = (y);			\
