@@ -1,9 +1,9 @@
-.TH bcacheadm 8
+.TH bcache 8
 .SH NAME
-bcacheadm \- manage bcache devices
+bcache \- manage bcache filesystems/devices
 
 .SH  SYNOPSIS
-.B bcacheadm
+.B bcache
 [\fIoptions\fR]
 .B COMMAND
 [\fIoptions\fR]
@@ -51,61 +51,63 @@ to create the /dev/disk/by-uuid symlink.
 
 .BR help
 .RS
-List the bcacheadm commands
+List the bcache commands
 .RE
 
 .SH OPTIONS
-.SH Options for bcacheadm
+.SH Options for bcache
 .TP
 .BR \--help
 
 
 .SH Options for format
-.TP
-.BR \-C
-Create a cache
-.TP
-.BR \-B
-Create a backing device
-.TP
-.BR \-b\ --bucket-size=
-Specifies the bucket size.
-.TP
-.BR \-l\ --label=
-label
+.SH Global options:
 .TP
 .BR \-w,\ --block=
-block size (hard sector size of SSD, often 2k
+block size, in bytes (e.g. 4k)
 .TP
-.BR \-t,\ --tier=
-tier of subsequent devices
+.BR \-w,\ --btree_node_size=
+btree node size in bytes - default 256k
 .TP
-.BR \--cache-replacement-policy=
-one of lru, fifo, or random
+.BR \--metadata_checksum_type=TYPE
 .TP
-.BR \-o,\ --data_offset=
-data offset in sectors
+.BR \--data_checksum_type=TYPE
+where TYPE is one of none, crc32c (default), or crc64
 .TP
-.BR \--cset-uuid=
-Create a cache device with the specified UUID
+.BR \--compression_type=TYPE
+where TYPE is one of none (default), lz4 or gzip
 .TP
-.BR \--csum_type=
-One of none, csc32c, or csc64
+.BR \--encrypted
+Enable encryption; passphrase will be prompted for
 .TP
-.BR \--meta-replicas=
-Number of metadata replicas
+.BR \--error_action=TYPE
+where TYPE is one of continue, readonly (default) or panic
 .TP
-.BR \--data-replicas=
-Number of data replicas
+.BR \-l\ --label=LABEL
+Create the filesystem with the specified label
 .TP
-.BR \--wipe-bcache
-Destroy existing bcache data if present
+.BR \--uuid=UUID
+Create the filesystem with the specified UUID
+.TP
+.BR \--force
+Force the filesystem to be created, even if the device already contains a
+filesystem
+
+.SH Options that apply to subsequent devices:
+.TP
+.BR \--fs_size=SIZE
+Create the filesystem using SIZE bytes on the subsequent device
+.TP
+.BR \-b\ --bucket-size=SIZE
+Specifies the bucket size - must be greater than the btree node size
+.TP
+.BR \-t,\ --tier=INDEX
+Specifies the tier of subsequent devices, where INDEX is a small integer and a
+smaller index indicates a faster tier - tier 0 being the fastest. Currently only
+two tiers are supported.
 .TP
 .BR \--discard
-Enable discards
-.TP
-.BR \--writeback
-Enable writeback
+Enable discards on subsequent devices
 
 .SH Options for register
 
@@ -117,7 +119,7 @@ Provide a directory other than /sys/fs/bcache
 .SH Options for query-devs
 .TP
 .BR \-f,\ --force-csum
-Enables bcacheadm to going even if the superblock crc is invalid
+Enables bcache to going even if the superblock crc is invalid
 
 .SH Options for status
 

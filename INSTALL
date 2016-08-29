@@ -1,0 +1,14 @@
+
+Dependencies:
+
+ * libblkid
+ * libuuid
+ * libnih
+ * libscrypt
+ * libsodium
+ * libkeyutils
+
+On debian, you can install these with
+    apt install -y libblkid-dev uuid-dev libnih-dev libscrypt-dev libsodium-dev libkeyutils-dev
+
+Then, just make && make install
