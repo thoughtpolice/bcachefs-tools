@@ -44,6 +44,13 @@ void __do_write_sb(int fd, void *sb, size_t bytes)
 #define do_write_sb(_fd, _sb)			\
 	__do_write_sb(_fd, _sb, ((void *) __bset_bkey_last(_sb)) - (void *) _sb);
 
+/* minimum size filesystem we can create, given a bucket size: */
+static u64 min_size(unsigned bucket_size)
+{
+	return (DIV_ROUND_UP(FIRST_BUCKET_OFFSET, bucket_size) +
+		BCH_MIN_NR_NBUCKETS) * bucket_size;
+}
+
 void bcache_format(struct dev_opts *devs, size_t nr_devs,
 		   unsigned block_size,
 		   unsigned btree_node_size,
@@ -72,15 +79,6 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 			i->size = get_size(i->path, i->fd);
 
 		if (!i->bucket_size) {
-			/*
-			 * minimum size filesystem we can create, given a bucket
-			 * size:
-			 */
-			u64 min_size(unsigned bucket_size) {
-				return (DIV_ROUND_UP(FIRST_BUCKET_OFFSET, bucket_size) +
-					BCH_MIN_NR_NBUCKETS) * bucket_size;
-			}
-
 			if (i->size < min_size(block_size))
 				die("cannot format %s, too small (%llu sectors, min %llu)",
 				    i->path, i->size, min_size(block_size));
