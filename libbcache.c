@@ -90,6 +90,8 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 				unsigned scale = max(1U,
 					ilog2(i->size / min_size(i->bucket_size)) / 4);
 
+				scale = rounddown_pow_of_two(scale);
+
 				/* max bucket size 1 mb */
 				i->bucket_size = min(i->bucket_size * scale, 1U << 11);
 			} else {
