@@ -9,14 +9,6 @@
 
 #include "util.h"
 
-extern const char * const cache_state[];
-extern const char * const replacement_policies[];
-extern const char * const csum_types[];
-extern const char * const compression_types[];
-extern const char * const error_actions[];
-extern const char * const bdev_cache_mode[];
-extern const char * const bdev_state[];
-
 int cmd_format(int argc, char *argv[]);
 
 int cmd_unlock(int argc, char *argv[]);

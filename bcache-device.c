@@ -16,6 +16,10 @@
 #include <nih/option.h>
 
 #include "bcache.h"
+#include "libbcache.h"
+
+/* This code belongs under show_fs */
+#if 0
 
 struct bcache_dev {
 	unsigned	nr;
@@ -159,6 +163,20 @@ int cmd_device_show(int argc, char *argv[])
 			show_dev(&devices[j]);
 		}
 	}
+
+	return 0;
+}
+#endif
+
+int cmd_device_show(int argc, char *argv[])
+{
+	struct cache_sb *sb;
+
+	if (argc != 2)
+		die("please supply a single device");
+
+	sb = bcache_super_read(argv[1]);
+	bcache_super_print(sb, HUMAN_READABLE);
 
 	return 0;
 }

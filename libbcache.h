@@ -4,6 +4,15 @@
 #include "util.h"
 #include "stdbool.h"
 
+extern const char * const cache_state[];
+extern const char * const replacement_policies[];
+extern const char * const csum_types[];
+extern const char * const compression_types[];
+extern const char * const str_hash_types[];
+extern const char * const error_actions[];
+extern const char * const bdev_cache_mode[];
+extern const char * const bdev_state[];
+
 struct dev_opts {
 	int		fd;
 	const char	*path;
@@ -29,6 +38,8 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 		   char *label,
 		   uuid_le uuid);
 
-void bcache_super_read(const char *, struct cache_sb *);
+void bcache_super_print(struct cache_sb *, int);
+
+struct cache_sb *bcache_super_read(const char *);
 
 #endif /* _LIBBCACHE_H */

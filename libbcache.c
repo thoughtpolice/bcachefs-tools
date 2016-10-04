@@ -17,6 +17,74 @@
 #include "libbcache.h"
 #include "crypto.h"
 
+const char * const cache_state[] = {
+	"active",
+	"ro",
+	"failed",
+	"spare",
+	NULL
+};
+
+const char * const replacement_policies[] = {
+	"lru",
+	"fifo",
+	"random",
+	NULL
+};
+
+const char * const csum_types[] = {
+	"none",
+	"crc32c",
+	"crc64",
+	NULL
+};
+
+const char * const compression_types[] = {
+	"none",
+	"lz4",
+	"gzip",
+	NULL
+};
+
+const char * const str_hash_types[] = {
+	"crc32c",
+	"crc64",
+	"siphash",
+	"sha1",
+	NULL
+};
+
+const char * const error_actions[] = {
+	"continue",
+	"readonly",
+	"panic",
+	NULL
+};
+
+const char * const member_states[] = {
+	"active",
+	"ro",
+	"failed",
+	"spare",
+	NULL
+};
+
+const char * const bdev_cache_mode[] = {
+	"writethrough",
+	"writeback",
+	"writearound",
+	"none",
+	NULL
+};
+
+const char * const bdev_state[] = {
+	"detached",
+	"clean",
+	"dirty",
+	"inconsistent",
+	NULL
+};
+
 #define BCH_MIN_NR_NBUCKETS	(1 << 10)
 
 /* first bucket should start 1 mb in, in sectors: */
@@ -187,48 +255,155 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 
 	for (i = devs; i < devs + nr_devs; i++) {
 		struct cache_member *m = sb->members + (i - devs);
-		char uuid_str[40], set_uuid_str[40];
 
 		sb->disk_uuid	= m->uuid;
 		sb->nr_this_dev	= i - devs;
 		sb->csum	= __cpu_to_le64(__csum_set(sb, __le16_to_cpu(sb->u64s),
 							   CACHE_SB_CSUM_TYPE(sb)));
 
-		uuid_unparse(sb->disk_uuid.b, uuid_str);
-		uuid_unparse(sb->user_uuid.b, set_uuid_str);
-		printf("UUID:			%s\n"
-		       "Set UUID:		%s\n"
-		       "version:		%u\n"
-		       "nbuckets:		%llu\n"
-		       "block_size:		%u\n"
-		       "bucket_size:		%u\n"
-		       "nr_in_set:		%u\n"
-		       "nr_this_dev:		%u\n"
-		       "first_bucket:		%u\n",
-		       uuid_str, set_uuid_str,
-		       (unsigned) sb->version,
-		       __le64_to_cpu(m->nbuckets),
-		       __le16_to_cpu(sb->block_size),
-		       __le16_to_cpu(m->bucket_size),
-		       sb->nr_in_set,
-		       sb->nr_this_dev,
-		       __le16_to_cpu(m->first_bucket));
-
 		do_write_sb(i->fd, sb);
 	}
+
+	bcache_super_print(sb, HUMAN_READABLE);
 
 	free(sb);
 }
 
-void bcache_super_read(const char *path, struct cache_sb *sb)
+void bcache_super_print(struct cache_sb *sb, int units)
 {
+	unsigned i;
+	char user_uuid_str[40], internal_uuid_str[40], member_uuid_str[40];
+	char label[SB_LABEL_SIZE + 1];
+
+	memset(label, 0, sizeof(label));
+	memcpy(label, sb->label, sizeof(sb->label));
+	uuid_unparse(sb->user_uuid.b, user_uuid_str);
+	uuid_unparse(sb->set_uuid.b, internal_uuid_str);
+
+	printf("External UUID:			%s\n"
+	       "Internal UUID:			%s\n"
+	       "Label:				%s\n"
+	       "Version:			%llu\n"
+	       "Block_size:			%s\n"
+	       "Btree node size:		%s\n"
+	       "Error action:			%s\n"
+	       "Clean:				%llu\n"
+
+	       "Metadata replicas:		have %llu, want %llu\n"
+	       "Data replicas:			have %llu, want %llu\n"
+
+	       "Metadata checksum type:		%s\n"
+	       "Data checksum type:		%s\n"
+	       "Compression type:		%s\n"
+
+	       "String hash type:		%s\n"
+	       "32 bit inodes:			%llu\n"
+	       "GC reserve percentage:		%llu%%\n"
+	       "Root reserve percentage:	%llu%%\n"
+
+	       "Devices:			%u\n",
+	       user_uuid_str,
+	       internal_uuid_str,
+	       label,
+	       le64_to_cpu(sb->version),
+	       pr_units(le16_to_cpu(sb->block_size), units).b,
+	       pr_units(CACHE_SET_BTREE_NODE_SIZE(sb), units).b,
+
+	       CACHE_SET_ERROR_ACTION(sb) < BCH_NR_ERROR_ACTIONS
+	       ? error_actions[CACHE_SET_ERROR_ACTION(sb)]
+	       : "unknown",
+
+	       CACHE_SET_CLEAN(sb),
+
+	       CACHE_SET_META_REPLICAS_HAVE(sb),
+	       CACHE_SET_META_REPLICAS_WANT(sb),
+	       CACHE_SET_DATA_REPLICAS_HAVE(sb),
+	       CACHE_SET_DATA_REPLICAS_WANT(sb),
+
+	       CACHE_SET_META_CSUM_TYPE(sb) < BCH_CSUM_NR
+	       ? csum_types[CACHE_SET_META_CSUM_TYPE(sb)]
+	       : "unknown",
+
+	       CACHE_SET_DATA_CSUM_TYPE(sb) < BCH_CSUM_NR
+	       ? csum_types[CACHE_SET_DATA_CSUM_TYPE(sb)]
+	       : "unknown",
+
+	       CACHE_SET_COMPRESSION_TYPE(sb) < BCH_COMPRESSION_NR
+	       ? compression_types[CACHE_SET_COMPRESSION_TYPE(sb)]
+	       : "unknown",
+
+	       CACHE_SET_STR_HASH_TYPE(sb) < BCH_STR_HASH_NR
+	       ? str_hash_types[CACHE_SET_STR_HASH_TYPE(sb)]
+	       : "unknown",
+
+	       CACHE_INODE_32BIT(sb),
+	       CACHE_SET_GC_RESERVE(sb),
+	       CACHE_SET_ROOT_RESERVE(sb),
+
+	       sb->nr_in_set);
+
+	for (i = 0; i < sb->nr_in_set; i++) {
+		struct cache_member *m = sb->members + i;
+		time_t last_mount = le64_to_cpu(m->last_mount);
+
+		uuid_unparse(m->uuid.b, member_uuid_str);
+
+		printf("\n"
+		       "Device %u:\n"
+		       "  UUID:				%s\n"
+		       "  bucket_size:			%s\n"
+		       "  first_bucket:			%u\n"
+		       "  nbuckets:			%llu\n"
+		       "  Last mount:			%s\n"
+		       "  State:			%s\n"
+		       "  Tier:				%llu\n"
+		       "  Has metadata:			%llu\n"
+		       "  Has data:			%llu\n"
+		       "  Replacement policy:		%s\n"
+		       "  Discard:			%llu\n",
+		       i, member_uuid_str,
+		       pr_units(le16_to_cpu(m->bucket_size), units).b,
+		       le16_to_cpu(m->first_bucket),
+		       le64_to_cpu(m->nbuckets),
+		       last_mount ? ctime(&last_mount) : "(never)",
+
+		       CACHE_STATE(m) < CACHE_STATE_NR
+		       ? member_states[CACHE_STATE(m)]
+		       : "unknown",
+
+		       CACHE_TIER(m),
+		       CACHE_HAS_METADATA(m),
+		       CACHE_HAS_DATA(m),
+
+		       CACHE_REPLACEMENT(m) < CACHE_REPLACEMENT_NR
+		       ? replacement_policies[CACHE_REPLACEMENT(m)]
+		       : "unknown",
+
+		       CACHE_DISCARD(m));
+	}
+}
+
+struct cache_sb *bcache_super_read(const char *path)
+{
+	struct cache_sb sb, *ret;
+	size_t bytes;
+
 	int fd = open(path, O_RDONLY);
 	if (fd < 0)
 		die("couldn't open %s", path);
 
-	if (pread(fd, sb, sizeof(*sb), SB_SECTOR << 9) != sizeof(*sb))
+	if (pread(fd, &sb, sizeof(sb), SB_SECTOR << 9) != sizeof(sb))
 		die("error reading superblock");
 
-	if (memcmp(&sb->magic, &BCACHE_MAGIC, sizeof(sb->magic)))
+	if (memcmp(&sb.magic, &BCACHE_MAGIC, sizeof(sb.magic)))
 		die("not a bcache superblock");
+
+	bytes = sizeof(sb) + le16_to_cpu(sb.u64s) * sizeof(u64);
+
+	ret = calloc(1, bytes);
+
+	if (pread(fd, ret, bytes, SB_SECTOR << 9) != bytes)
+		die("error reading superblock");
+
+	return ret;
 }

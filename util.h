@@ -9,6 +9,7 @@
 /* linux kernel style types: */
 
 #include <asm/types.h>
+#include <asm/byteorder.h>
 
 typedef __u8	u8;
 typedef __u16	u16;
@@ -19,6 +20,29 @@ typedef __s8	s8;
 typedef __s16	s16;
 typedef __s32	s32;
 typedef __s64	s64;
+
+#define cpu_to_le16		__cpu_to_le16
+#define cpu_to_le32		__cpu_to_le32
+#define cpu_to_le64		__cpu_to_le64
+
+#define le16_to_cpu		__le16_to_cpu
+#define le32_to_cpu		__le32_to_cpu
+#define le64_to_cpu		__le64_to_cpu
+
+static inline void le16_add_cpu(__le16 *var, u16 val)
+{
+	*var = cpu_to_le16(le16_to_cpu(*var) + val);
+}
+
+static inline void le32_add_cpu(__le32 *var, u32 val)
+{
+	*var = cpu_to_le32(le32_to_cpu(*var) + val);
+}
+
+static inline void le64_add_cpu(__le64 *var, u64 val)
+{
+	*var = cpu_to_le64(le64_to_cpu(*var) + val);
+}
 
 #define DIV_ROUND_UP(n,d) (((n) + (d) - 1) / (d))
 
@@ -46,7 +70,20 @@ unsigned ilog2(u64);
 char *skip_spaces(const char *str);
 char *strim(char *s);
 
+enum units {
+	BYTES,
+	SECTORS,
+	HUMAN_READABLE,
+};
+
+struct units_buf pr_units(u64, enum units);
+
+struct units_buf {
+	char	b[20];
+};
+
 long strtoul_or_die(const char *, size_t, const char *);
+
 u64 hatoi(const char *);
 unsigned hatoi_validate(const char *, const char *);
 unsigned nr_args(char * const *);

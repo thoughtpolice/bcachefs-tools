@@ -23,58 +23,6 @@
 
 #include "bcache.h"
 
-const char * const cache_state[] = {
-	"active",
-	"ro",
-	"failed",
-	"spare",
-	NULL
-};
-
-const char * const replacement_policies[] = {
-	"lru",
-	"fifo",
-	"random",
-	NULL
-};
-
-const char * const csum_types[] = {
-	"none",
-	"crc32c",
-	"crc64",
-	NULL
-};
-
-const char * const compression_types[] = {
-	"none",
-	"lz4",
-	"gzip",
-	NULL
-};
-
-const char * const error_actions[] = {
-	"continue",
-	"readonly",
-	"panic",
-	NULL
-};
-
-const char * const bdev_cache_mode[] = {
-	"writethrough",
-	"writeback",
-	"writearound",
-	"none",
-	NULL
-};
-
-const char * const bdev_state[] = {
-	"detached",
-	"clean",
-	"dirty",
-	"inconsistent",
-	NULL
-};
-
 static void usage(void)
 {
 	puts("bcache - tool for managing bcache volumes/filesystems\n"

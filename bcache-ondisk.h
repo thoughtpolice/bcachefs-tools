@@ -670,6 +670,7 @@ LE64_BITMASK(CACHE_STATE,	struct cache_member, f1, 0,  4)
 #define CACHE_RO			1U
 #define CACHE_FAILED			2U
 #define CACHE_SPARE			3U
+#define CACHE_STATE_NR			4U
 
 LE64_BITMASK(CACHE_TIER,		struct cache_member, f1, 4,  8)
 #define CACHE_TIERS			4U
@@ -683,6 +684,7 @@ LE64_BITMASK(CACHE_REPLACEMENT,	struct cache_member, f1, 26, 30)
 #define CACHE_REPLACEMENT_LRU		0U
 #define CACHE_REPLACEMENT_FIFO		1U
 #define CACHE_REPLACEMENT_RANDOM	2U
+#define CACHE_REPLACEMENT_NR		3U
 
 LE64_BITMASK(CACHE_DISCARD,		struct cache_member, f1, 30, 31);
 
@@ -770,18 +772,7 @@ LE64_BITMASK(CACHE_SET_META_CSUM_TYPE,struct cache_sb, flags, 16, 20);
 #define BCH_CSUM_NONE			0U
 #define BCH_CSUM_CRC32C			1U
 #define BCH_CSUM_CRC64			2U
-#define BCH_CSUM_CHACHA20_POLY1305	3U
-#define BCH_CSUM_NR			4U
-
-static inline _Bool bch_csum_type_is_encryption(unsigned type)
-{
-	switch (type) {
-	case BCH_CSUM_CHACHA20_POLY1305:
-		return 1;
-	default:
-		return 0;
-	}
-}
+#define BCH_CSUM_NR			3U
 
 LE64_BITMASK(CACHE_SET_BTREE_NODE_SIZE,	struct cache_sb, flags, 20, 36);
 
@@ -815,6 +806,12 @@ LE64_BITMASK(CACHE_INODE_32BIT,		struct cache_sb, flags, 56, 57);
 LE64_BITMASK(CACHE_SET_GC_RESERVE,	struct cache_sb, flags, 57, 63);
 
 LE64_BITMASK(CACHE_SET_ROOT_RESERVE,	struct cache_sb, flags2, 0,  6);
+
+/*
+ * Did we shut down cleanly? Just a hint, doesn't affect behaviour of
+ * mount/recovery path:
+ */
+LE64_BITMASK(CACHE_SET_CLEAN,		struct cache_sb, flags2, 6, 7);
 
 /*
  * If nonzero, encryption is enabled; overrides DATA/META_CSUM_TYPE. Also

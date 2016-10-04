@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <linux/fs.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -67,6 +68,35 @@ char *strim(char *s)
 	*(end + 1) = '\0';
 
 	return s;
+}
+
+struct units_buf pr_units(u64 v, enum units units)
+{
+	struct units_buf ret;
+
+	switch (units) {
+	case BYTES:
+		snprintf(ret.b, sizeof(ret.b), "%llu", v << 9);
+		break;
+	case SECTORS:
+		snprintf(ret.b, sizeof(ret.b), "%llu", v);
+		break;
+	case HUMAN_READABLE:
+		v <<= 9;
+
+		if (v >= 1024) {
+			int exp = log(v) / log(1024);
+			snprintf(ret.b, sizeof(ret.b), "%.1f%c",
+				 v / pow(1024, exp),
+				 "KMGTPE"[exp-1]);
+		} else {
+			snprintf(ret.b, sizeof(ret.b), "%llu", v);
+		}
+
+		break;
+	}
+
+	return ret;
 }
 
 /* Argument parsing stuff: */

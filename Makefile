@@ -6,7 +6,7 @@ LDFLAGS+=-static
 
 PKGCONFIG_LIBS="blkid uuid libnih"
 CFLAGS+=`pkg-config --cflags	${PKGCONFIG_LIBS}`
-LDLIBS+=`pkg-config --libs	${PKGCONFIG_LIBS}` -lscrypt -lsodium -lkeyutils
+LDLIBS+=`pkg-config --libs	${PKGCONFIG_LIBS}` -lscrypt -lsodium -lkeyutils -lm
 
 ifeq ($(PREFIX),/usr)
 	ROOT_SBINDIR=/sbin
