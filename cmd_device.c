@@ -103,7 +103,7 @@ int cmd_device_show(int argc, char *argv[])
 	struct bcache_dev devices[256];
 	unsigned i, j, nr_devices = 0, nr_active_tiers = 0;
 
-	unsigned tiers[CACHE_TIERS]; /* number of devices in each tier */
+	unsigned tiers[BCH_TIER_MAX]; /* number of devices in each tier */
 	memset(tiers, 0, sizeof(tiers));
 
 	while ((entry = readdir(fs.sysfs))) {
@@ -133,14 +133,14 @@ int cmd_device_show(int argc, char *argv[])
 		close(fd);
 	}
 
-	for (i = 0; i < CACHE_TIERS; i++)
+	for (i = 0; i < BCH_TIER_MAX; i++)
 		if (tiers[i])
 			nr_active_tiers++;
 
 	/* Print out devices sorted by tier: */
 	bool first = true;
 
-	for (i = 0; i < CACHE_TIERS; i++) {
+	for (i = 0; i < BCH_TIER_MAX; i++) {
 		if (!tiers[i])
 			continue;
 
@@ -168,7 +168,7 @@ int cmd_device_show(int argc, char *argv[])
 
 int cmd_device_show(int argc, char *argv[])
 {
-	struct cache_sb *sb;
+	struct bch_sb *sb;
 
 	if (argc != 2)
 		die("please supply a single device");

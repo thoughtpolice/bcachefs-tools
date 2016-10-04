@@ -8,9 +8,11 @@
 #include "bcache.h"
 #include "alloc.h"
 #include "blockdev.h"
+#include "compress.h"
 #include "sysfs.h"
 #include "btree_cache.h"
 #include "btree_iter.h"
+#include "btree_update.h"
 #include "btree_gc.h"
 #include "buckets.h"
 #include "inode.h"
@@ -19,6 +21,7 @@
 #include "move.h"
 #include "opts.h"
 #include "request.h"
+#include "super-io.h"
 #include "writeback.h"
 
 #include <linux/blkdev.h>
@@ -139,14 +142,14 @@ read_attribute(tier);
 	BCH_DEBUG_PARAMS()
 #undef BCH_DEBUG_PARAM
 
-#define CACHE_SET_OPT(_name, _choices, _min, _max, _sb_opt, _perm)	\
+#define BCH_OPT(_name, _choices, _min, _max, _sb_opt, _perm)		\
 	static struct attribute sysfs_opt_##_name = {			\
 		.name = #_name,						\
 		.mode = S_IRUGO|(_perm ? S_IWUSR : 0)			\
 	};
 
-	CACHE_SET_VISIBLE_OPTS()
-#undef CACHE_SET_OPT
+	BCH_VISIBLE_OPTS()
+#undef BCH_OPT
 
 #define BCH_TIME_STAT(name, frequency_units, duration_units)		\
 	sysfs_time_stats_attribute(name, frequency_units, duration_units);
@@ -193,8 +196,8 @@ SHOW(bch_cached_dev)
 	sysfs_print(state,		states[BDEV_STATE(dc->disk_sb.sb)]);
 
 	if (attr == &sysfs_label) {
-		memcpy(buf, dc->disk_sb.sb->label, SB_LABEL_SIZE);
-		buf[SB_LABEL_SIZE + 1] = '\0';
+		memcpy(buf, dc->disk_sb.sb->label, BCH_SB_LABEL_SIZE);
+		buf[BCH_SB_LABEL_SIZE + 1] = '\0';
 		strcat(buf, "\n");
 		return strlen(buf);
 	}
@@ -248,24 +251,25 @@ STORE(__cached_dev)
 		u64 journal_seq = 0;
 		int ret = 0;
 
-		if (size > SB_LABEL_SIZE)
+		if (size > BCH_SB_LABEL_SIZE)
 			return -EINVAL;
 
 		mutex_lock(&dc->disk.inode_lock);
 
 		memcpy(dc->disk_sb.sb->label, buf, size);
-		if (size < SB_LABEL_SIZE)
+		if (size < BCH_SB_LABEL_SIZE)
 			dc->disk_sb.sb->label[size] = '\0';
 		if (size && dc->disk_sb.sb->label[size - 1] == '\n')
 			dc->disk_sb.sb->label[size - 1] = '\0';
 
 		memcpy(dc->disk.inode.v.i_label,
-		       dc->disk_sb.sb->label, SB_LABEL_SIZE);
+		       dc->disk_sb.sb->label, BCH_SB_LABEL_SIZE);
 
 		bch_write_bdev_super(dc, NULL);
 
 		if (dc->disk.c)
-			ret = bch_inode_update(dc->disk.c, &dc->disk.inode.k_i,
+			ret = bch_btree_update(dc->disk.c, BTREE_ID_INODES,
+					       &dc->disk.inode.k_i,
 					       &journal_seq);
 
 		mutex_unlock(&dc->disk.inode_lock);
@@ -367,8 +371,8 @@ SHOW(bch_blockdev_volume)
 	sysfs_hprint(size,	le64_to_cpu(d->inode.v.i_size));
 
 	if (attr == &sysfs_label) {
-		memcpy(buf, d->inode.v.i_label, SB_LABEL_SIZE);
-		buf[SB_LABEL_SIZE + 1] = '\0';
+		memcpy(buf, d->inode.v.i_label, BCH_SB_LABEL_SIZE);
+		buf[BCH_SB_LABEL_SIZE + 1] = '\0';
 		strcat(buf, "\n");
 		return strlen(buf);
 	}
@@ -397,7 +401,8 @@ STORE(__bch_blockdev_volume)
 			}
 		}
 		d->inode.v.i_size = cpu_to_le64(v);
-		ret = bch_inode_update(d->c, &d->inode.k_i, &journal_seq);
+		ret = bch_btree_update(d->c, BTREE_ID_INODES,
+				       &d->inode.k_i, &journal_seq);
 
 		mutex_unlock(&d->inode_lock);
 
@@ -417,8 +422,9 @@ STORE(__bch_blockdev_volume)
 
 		mutex_lock(&d->inode_lock);
 
-		memcpy(d->inode.v.i_label, buf, SB_LABEL_SIZE);
-		ret = bch_inode_update(d->c, &d->inode.k_i, &journal_seq);
+		memcpy(d->inode.v.i_label, buf, BCH_SB_LABEL_SIZE);
+		ret = bch_btree_update(d->c, BTREE_ID_INODES,
+				       &d->inode.k_i, &journal_seq);
 
 		mutex_unlock(&d->inode_lock);
 
@@ -677,10 +683,8 @@ SHOW(bch_cache_set)
 	sysfs_print(tiering_percent,		c->tiering_percent);
 	sysfs_pd_controller_show(tiering,	&c->tiering_pd);
 
-	sysfs_printf(meta_replicas_have, "%llu",
-		     CACHE_SET_META_REPLICAS_HAVE(&c->disk_sb));
-	sysfs_printf(data_replicas_have, "%llu",
-		     CACHE_SET_DATA_REPLICAS_HAVE(&c->disk_sb));
+	sysfs_printf(meta_replicas_have, "%u",	c->sb.meta_replicas_have);
+	sysfs_printf(data_replicas_have, "%u",	c->sb.data_replicas_have);
 
 	/* Debugging: */
 
@@ -705,7 +709,7 @@ SHOW(bch_cache_set)
 	if (attr == &sysfs_compression_stats)
 		return bch_compression_stats(c, buf);
 
-	sysfs_printf(internal_uuid, "%pU", c->disk_sb.set_uuid.b);
+	sysfs_printf(internal_uuid, "%pU", c->sb.uuid.b);
 
 	return 0;
 }
@@ -945,15 +949,15 @@ SHOW(bch_cache_set_opts_dir)
 {
 	struct cache_set *c = container_of(kobj, struct cache_set, opts_dir);
 
-#define CACHE_SET_OPT(_name, _choices, _min, _max, _sb_opt, _perm)	\
+#define BCH_OPT(_name, _choices, _min, _max, _sb_opt, _perm)		\
 	if (attr == &sysfs_opt_##_name)					\
 		return _choices == bch_bool_opt || _choices == bch_uint_opt\
 			? snprintf(buf, PAGE_SIZE, "%i\n", c->opts._name)\
 			: bch_snprint_string_list(buf, PAGE_SIZE,	\
 						_choices, c->opts._name);\
 
-	CACHE_SET_VISIBLE_OPTS()
-#undef CACHE_SET_OPT
+	BCH_VISIBLE_OPTS()
+#undef BCH_OPT
 
 	return 0;
 }
@@ -962,7 +966,7 @@ STORE(bch_cache_set_opts_dir)
 {
 	struct cache_set *c = container_of(kobj, struct cache_set, opts_dir);
 
-#define CACHE_SET_OPT(_name, _choices, _min, _max, _sb_opt, _perm)	\
+#define BCH_OPT(_name, _choices, _min, _max, _sb_opt, _perm)		\
 	if (attr == &sysfs_opt_##_name) {				\
 		ssize_t v = (_choices == bch_bool_opt ||		\
 			     _choices == bch_uint_opt)			\
@@ -972,18 +976,28 @@ STORE(bch_cache_set_opts_dir)
 		if (v < 0)						\
 			return v;					\
 									\
-		c->opts._name = v;					\
-									\
-		if (_sb_opt##_BITS && v != _sb_opt(&c->disk_sb)) {	\
-			SET_##_sb_opt(&c->disk_sb, v);			\
-			bcache_write_super(c);				\
+		mutex_lock(&c->sb_lock);				\
+		if (attr == &sysfs_opt_compression) {			\
+			int ret = bch_check_set_has_compressed_data(c, v);\
+			if (ret) {					\
+				mutex_unlock(&c->sb_lock);		\
+				return ret;				\
+			}						\
 		}							\
+									\
+		if (_sb_opt##_BITS && v != _sb_opt(c->disk_sb)) {	\
+			SET_##_sb_opt(c->disk_sb, v);			\
+			bch_write_super(c);			\
+		}							\
+									\
+		c->opts._name = v;					\
+		mutex_unlock(&c->sb_lock);				\
 									\
 		return size;						\
 	}
 
-	CACHE_SET_VISIBLE_OPTS()
-#undef CACHE_SET_OPT
+	BCH_VISIBLE_OPTS()
+#undef BCH_OPT
 
 	return size;
 }
@@ -993,11 +1007,11 @@ static void bch_cache_set_opts_dir_release(struct kobject *k)
 }
 
 static struct attribute *bch_cache_set_opts_dir_files[] = {
-#define CACHE_SET_OPT(_name, _choices, _min, _max, _sb_opt, _perm)	\
+#define BCH_OPT(_name, _choices, _min, _max, _sb_opt, _perm)	\
 	&sysfs_opt_##_name,
 
-	CACHE_SET_VISIBLE_OPTS()
-#undef CACHE_SET_OPT
+	BCH_VISIBLE_OPTS()
+#undef BCH_OPT
 
 	NULL
 };
@@ -1176,7 +1190,7 @@ SHOW(bch_cache)
 	struct cache_set *c = ca->set;
 	struct bucket_stats_cache stats = bch_bucket_stats_read_cache(ca);
 
-	sysfs_printf(uuid,		"%pU\n", ca->disk_sb.sb->disk_uuid.b);
+	sysfs_printf(uuid,		"%pU\n", ca->uuid.b);
 
 	sysfs_hprint(bucket_size,	bucket_bytes(ca));
 	sysfs_print(bucket_size_bytes,	bucket_bytes(ca));
@@ -1242,17 +1256,21 @@ STORE(__bch_cache)
 {
 	struct cache *ca = container_of(kobj, struct cache, kobj);
 	struct cache_set *c = ca->set;
-	struct cache_member *mi = &c->disk_mi[ca->sb.nr_this_dev];
+	struct bch_member *mi;
 
 	sysfs_pd_controller_store(copy_gc, &ca->moving_gc_pd);
 
 	if (attr == &sysfs_discard) {
 		bool v = strtoul_or_return(buf);
 
-		if (v != CACHE_DISCARD(mi)) {
-			SET_CACHE_DISCARD(mi, v);
-			bcache_write_super(c);
+		mutex_lock(&c->sb_lock);
+		mi = &bch_sb_get_members(c->disk_sb)->members[ca->dev_idx];
+
+		if (v != BCH_MEMBER_DISCARD(mi)) {
+			SET_BCH_MEMBER_DISCARD(mi, v);
+			bch_write_super(c);
 		}
+		mutex_unlock(&c->sb_lock);
 	}
 
 	if (attr == &sysfs_cache_replacement_policy) {
@@ -1261,10 +1279,14 @@ STORE(__bch_cache)
 		if (v < 0)
 			return v;
 
-		if ((unsigned) v != CACHE_REPLACEMENT(mi)) {
-			SET_CACHE_REPLACEMENT(mi, v);
-			bcache_write_super(c);
+		mutex_lock(&c->sb_lock);
+		mi = &bch_sb_get_members(c->disk_sb)->members[ca->dev_idx];
+
+		if ((unsigned) v != BCH_MEMBER_REPLACEMENT(mi)) {
+			SET_BCH_MEMBER_REPLACEMENT(mi, v);
+			bch_write_super(c);
 		}
+		mutex_unlock(&c->sb_lock);
 	}
 
 	if (attr == &sysfs_state_rw) {
@@ -1279,14 +1301,14 @@ STORE(__bch_cache)
 			return size;
 
 		switch (v) {
-		case CACHE_ACTIVE:
+		case BCH_MEMBER_STATE_ACTIVE:
 			err = bch_cache_read_write(ca);
 			break;
-		case CACHE_RO:
+		case BCH_MEMBER_STATE_RO:
 			bch_cache_read_only(ca);
 			break;
-		case CACHE_FAILED:
-		case CACHE_SPARE:
+		case BCH_MEMBER_STATE_FAILED:
+		case BCH_MEMBER_STATE_SPARE:
 			/*
 			 * XXX: need to migrate data off and set correct state
 			 */

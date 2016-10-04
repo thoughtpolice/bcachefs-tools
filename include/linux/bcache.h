@@ -102,9 +102,17 @@ struct bch_val {
 	__u64		__nothing[0];
 };
 
-struct bkey {
-	__u64		_data[0];
+struct bversion {
+#if defined(__LITTLE_ENDIAN)
+	__u64		lo;
+	__u32		hi;
+#elif defined(__BIG_ENDIAN)
+	__u32		hi;
+	__u64		lo;
+#endif
+} __attribute__((packed, aligned(4)));
 
+struct bkey {
 	/* Size of combined key and value, in u64s */
 	__u8		u64s;
 
@@ -125,13 +133,13 @@ struct bkey {
 #if defined(__LITTLE_ENDIAN)
 	__u8		pad[1];
 
-	__u32		version;
+	struct bversion	version;
 	__u32		size;		/* extent size, in sectors */
 	struct bpos	p;
 #elif defined(__BIG_ENDIAN)
 	struct bpos	p;
 	__u32		size;		/* extent size, in sectors */
-	__u32		version;
+	struct bversion	version;
 
 	__u8		pad[1];
 #endif
@@ -184,7 +192,8 @@ enum bch_bkey_fields {
 	BKEY_FIELD_OFFSET,
 	BKEY_FIELD_SNAPSHOT,
 	BKEY_FIELD_SIZE,
-	BKEY_FIELD_VERSION,
+	BKEY_FIELD_VERSION_HI,
+	BKEY_FIELD_VERSION_LO,
 	BKEY_NR_FIELDS,
 };
 
@@ -200,14 +209,25 @@ enum bch_bkey_fields {
 		bkey_format_field(OFFSET,	p.offset),		\
 		bkey_format_field(SNAPSHOT,	p.snapshot),		\
 		bkey_format_field(SIZE,		size),			\
-		bkey_format_field(VERSION,	version),		\
+		bkey_format_field(VERSION_HI,	version.hi),		\
+		bkey_format_field(VERSION_LO,	version.lo),		\
 	},								\
 })
 
 /* bkey with inline value */
 struct bkey_i {
-	struct bkey	k;
-	struct bch_val	v;
+	__u64			_data[0];
+
+	union {
+	struct {
+		/* Size of combined key and value, in u64s */
+		__u8		u64s;
+	};
+	struct {
+		struct bkey	k;
+		struct bch_val	v;
+	};
+	};
 };
 
 #ifndef __cplusplus
@@ -358,20 +378,47 @@ BKEY_VAL_TYPE(cookie,		KEY_TYPE_COOKIE);
  * is neither checksummed nor compressed.
  */
 
+/* 128 bits, sufficient for cryptographic MACs: */
+struct bch_csum {
+	__le64			lo;
+	__le64			hi;
+} __attribute__((packed, aligned(8)));
+
+#define BCH_CSUM_NONE			0U
+#define BCH_CSUM_CRC32C			1U
+#define BCH_CSUM_CRC64			2U
+#define BCH_CSUM_CHACHA20_POLY1305_80	3U
+#define BCH_CSUM_CHACHA20_POLY1305_128	4U
+#define BCH_CSUM_NR			5U
+
+static inline _Bool bch_csum_type_is_encryption(unsigned type)
+{
+	switch (type) {
+	case BCH_CSUM_CHACHA20_POLY1305_80:
+	case BCH_CSUM_CHACHA20_POLY1305_128:
+		return true;
+	default:
+		return false;
+	}
+}
+
 enum bch_extent_entry_type {
-	BCH_EXTENT_ENTRY_crc32		= 0,
-	BCH_EXTENT_ENTRY_ptr		= 1,
+	BCH_EXTENT_ENTRY_ptr		= 0,
+	BCH_EXTENT_ENTRY_crc32		= 1,
 	BCH_EXTENT_ENTRY_crc64		= 2,
+	BCH_EXTENT_ENTRY_crc128		= 3,
 };
 
-#define BCH_EXTENT_ENTRY_MAX		3
+#define BCH_EXTENT_ENTRY_MAX		4
 
+/* Compressed/uncompressed size are stored biased by 1: */
 struct bch_extent_crc32 {
 #if defined(__LITTLE_ENDIAN_BITFIELD)
-	__u32			type:1,
+	__u32			type:2,
+				_compressed_size:7,
+				_uncompressed_size:7,
 				offset:7,
-				compressed_size:8,
-				uncompressed_size:8,
+				_unused:1,
 				csum_type:4,
 				compression_type:4;
 	__u32			csum;
@@ -379,45 +426,80 @@ struct bch_extent_crc32 {
 	__u32			csum;
 	__u32			compression_type:4,
 				csum_type:4,
-				uncompressed_size:8,
-				compressed_size:8,
+				_unused:1,
 				offset:7,
-				type:1;
+				_uncompressed_size:7,
+				_compressed_size:7,
+				type:2;
 #endif
 } __attribute__((packed, aligned(8)));
 
-#define CRC32_EXTENT_SIZE_MAX	(1U << 7)
-
-/* 64k */
-#define BCH_COMPRESSED_EXTENT_MAX 128U
+#define CRC32_SIZE_MAX		(1U << 7)
+#define CRC32_NONCE_MAX		0
 
 struct bch_extent_crc64 {
 #if defined(__LITTLE_ENDIAN_BITFIELD)
 	__u64			type:3,
-				offset:17,
-				compressed_size:18,
-				uncompressed_size:18,
+				_compressed_size:9,
+				_uncompressed_size:9,
+				offset:9,
+				nonce:10,
+				csum_type:4,
+				compression_type:4,
+				csum_hi:16;
+#elif defined (__BIG_ENDIAN_BITFIELD)
+	__u64			csum_hi:16,
+				compression_type:4,
+				csum_type:4,
+				nonce:10,
+				offset:9,
+				_uncompressed_size:9,
+				_compressed_size:9,
+				type:3;
+#endif
+	__u64			csum_lo;
+} __attribute__((packed, aligned(8)));
+
+#define CRC64_SIZE_MAX		(1U << 9)
+#define CRC64_NONCE_MAX		((1U << 10) - 1)
+
+struct bch_extent_crc128 {
+#if defined(__LITTLE_ENDIAN_BITFIELD)
+	__u64			type:4,
+				_compressed_size:13,
+				_uncompressed_size:13,
+				offset:13,
+				nonce:13,
 				csum_type:4,
 				compression_type:4;
 #elif defined (__BIG_ENDIAN_BITFIELD)
 	__u64			compression_type:4,
 				csum_type:4,
-				uncompressed_size:18,
-				compressed_size:18,
-				offset:17,
+				nonce:14,
+				offset:13,
+				_uncompressed_size:13,
+				_compressed_size:13,
 				type:3;
 #endif
-	__u64			csum;
+	struct bch_csum		csum;
 } __attribute__((packed, aligned(8)));
 
-#define CRC64_EXTENT_SIZE_MAX	(1U << 17)
+#define CRC128_SIZE_MAX		(1U << 13)
+#define CRC128_NONCE_MAX	((1U << 13) - 1)
+
+/*
+ * Max size of an extent that may require bouncing to read or write
+ * (checksummed, compressed): 64k
+ */
+#define BCH_ENCODED_EXTENT_MAX	128U
 
 /*
  * @reservation - pointer hasn't been written to, just reserved
  */
 struct bch_extent_ptr {
 #if defined(__LITTLE_ENDIAN_BITFIELD)
-	__u64			type:2,
+	__u64			type:1,
+				cached:1,
 				erasure_coded:1,
 				reservation:1,
 				offset:44, /* 8 petabytes */
@@ -429,9 +511,24 @@ struct bch_extent_ptr {
 				offset:44,
 				reservation:1,
 				erasure_coded:1,
-				type:2;
+				cached:1,
+				type:1;
 #endif
 } __attribute__((packed, aligned(8)));
+
+struct bch_extent_reservation {
+#if defined(__LITTLE_ENDIAN_BITFIELD)
+	__u64			type:5,
+				unused:23,
+				replicas:4,
+				generation:32;
+#elif defined (__BIG_ENDIAN_BITFIELD)
+	__u64			generation:32,
+				replicas:4,
+				unused:23,
+				type:5;
+#endif
+};
 
 union bch_extent_entry {
 #if defined(__LITTLE_ENDIAN) ||  __BITS_PER_LONG == 64
@@ -446,6 +543,7 @@ union bch_extent_entry {
 #endif
 	struct bch_extent_crc32		crc32;
 	struct bch_extent_crc64		crc64;
+	struct bch_extent_crc128	crc128;
 	struct bch_extent_ptr		ptr;
 };
 
@@ -473,9 +571,18 @@ struct bch_extent {
 } __attribute__((packed, aligned(8)));
 BKEY_VAL_TYPE(extent,		BCH_EXTENT);
 
+struct bch_reservation {
+	struct bch_val		v;
+
+	__le32			generation;
+	__u8			nr_replicas;
+	__u8			pad[3];
+} __attribute__((packed, aligned(8)));
+BKEY_VAL_TYPE(reservation,	BCH_RESERVATION);
+
 /* Maximum size (in u64s) a single pointer could be: */
 #define BKEY_EXTENT_PTR_U64s_MAX\
-	((sizeof(struct bch_extent_crc64) +			\
+	((sizeof(struct bch_extent_crc128) +			\
 	  sizeof(struct bch_extent_ptr)) / sizeof(u64))
 
 /* Maximum possible size of an entire extent value: */
@@ -506,27 +613,25 @@ enum bch_inode_types {
 struct bch_inode {
 	struct bch_val		v;
 
-	__le16			i_mode;
-	__le16			pad;
-	__le32			i_flags;
-
-	/* Nanoseconds */
-	__le64			i_atime;
-	__le64			i_ctime;
-	__le64			i_mtime;
-
-	__le64			i_size;
-	__le64			i_sectors;
-
-	__le32			i_uid;
-	__le32			i_gid;
-	__le32			i_nlink;
-
-	__le32			i_dev;
-
 	__le64			i_hash_seed;
+	__le32			i_flags;
+	__le16			i_mode;
+	__u8			fields[0];
 } __attribute__((packed));
 BKEY_VAL_TYPE(inode,		BCH_INODE_FS);
+
+#define BCH_INODE_FIELDS()				\
+	BCH_INODE_FIELD(i_atime,	64)		\
+	BCH_INODE_FIELD(i_ctime,	64)		\
+	BCH_INODE_FIELD(i_mtime,	64)		\
+	BCH_INODE_FIELD(i_otime,	64)		\
+	BCH_INODE_FIELD(i_size,		64)		\
+	BCH_INODE_FIELD(i_sectors,	64)		\
+	BCH_INODE_FIELD(i_uid,		32)		\
+	BCH_INODE_FIELD(i_gid,		32)		\
+	BCH_INODE_FIELD(i_nlink,	32)		\
+	BCH_INODE_FIELD(i_generation,	32)		\
+	BCH_INODE_FIELD(i_dev,		32)
 
 enum {
 	/*
@@ -544,9 +649,9 @@ enum {
 
 	/* not implemented yet: */
 	__BCH_INODE_HAS_XATTRS	= 7, /* has xattrs in xattr btree */
-};
 
-LE32_BITMASK(INODE_STR_HASH_TYPE, struct bch_inode, i_flags, 28, 32);
+	/* bits 20+ reserved for packed fields below: */
+};
 
 #define BCH_INODE_SYNC		(1 << __BCH_INODE_SYNC)
 #define BCH_INODE_IMMUTABLE	(1 << __BCH_INODE_IMMUTABLE)
@@ -556,6 +661,9 @@ LE32_BITMASK(INODE_STR_HASH_TYPE, struct bch_inode, i_flags, 28, 32);
 #define BCH_INODE_I_SIZE_DIRTY	(1 << __BCH_INODE_I_SIZE_DIRTY)
 #define BCH_INODE_I_SECTORS_DIRTY (1 << __BCH_INODE_I_SECTORS_DIRTY)
 #define BCH_INODE_HAS_XATTRS	(1 << __BCH_INODE_HAS_XATTRS)
+
+LE32_BITMASK(INODE_STR_HASH,	struct bch_inode, i_flags, 20, 24);
+LE32_BITMASK(INODE_NR_FIELDS,	struct bch_inode, i_flags, 24, 32);
 
 struct bch_inode_blockdev {
 	struct bch_val		v;
@@ -574,6 +682,7 @@ BKEY_VAL_TYPE(inode_blockdev,	BCH_INODE_BLOCKDEV);
 
 /* Thin provisioned volume, or cache for another block device? */
 LE64_BITMASK(CACHED_DEV,	struct bch_inode_blockdev, i_flags, 0,  1)
+
 /* Dirents */
 
 /*
@@ -639,6 +748,7 @@ BKEY_VAL_TYPE(xattr,		BCH_XATTR);
  * Version 4: Backing device with data offset
  * Version 5: All the incompat changes
  * Version 6: Cache device UUIDs all in superblock, another incompat bset change
+ * Version 7: Encryption (expanded checksum fields), other random things
  */
 #define BCACHE_SB_VERSION_CDEV_V0	0
 #define BCACHE_SB_VERSION_BDEV		1
@@ -646,16 +756,15 @@ BKEY_VAL_TYPE(xattr,		BCH_XATTR);
 #define BCACHE_SB_VERSION_BDEV_WITH_OFFSET 4
 #define BCACHE_SB_VERSION_CDEV_V2	5
 #define BCACHE_SB_VERSION_CDEV_V3	6
-#define BCACHE_SB_VERSION_CDEV		6
-#define BCACHE_SB_MAX_VERSION		6
+#define BCACHE_SB_VERSION_CDEV_V4	7
+#define BCACHE_SB_VERSION_CDEV		7
+#define BCACHE_SB_MAX_VERSION		7
 
-#define SB_SECTOR			8
-#define SB_LABEL_SIZE			32
-#define MAX_CACHES_PER_SET		64
+#define BCH_SB_SECTOR			8
+#define BCH_SB_LABEL_SIZE		32
+#define BCH_SB_MEMBERS_MAX		64 /* XXX kill */
 
-#define BDEV_DATA_START_DEFAULT		16	/* sectors */
-
-struct cache_member {
+struct bch_member {
 	uuid_le			uuid;
 	__le64			nbuckets;	/* device size */
 	__le16			first_bucket;   /* index of first bucket used */
@@ -663,164 +772,257 @@ struct cache_member {
 	__le32			pad;
 	__le64			last_mount;	/* time_t */
 
-	__le64			f1;
-	__le64			f2;
+	__le64			flags[2];
 };
 
-LE64_BITMASK(CACHE_STATE,	struct cache_member, f1, 0,  4)
-#define CACHE_ACTIVE			0U
-#define CACHE_RO			1U
-#define CACHE_FAILED			2U
-#define CACHE_SPARE			3U
-#define CACHE_STATE_NR			4U
+LE64_BITMASK(BCH_MEMBER_STATE,		struct bch_member, flags[0],  0,  4)
+LE64_BITMASK(BCH_MEMBER_TIER,		struct bch_member, flags[0],  4,  8)
+LE64_BITMASK(BCH_MEMBER_HAS_METADATA,	struct bch_member, flags[0],  8,  9)
+LE64_BITMASK(BCH_MEMBER_HAS_DATA,	struct bch_member, flags[0],  9, 10)
+LE64_BITMASK(BCH_MEMBER_REPLACEMENT,	struct bch_member, flags[0], 10, 14)
+LE64_BITMASK(BCH_MEMBER_DISCARD,	struct bch_member, flags[0], 14, 15);
 
-LE64_BITMASK(CACHE_TIER,		struct cache_member, f1, 4,  8)
-#define CACHE_TIERS			4U
+#if 0
+LE64_BITMASK(BCH_MEMBER_NR_READ_ERRORS,	struct bch_member, flags[1], 0,  20);
+LE64_BITMASK(BCH_MEMBER_NR_WRITE_ERRORS,struct bch_member, flags[1], 20, 40);
+#endif
 
-LE64_BITMASK(CACHE_REPLICATION_SET,	struct cache_member, f1, 8,  16)
+enum bch_member_state {
+	BCH_MEMBER_STATE_ACTIVE		= 0,
+	BCH_MEMBER_STATE_RO		= 1,
+	BCH_MEMBER_STATE_FAILED		= 2,
+	BCH_MEMBER_STATE_SPARE		= 3,
+	BCH_MEMBER_STATE_NR		= 4,
+};
 
-LE64_BITMASK(CACHE_HAS_METADATA,	struct cache_member, f1, 24, 25)
-LE64_BITMASK(CACHE_HAS_DATA,		struct cache_member, f1, 25, 26)
+#define BCH_TIER_MAX			4U
 
-LE64_BITMASK(CACHE_REPLACEMENT,	struct cache_member, f1, 26, 30)
-#define CACHE_REPLACEMENT_LRU		0U
-#define CACHE_REPLACEMENT_FIFO		1U
-#define CACHE_REPLACEMENT_RANDOM	2U
-#define CACHE_REPLACEMENT_NR		3U
+enum cache_replacement {
+	CACHE_REPLACEMENT_LRU		= 0,
+	CACHE_REPLACEMENT_FIFO		= 1,
+	CACHE_REPLACEMENT_RANDOM	= 2,
+	CACHE_REPLACEMENT_NR		= 3,
+};
 
-LE64_BITMASK(CACHE_DISCARD,		struct cache_member, f1, 30, 31);
-
-LE64_BITMASK(CACHE_NR_READ_ERRORS,	struct cache_member, f2, 0,  20);
-LE64_BITMASK(CACHE_NR_WRITE_ERRORS,	struct cache_member, f2, 20, 40);
-
-struct cache_sb {
-	__le64			csum;
-	__le64			offset;	/* sector where this sb was written */
-	__le64			version; /* of on disk format */
-
+struct bch_sb_layout {
 	uuid_le			magic;	/* bcache superblock UUID */
+	__u8			layout_type;
+	__u8			sb_max_size_bits; /* base 2 of 512 byte sectors */
+	__u8			nr_superblocks;
+	__u8			pad[5];
+	__u64			sb_offset[61];
+} __attribute__((packed));
 
-	/* Identifies this disk within the cache set: */
-	uuid_le			disk_uuid;
+#define BCH_SB_LAYOUT_SECTOR	7
 
-	/*
-	 * Internal cache set UUID - xored with various magic numbers and thus
-	 * must never change:
-	 */
-	union {
-		uuid_le		set_uuid;
-		__le64		set_magic;
-	};
-
-	__u8			label[SB_LABEL_SIZE];
-
-	__le64			flags;
-
-	/* Incremented each time superblock is written: */
-	__le64			seq;
-
-	/*
-	 * User visible UUID for identifying the cache set the user is allowed
-	 * to change:
-	 */
-	uuid_le			user_uuid;
-
-	__le64			flags2;
-	__le64			pad1[5];
-
-	/* Number of cache_member entries: */
-	__u8			nr_in_set;
-
-	/*
-	 * Index of this device - for PTR_DEV(), and also this device's
-	 * slot in the cache_member array:
-	 */
-	__u8			nr_this_dev;
-	__le16			pad2[3];
-
-	__le16			block_size;	/* sectors */
-	__le16			pad3[6];
-
-	__le16			u64s;	/* size of variable length portion */
-
-	union {
-		struct cache_member	members[0];
-		/*
-		 * Journal buckets also in the variable length portion, after
-		 * the member info:
-		 */
-		__le64			_data[0];
-	};
+struct bch_sb_field {
+	__u64			_data[0];
+	__le32			u64s;
+	__le32			type;
 };
 
-/* XXX: rename CACHE_SET -> BCH_FS or something? */
-
-LE64_BITMASK(CACHE_SET_SYNC,		struct cache_sb, flags, 0, 1);
-
-LE64_BITMASK(CACHE_SET_ERROR_ACTION,	struct cache_sb, flags, 1, 4);
-#define BCH_ON_ERROR_CONTINUE		0U
-#define BCH_ON_ERROR_RO			1U
-#define BCH_ON_ERROR_PANIC		2U
-#define BCH_NR_ERROR_ACTIONS		3U
-
-LE64_BITMASK(CACHE_SET_META_REPLICAS_WANT,struct cache_sb, flags, 4, 8);
-LE64_BITMASK(CACHE_SET_DATA_REPLICAS_WANT,struct cache_sb, flags, 8, 12);
-
-#define BCH_REPLICAS_MAX		4U
-
-LE64_BITMASK(CACHE_SB_CSUM_TYPE,	struct cache_sb, flags, 12, 16);
-
-LE64_BITMASK(CACHE_SET_META_PREFERRED_CSUM_TYPE,struct cache_sb, flags, 16, 20);
-#define BCH_CSUM_NONE			0U
-#define BCH_CSUM_CRC32C			1U
-#define BCH_CSUM_CRC64			2U
-#define BCH_CSUM_NR			3U
-
-LE64_BITMASK(CACHE_SET_BTREE_NODE_SIZE,	struct cache_sb, flags, 20, 36);
-
-LE64_BITMASK(CACHE_SET_META_REPLICAS_HAVE,struct cache_sb, flags, 36, 40);
-LE64_BITMASK(CACHE_SET_DATA_REPLICAS_HAVE,struct cache_sb, flags, 40, 44);
-
-LE64_BITMASK(CACHE_SET_STR_HASH_TYPE,struct cache_sb, flags, 44, 48);
-enum bch_str_hash_type {
-	BCH_STR_HASH_CRC32C		= 0,
-	BCH_STR_HASH_CRC64		= 1,
-	BCH_STR_HASH_SIPHASH		= 2,
-	BCH_STR_HASH_SHA1		= 3,
+enum bch_sb_field_types {
+	BCH_SB_FIELD_journal	= 0,
+	BCH_SB_FIELD_members	= 1,
+	BCH_SB_FIELD_crypt	= 2,
+	BCH_SB_FIELD_NR		= 3,
 };
 
-#define BCH_STR_HASH_NR			4
-
-LE64_BITMASK(CACHE_SET_DATA_PREFERRED_CSUM_TYPE, struct cache_sb, flags, 48, 52);
-
-LE64_BITMASK(CACHE_SET_COMPRESSION_TYPE, struct cache_sb, flags, 52, 56);
-enum {
-	BCH_COMPRESSION_NONE		= 0,
-	BCH_COMPRESSION_LZ4		= 1,
-	BCH_COMPRESSION_GZIP		= 2,
+struct bch_sb_field_journal {
+	struct bch_sb_field	field;
+	__le64			buckets[0];
 };
 
-#define BCH_COMPRESSION_NR		3U
+struct bch_sb_field_members {
+	struct bch_sb_field	field;
+	struct bch_member	members[0];
+};
 
-/* Limit inode numbers to 32 bits: */
-LE64_BITMASK(CACHE_INODE_32BIT,		struct cache_sb, flags, 56, 57);
+/* Crypto: */
 
-LE64_BITMASK(CACHE_SET_GC_RESERVE,	struct cache_sb, flags, 57, 63);
+struct nonce {
+	__le32			d[4];
+};
 
-LE64_BITMASK(CACHE_SET_ROOT_RESERVE,	struct cache_sb, flags2, 0,  6);
+struct bch_key {
+	__le64			key[4];
+};
+
+#define BCH_KEY_MAGIC					\
+	(((u64) 'b' <<  0)|((u64) 'c' <<  8)|		\
+	 ((u64) 'h' << 16)|((u64) '*' << 24)|		\
+	 ((u64) '*' << 32)|((u64) 'k' << 40)|		\
+	 ((u64) 'e' << 48)|((u64) 'y' << 56))
+
+struct bch_encrypted_key {
+	__le64			magic;
+	struct bch_key		key;
+};
 
 /*
- * Did we shut down cleanly? Just a hint, doesn't affect behaviour of
- * mount/recovery path:
+ * If this field is present in the superblock, it stores an encryption key which
+ * is used encrypt all other data/metadata. The key will normally be encrypted
+ * with the key userspace provides, but if encryption has been turned off we'll
+ * just store the master key unencrypted in the superblock so we can access the
+ * previously encrypted data.
  */
-LE64_BITMASK(CACHE_SET_CLEAN,		struct cache_sb, flags2, 6, 7);
+struct bch_sb_field_crypt {
+	struct bch_sb_field	field;
 
-LE64_BITMASK(CACHE_SET_JOURNAL_ENTRY_SIZE, struct cache_sb, flags2, 7, 15);
+	__le64			flags;
+	__le64			kdf_flags;
+	struct bch_encrypted_key key;
+};
+
+LE64_BITMASK(BCH_CRYPT_KDF_TYPE,	struct bch_sb_field_crypt, flags, 0, 4);
+
+enum bch_kdf_types {
+	BCH_KDF_SCRYPT		= 0,
+	BCH_KDF_NR		= 1,
+};
+
+/* stored as base 2 log of scrypt params: */
+LE64_BITMASK(BCH_KDF_SCRYPT_N,	struct bch_sb_field_crypt, kdf_flags,  0, 16);
+LE64_BITMASK(BCH_KDF_SCRYPT_R,	struct bch_sb_field_crypt, kdf_flags, 16, 32);
+LE64_BITMASK(BCH_KDF_SCRYPT_P,	struct bch_sb_field_crypt, kdf_flags, 32, 48);
+
+/*
+ * @offset	- sector where this sb was written
+ * @version	- on disk format version
+ * @magic	- identifies as a bcache superblock (BCACHE_MAGIC)
+ * @seq		- incremented each time superblock is written
+ * @uuid	- used for generating various magic numbers and identifying
+ *                member devices, never changes
+ * @user_uuid	- user visible UUID, may be changed
+ * @label	- filesystem label
+ * @seq		- identifies most recent superblock, incremented each time
+ *		  superblock is written
+ * @features	- enabled incompatible features
+ */
+struct bch_sb {
+	struct bch_csum		csum;
+	__le64			version;
+	uuid_le			magic;
+	uuid_le			uuid;
+	uuid_le			user_uuid;
+	__u8			label[BCH_SB_LABEL_SIZE];
+	__le64			offset;
+	__le64			seq;
+
+	__le16			block_size;
+	__u8			dev_idx;
+	__u8			nr_devices;
+	__le32			u64s;
+
+	__le64			time_base_lo;
+	__le32			time_base_hi;
+	__le32			time_precision;
+
+	__le64			flags[8];
+	__le64			features[2];
+	__le64			compat[2];
+
+	struct bch_sb_layout	layout;
+
+	union {
+		struct bch_sb_field start[0];
+		__le64		_data[0];
+	};
+} __attribute__((packed, aligned(8)));
+
+/*
+ * Flags:
+ * BCH_SB_INITALIZED	- set on first mount
+ * BCH_SB_CLEAN		- did we shut down cleanly? Just a hint, doesn't affect
+ *			  behaviour of mount/recovery path:
+ * BCH_SB_INODE_32BIT	- limit inode numbers to 32 bits
+ * BCH_SB_128_BIT_MACS	- 128 bit macs instead of 80
+ * BCH_SB_ENCRYPTION_TYPE - if nonzero encryption is enabled; overrides
+ *			   DATA/META_CSUM_TYPE. Also indicates encryption
+ *			   algorithm in use, if/when we get more than one
+ */
+
+LE64_BITMASK(BCH_SB_INITIALIZED,	struct bch_sb, flags[0],  0,  1);
+LE64_BITMASK(BCH_SB_CLEAN,		struct bch_sb, flags[0],  1,  2);
+LE64_BITMASK(BCH_SB_CSUM_TYPE,		struct bch_sb, flags[0],  2,  8);
+LE64_BITMASK(BCH_SB_ERROR_ACTION,	struct bch_sb, flags[0],  8, 12);
+
+LE64_BITMASK(BCH_SB_BTREE_NODE_SIZE,	struct bch_sb, flags[0], 12, 28);
+
+LE64_BITMASK(BCH_SB_GC_RESERVE,		struct bch_sb, flags[0], 28, 33);
+LE64_BITMASK(BCH_SB_ROOT_RESERVE,	struct bch_sb, flags[0], 33, 40);
+
+LE64_BITMASK(BCH_SB_META_CSUM_TYPE,	struct bch_sb, flags[0], 40, 44);
+LE64_BITMASK(BCH_SB_DATA_CSUM_TYPE,	struct bch_sb, flags[0], 44, 48);
+
+LE64_BITMASK(BCH_SB_META_REPLICAS_WANT,	struct bch_sb, flags[0], 48, 52);
+LE64_BITMASK(BCH_SB_DATA_REPLICAS_WANT,	struct bch_sb, flags[0], 52, 56);
+
+LE64_BITMASK(BCH_SB_META_REPLICAS_HAVE,	struct bch_sb, flags[0], 56, 60);
+LE64_BITMASK(BCH_SB_DATA_REPLICAS_HAVE,	struct bch_sb, flags[0], 60, 64);
+
+LE64_BITMASK(BCH_SB_STR_HASH_TYPE,	struct bch_sb, flags[1],  0,  4);
+LE64_BITMASK(BCH_SB_COMPRESSION_TYPE,	struct bch_sb, flags[1],  4,  8);
+LE64_BITMASK(BCH_SB_INODE_32BIT,	struct bch_sb, flags[1],  8,  9);
+
+LE64_BITMASK(BCH_SB_128_BIT_MACS,	struct bch_sb, flags[1],  9, 10);
+LE64_BITMASK(BCH_SB_ENCRYPTION_TYPE,	struct bch_sb, flags[1], 10, 14);
+LE64_BITMASK(BCH_SB_JOURNAL_ENTRY_SIZE,	struct bch_sb, flags[1], 14, 20);
+
+/* Features: */
+enum bch_sb_features {
+	BCH_FEATURE_LZ4			= 0,
+	BCH_FEATURE_GZIP		= 1,
+};
 
 /* options: */
 
+#define BCH_REPLICAS_MAX		4U
+
+#if 0
+#define BCH_ERROR_ACTIONS()					\
+	x(BCH_ON_ERROR_CONTINUE,	0, "continue")		\
+	x(BCH_ON_ERROR_RO,		1, "remount-ro")	\
+	x(BCH_ON_ERROR_PANIC,		2, "panic")		\
+	x(BCH_NR_ERROR_ACTIONS,		3, NULL)
+
+enum bch_error_actions {
+#define x(_opt, _nr, _str)	_opt = _nr,
+	BCH_ERROR_ACTIONS()
+#undef x
+};
+#endif
+
+enum bch_error_actions {
+	BCH_ON_ERROR_CONTINUE		= 0,
+	BCH_ON_ERROR_RO			= 1,
+	BCH_ON_ERROR_PANIC		= 2,
+	BCH_NR_ERROR_ACTIONS		= 3,
+};
+
+enum bch_csum_opts {
+	BCH_CSUM_OPT_NONE		= 0,
+	BCH_CSUM_OPT_CRC32C		= 1,
+	BCH_CSUM_OPT_CRC64		= 2,
+	BCH_CSUM_OPT_NR			= 3,
+};
+
+enum bch_str_hash_opts {
+	BCH_STR_HASH_CRC32C		= 0,
+	BCH_STR_HASH_CRC64		= 1,
+	BCH_STR_HASH_SIPHASH		= 2,
+	BCH_STR_HASH_NR			= 3,
+};
+
+enum bch_compression_opts {
+	BCH_COMPRESSION_NONE		= 0,
+	BCH_COMPRESSION_LZ4		= 1,
+	BCH_COMPRESSION_GZIP		= 2,
+	BCH_COMPRESSION_NR		= 3,
+};
+
 /**
- * CACHE_SET_OPT(name, choices, min, max, sb_option, sysfs_writeable)
+ * BCH_OPT(name, choices, min, max, sb_option, sysfs_writeable)
  *
  * @name - name of mount option, sysfs attribute, and struct cache_set_opts
  *	member
@@ -838,56 +1040,60 @@ LE64_BITMASK(CACHE_SET_JOURNAL_ENTRY_SIZE, struct cache_sb, flags2, 7, 15);
  * @sysfs_writeable - if true, option will be modifiable at runtime via sysfs
  */
 
-#define CACHE_SET_SB_OPTS()					\
-	CACHE_SET_OPT(errors,					\
-		      bch_error_actions,			\
-		      0, BCH_NR_ERROR_ACTIONS,			\
-		      CACHE_SET_ERROR_ACTION,			\
-		      true)					\
-	CACHE_SET_OPT(metadata_replicas,			\
-		      bch_uint_opt,				\
-		      0, BCH_REPLICAS_MAX,			\
-		      CACHE_SET_META_REPLICAS_WANT,		\
-		      false)					\
-	CACHE_SET_OPT(data_replicas,				\
-		      bch_uint_opt,				\
-		      0, BCH_REPLICAS_MAX,			\
-		      CACHE_SET_DATA_REPLICAS_WANT,		\
-		      false)					\
-	CACHE_SET_OPT(metadata_checksum,			\
-		      bch_csum_types,				\
-		      0, BCH_CSUM_NR,				\
-		      CACHE_SET_META_PREFERRED_CSUM_TYPE,	\
-		      true)					\
-	CACHE_SET_OPT(data_checksum,				\
-		      bch_csum_types,				\
-		      0, BCH_CSUM_NR,				\
-		      CACHE_SET_DATA_PREFERRED_CSUM_TYPE,	\
-		      true)					\
-	CACHE_SET_OPT(compression,				\
-		      bch_compression_types,			\
-		      0, BCH_COMPRESSION_NR,			\
-		      CACHE_SET_COMPRESSION_TYPE,		\
-		      true)					\
-	CACHE_SET_OPT(str_hash,					\
-		      bch_str_hash_types,			\
-		      0, BCH_STR_HASH_NR,			\
-		      CACHE_SET_STR_HASH_TYPE,			\
-		      true)					\
-	CACHE_SET_OPT(inodes_32bit,				\
-		      bch_bool_opt, 0, 2,			\
-		      CACHE_INODE_32BIT,			\
-		      true)					\
-	CACHE_SET_OPT(gc_reserve_percent,			\
-		      bch_uint_opt,				\
-		      5, 21,					\
-		      CACHE_SET_GC_RESERVE,			\
-		      false)					\
-	CACHE_SET_OPT(root_reserve_percent,			\
-		      bch_uint_opt,				\
-		      0, 21,					\
-		      CACHE_SET_ROOT_RESERVE,			\
-		      false)
+#define BCH_SB_OPTS()						\
+	BCH_OPT(errors,						\
+		bch_error_actions,				\
+		0, BCH_NR_ERROR_ACTIONS,			\
+		BCH_SB_ERROR_ACTION,				\
+		true)						\
+	BCH_OPT(metadata_replicas,				\
+		bch_uint_opt,					\
+		0, BCH_REPLICAS_MAX,				\
+		BCH_SB_META_REPLICAS_WANT,			\
+		false)						\
+	BCH_OPT(data_replicas,					\
+		bch_uint_opt,					\
+		0, BCH_REPLICAS_MAX,				\
+		BCH_SB_DATA_REPLICAS_WANT,			\
+		false)						\
+	BCH_OPT(metadata_checksum,				\
+		bch_csum_types,					\
+		0, BCH_CSUM_OPT_NR,				\
+		BCH_SB_META_CSUM_TYPE,				\
+		true)						\
+	BCH_OPT(data_checksum,					\
+		bch_csum_types,					\
+		0, BCH_CSUM_OPT_NR,				\
+		BCH_SB_DATA_CSUM_TYPE,				\
+		true)						\
+	BCH_OPT(compression,					\
+		bch_compression_types,				\
+		0, BCH_COMPRESSION_NR,				\
+		BCH_SB_COMPRESSION_TYPE,			\
+		true)						\
+	BCH_OPT(str_hash,					\
+		bch_str_hash_types,				\
+		0, BCH_STR_HASH_NR,				\
+		BCH_SB_STR_HASH_TYPE,				\
+		true)						\
+	BCH_OPT(inodes_32bit,					\
+		bch_bool_opt, 0, 2,				\
+		BCH_SB_INODE_32BIT,				\
+		true)						\
+	BCH_OPT(gc_reserve_percent,				\
+		bch_uint_opt,					\
+		5, 21,						\
+		BCH_SB_GC_RESERVE,				\
+		false)						\
+	BCH_OPT(root_reserve_percent,				\
+		bch_uint_opt,					\
+		0, 100,						\
+		BCH_SB_ROOT_RESERVE,				\
+		false)						\
+	BCH_OPT(wide_macs,					\
+		bch_bool_opt, 0, 2,				\
+		BCH_SB_128_BIT_MACS,				\
+		true)
 
 /* backing device specific stuff: */
 
@@ -908,7 +1114,7 @@ struct backingdev_sb {
 		uuid_le		set_uuid;
 		__le64		set_magic;
 	};
-	__u8			label[SB_LABEL_SIZE];
+	__u8			label[BCH_SB_LABEL_SIZE];
 
 	__le64			flags;
 
@@ -947,15 +1153,7 @@ LE64_BITMASK(BDEV_STATE,		struct backingdev_sb, flags, 61, 63);
 #define BDEV_STATE_DIRTY		2U
 #define BDEV_STATE_STALE		3U
 
-static inline unsigned bch_journal_buckets_offset(struct cache_sb *sb)
-{
-	return sb->nr_in_set * (sizeof(struct cache_member) / sizeof(__u64));
-}
-
-static inline unsigned bch_nr_journal_buckets(struct cache_sb *sb)
-{
-	return __le16_to_cpu(sb->u64s) - bch_journal_buckets_offset(sb);
-}
+#define BDEV_DATA_START_DEFAULT		16	/* sectors */
 
 static inline _Bool __SB_IS_BDEV(__u64 version)
 {
@@ -963,7 +1161,7 @@ static inline _Bool __SB_IS_BDEV(__u64 version)
 		|| version == BCACHE_SB_VERSION_BDEV_WITH_OFFSET;
 }
 
-static inline _Bool SB_IS_BDEV(const struct cache_sb *sb)
+static inline _Bool SB_IS_BDEV(const struct bch_sb *sb)
 {
 	return __SB_IS_BDEV(sb->version);
 }
@@ -981,29 +1179,33 @@ static inline _Bool SB_IS_BDEV(const struct cache_sb *sb)
 
 #define BCACHE_STATFS_MAGIC		0xca451a4e
 
-#define BCACHE_SB_MAGIC			0xca451a4ef67385c6ULL
-#define BCACHE_SB_MAGIC2		0x816dba487ff56582ULL
-#define JSET_MAGIC			0x245235c1a3625032ULL
-#define PSET_MAGIC			0x6750e15f87337f91ULL
-#define BSET_MAGIC			0x90135c78b99e07f5ULL
+#define JSET_MAGIC		__cpu_to_le64(0x245235c1a3625032ULL)
+#define PSET_MAGIC		__cpu_to_le64(0x6750e15f87337f91ULL)
+#define BSET_MAGIC		__cpu_to_le64(0x90135c78b99e07f5ULL)
 
-static inline __u64 jset_magic(struct cache_sb *sb)
+static inline __le64 __bch_sb_magic(struct bch_sb *sb)
 {
-	return __le64_to_cpu(sb->set_magic) ^ JSET_MAGIC;
+	__le64 ret;
+	memcpy(&ret, &sb->uuid, sizeof(ret));
+	return ret;
 }
 
-static inline __u64 pset_magic(struct cache_sb *sb)
+static inline __u64 __jset_magic(struct bch_sb *sb)
 {
-	return __le64_to_cpu(sb->set_magic) ^ PSET_MAGIC;
+	return __le64_to_cpu(__bch_sb_magic(sb) ^ JSET_MAGIC);
 }
 
-static inline __u64 bset_magic(struct cache_sb *sb)
+static inline __u64 __pset_magic(struct bch_sb *sb)
 {
-	return __le64_to_cpu(sb->set_magic) ^ BSET_MAGIC;
+	return __le64_to_cpu(__bch_sb_magic(sb) ^ PSET_MAGIC);
+}
+
+static inline __u64 __bset_magic(struct bch_sb *sb)
+{
+	return __le64_to_cpu(__bch_sb_magic(sb) ^ BSET_MAGIC);
 }
 
 /* Journal */
-
 
 #define BCACHE_JSET_VERSION_UUIDv1	1
 #define BCACHE_JSET_VERSION_UUID	1	/* Always latest UUID format */
@@ -1054,24 +1256,29 @@ enum {
  * version is for on disk format changes.
  */
 struct jset {
-	__le64			csum;
+	struct bch_csum		csum;
+
 	__le64			magic;
+	__le64			seq;
 	__le32			version;
 	__le32			flags;
 
-	/* Sequence number of oldest dirty journal entry */
-	__le64			seq;
-	__le64			last_seq;
+	__le32			u64s; /* size of d[] in u64s */
+
+	__u8			encrypted_start[0];
 
 	__le16			read_clock;
 	__le16			write_clock;
-	__le32			u64s; /* size of d[] in u64s */
+
+	/* Sequence number of oldest dirty journal entry */
+	__le64			last_seq;
+
 
 	union {
 		struct jset_entry start[0];
 		__u64		_data[0];
 	};
-};
+} __attribute__((packed));
 
 LE32_BITMASK(JSET_CSUM_TYPE,	struct jset, flags, 0, 4);
 LE32_BITMASK(JSET_BIG_ENDIAN,	struct jset, flags, 4, 5);
@@ -1081,10 +1288,14 @@ LE32_BITMASK(JSET_BIG_ENDIAN,	struct jset, flags, 4, 5);
 /* Bucket prios/gens */
 
 struct prio_set {
-	__le64			csum;
+	struct bch_csum		csum;
+
 	__le64			magic;
-	__le32			version;
-	__le32			flags;
+	__le32			nonce[3];
+	__le16			version;
+	__le16			flags;
+
+	__u8			encrypted_start[0];
 
 	__le64			next_bucket;
 
@@ -1093,7 +1304,7 @@ struct prio_set {
 		__le16		write_prio;
 		__u8		gen;
 	} __attribute__((packed)) data[];
-};
+} __attribute__((packed));
 
 LE32_BITMASK(PSET_CSUM_TYPE,	struct prio_set, flags, 0, 4);
 
@@ -1155,28 +1366,49 @@ struct bset {
 
 LE32_BITMASK(BSET_CSUM_TYPE,	struct bset, flags, 0, 4);
 
-/* Only used in first bset */
-LE32_BITMASK(BSET_BTREE_LEVEL,	struct bset, flags, 4, 8);
-
-LE32_BITMASK(BSET_BIG_ENDIAN,	struct bset, flags, 8, 9);
+LE32_BITMASK(BSET_BIG_ENDIAN,	struct bset, flags, 4, 5);
 LE32_BITMASK(BSET_SEPARATE_WHITEOUTS,
-				struct bset, flags, 9, 10);
+				struct bset, flags, 5, 6);
 
 struct btree_node {
-	__le64			csum;
+	struct bch_csum		csum;
 	__le64			magic;
+
+	/* this flags field is encrypted, unlike bset->flags: */
+	__le64			flags;
 
 	/* Closed interval: */
 	struct bpos		min_key;
 	struct bpos		max_key;
+	struct bch_extent_ptr	ptr;
 	struct bkey_format	format;
 
+	union {
 	struct bset		keys;
+	struct {
+		__u8		pad[22];
+		__le16		u64s;
+		__u64		_data[0];
+
+	};
+	};
 } __attribute__((packed));
 
+LE64_BITMASK(BTREE_NODE_ID,	struct btree_node, flags, 0, 4);
+LE64_BITMASK(BTREE_NODE_LEVEL,	struct btree_node, flags, 4, 8);
+
 struct btree_node_entry {
-	__le64			csum;
+	struct bch_csum		csum;
+
+	union {
 	struct bset		keys;
+	struct {
+		__u8		pad[22];
+		__le16		u64s;
+		__u64		_data[0];
+
+	};
+	};
 } __attribute__((packed));
 
 /* OBSOLETE */
@@ -1237,7 +1469,7 @@ struct jset_v0 {
 	__u16			btree_level;
 	__u16			pad[3];
 
-	__u64			prio_bucket[MAX_CACHES_PER_SET];
+	__u64			prio_bucket[64];
 
 	union {
 		struct bkey	start[0];

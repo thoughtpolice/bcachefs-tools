@@ -314,6 +314,8 @@ do {									\
 
 struct btree;
 struct cache;
+struct crypto_blkcipher;
+struct crypto_ahash;
 
 enum gc_phase {
 	GC_PHASE_PENDING_DELETE		= BTREE_ID_NR + 1,
@@ -332,7 +334,6 @@ struct cache_member_cpu {
 	u16			bucket_size;	/* sectors */
 	u8			state;
 	u8			tier;
-	u8			replication_set;
 	u8			has_metadata;
 	u8			has_data;
 	u8			replacement;
@@ -342,7 +343,7 @@ struct cache_member_cpu {
 
 struct cache_member_rcu {
 	struct rcu_head		rcu;
-	unsigned		nr_in_set;
+	unsigned		nr_devices;
 	struct cache_member_cpu	m[];
 };
 
@@ -363,14 +364,13 @@ struct cache {
 
 	struct cache_group	self;
 
+	u8			dev_idx;
 	/*
 	 * Cached version of this device's member info from superblock
-	 * Committed by write_super()
+	 * Committed by bch_write_super() -> bch_cache_set_mi_update()
 	 */
-	struct {
-		u8		nr_this_dev;
-	}			sb;
 	struct cache_member_cpu	mi;
+	uuid_le			uuid;
 
 	struct bcache_superblock disk_sb;
 
@@ -518,36 +518,45 @@ struct cache_set {
 	struct percpu_ref	writes;
 	struct work_struct	read_only_work;
 
-	struct cache __rcu	*cache[MAX_CACHES_PER_SET];
-
-	struct mutex		mi_lock;
-	struct cache_member_rcu __rcu *members;
-	struct cache_member	*disk_mi; /* protected by register_lock */
+	struct cache __rcu	*cache[BCH_SB_MEMBERS_MAX];
 
 	struct cache_set_opts	opts;
 
 	/*
 	 * Cached copy in native endianness:
-	 * Set by cache_sb_to_cache_set:
+	 * Set by bch_cache_set_mi_update():
 	 */
+	struct cache_member_rcu __rcu *members;
+
+	/* Updated by bch_sb_update():*/
 	struct {
+		uuid_le		uuid;
+		uuid_le		user_uuid;
+
 		u16		block_size;
 		u16		btree_node_size;
 
-		u8		nr_in_set;
+		u8		nr_devices;
 		u8		clean;
 
 		u8		meta_replicas_have;
 		u8		data_replicas_have;
 
 		u8		str_hash_type;
+		u8		encryption_type;
+
+		u64		time_base_lo;
+		u32		time_base_hi;
+		u32		time_precision;
 	}			sb;
 
-	struct cache_sb		disk_sb;
+	struct bch_sb		*disk_sb;
+	unsigned		disk_sb_order;
+
 	unsigned short		block_bits;	/* ilog2(block_size) */
 
 	struct closure		sb_write;
-	struct semaphore	sb_write_mutex;
+	struct mutex		sb_lock;
 
 	struct backing_dev_info bdi;
 
@@ -631,7 +640,7 @@ struct cache_set {
 	 * allocate from:
 	 */
 	struct cache_group	cache_all;
-	struct cache_group	cache_tiers[CACHE_TIERS];
+	struct cache_group	cache_tiers[BCH_TIER_MAX];
 
 	u64			capacity; /* sectors */
 
@@ -723,6 +732,11 @@ struct cache_set {
 	mempool_t		compression_bounce[2];
 	struct bio_decompress_worker __percpu
 				*bio_decompress_worker;
+
+	struct crypto_blkcipher	*chacha20;
+	struct crypto_shash	*poly1305;
+
+	atomic64_t		key_version;
 
 	/* For punting bio submissions to workqueue, io.c */
 	struct bio_list		bio_submit_list;

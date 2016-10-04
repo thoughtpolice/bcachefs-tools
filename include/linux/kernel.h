@@ -207,6 +207,4 @@ int __must_check kstrtoint(const char *s, unsigned int base, int *res);
 	 BUILD_BUG_ON_ZERO((perms) & 2) +					\
 	 (perms))
 
-#define offset_in_page(p)	((unsigned long)(p) & ~PAGE_MASK)
-
 #endif

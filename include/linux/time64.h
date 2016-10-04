@@ -38,6 +38,19 @@ struct itimerspec64 {
 #define KTIME_MAX			((s64)~((u64)1 << 63))
 #define KTIME_SEC_MAX			(KTIME_MAX / NSEC_PER_SEC)
 
+static inline struct timespec ns_to_timespec(const u64 nsec)
+{
+	return (struct timespec) {
+		.tv_sec = nsec / NSEC_PER_SEC,
+		.tv_nsec = nsec % NSEC_PER_SEC,
+	};
+}
+
+static inline s64 timespec_to_ns(const struct timespec *ts)
+{
+	return ((s64) ts->tv_sec * NSEC_PER_SEC) + ts->tv_nsec;
+}
+
 #if __BITS_PER_LONG == 64
 
 static inline struct timespec timespec64_to_timespec(const struct timespec64 ts64)
@@ -60,11 +73,6 @@ static inline struct timespec64 timespec_to_timespec64(const struct timespec ts)
 # define timespec64_to_ns		timespec_to_ns
 # define ns_to_timespec64		ns_to_timespec
 # define timespec64_add_ns		timespec_add_ns
-
-static inline s64 timespec_to_ns(const struct timespec *ts)
-{
-	return ((s64) ts->tv_sec * NSEC_PER_SEC) + ts->tv_nsec;
-}
 
 #else
 

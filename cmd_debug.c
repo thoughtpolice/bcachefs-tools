@@ -27,21 +27,27 @@ static void dump_usage(void)
 	     "Report bugs to <linux-bcache@vger.kernel.org>");
 }
 
-void dump_one_device(struct cache_set *c, struct cache *ca, int fd)
+static void dump_one_device(struct cache_set *c, struct cache *ca, int fd)
 {
-	struct cache_sb *sb = ca->disk_sb.sb;
+	struct bch_sb *sb = ca->disk_sb.sb;
 	sparse_data data;
 	unsigned i;
 
 	darray_init(data);
 
 	/* Superblock: */
-	data_add(&data, SB_SECTOR << 9, __set_bytes(sb, le16_to_cpu(sb->u64s)));
+	data_add(&data, BCH_SB_LAYOUT_SECTOR << 9,
+		 sizeof(struct bch_sb_layout));
+
+	for (i = 0; i < sb->layout.nr_superblocks; i++)
+		data_add(&data,
+			 le64_to_cpu(sb->layout.sb_offset[i]) << 9,
+			 vstruct_bytes(sb));
 
 	/* Journal: */
-	for (i = 0; i < bch_nr_journal_buckets(ca->disk_sb.sb); i++)
+	for (i = 0; i < ca->journal.nr; i++)
 		if (ca->journal.bucket_seq[i] >= c->journal.last_seq_ondisk) {
-			u64 bucket = journal_bucket(ca->disk_sb.sb, i);
+			u64 bucket = ca->journal.buckets[i];
 
 			data_add(&data,
 				 bucket_bytes(ca) * bucket,
@@ -64,7 +70,7 @@ void dump_one_device(struct cache_set *c, struct cache *ca, int fd)
 			struct bkey_s_c_extent e = bkey_i_to_s_c_extent(&b->key);
 
 			extent_for_each_ptr(e, ptr)
-				if (ptr->dev == ca->sb.nr_this_dev)
+				if (ptr->dev == ca->dev_idx)
 					data_add(&data,
 						 ptr->offset << 9,
 						 b->written << 9);
@@ -120,13 +126,13 @@ int cmd_dump(int argc, char *argv[])
 
 	down_read(&c->gc_lock);
 
-	for (i = 0; i < c->sb.nr_in_set; i++)
+	for (i = 0; i < c->sb.nr_devices; i++)
 		if (c->cache[i])
 			nr_devices++;
 
 	BUG_ON(!nr_devices);
 
-	for (i = 0; i < c->sb.nr_in_set; i++) {
+	for (i = 0; i < c->sb.nr_devices; i++) {
 		int mode = O_WRONLY|O_CREAT|O_TRUNC;
 
 		if (!force)
@@ -155,8 +161,8 @@ int cmd_dump(int argc, char *argv[])
 	return 0;
 }
 
-void list_keys(struct cache_set *c, enum btree_id btree_id,
-	       struct bpos start, struct bpos end, int mode)
+static void list_keys(struct cache_set *c, enum btree_id btree_id,
+		      struct bpos start, struct bpos end, int mode)
 {
 	struct btree_iter iter;
 	struct bkey_s_c k;
@@ -173,8 +179,8 @@ void list_keys(struct cache_set *c, enum btree_id btree_id,
 	bch_btree_iter_unlock(&iter);
 }
 
-void list_btree_formats(struct cache_set *c, enum btree_id btree_id,
-			struct bpos start, struct bpos end, int mode)
+static void list_btree_formats(struct cache_set *c, enum btree_id btree_id,
+			       struct bpos start, struct bpos end, int mode)
 {
 	struct btree_iter iter;
 	struct btree *b;
@@ -190,7 +196,7 @@ void list_btree_formats(struct cache_set *c, enum btree_id btree_id,
 	bch_btree_iter_unlock(&iter);
 }
 
-struct bpos parse_pos(char *buf)
+static struct bpos parse_pos(char *buf)
 {
 	char *s = buf;
 	char *inode	= strsep(&s, ":");

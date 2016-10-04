@@ -30,6 +30,7 @@ static void usage(void)
 	     "\n"
 	     "Commands for formatting, startup and shutdown:\n"
 	     "  format         Format a new filesystem\n"
+	     "  unlock         Unlock an encrypted filesystem prior to running/mounting\n"
 	     "  assemble       Assemble an existing multi device filesystem\n"
 	     "  incremental    Incrementally assemble an existing multi device filesystem\n"
 	     "  run            Start a partially assembled filesystem\n"
@@ -46,6 +47,7 @@ static void usage(void)
 	     "\n"
 	     "Repair:\n"
 	     "  bcache fsck    Check an existing filesystem for errors\n"
+	     "\n"
 	     "Debug:\n"
 	     "  bcache dump    Dump filesystem metadata to a qcow2 image\n"
 	     "  bcache list    List filesystem metadata in textual form\n");
@@ -93,6 +95,9 @@ int main(int argc, char *argv[])
 
 	if (!strcmp(cmd, "fsck"))
 		return cmd_fsck(argc, argv);
+
+	if (!strcmp(cmd, "unlock"))
+		return cmd_unlock(argc, argv);
 
 	if (!strcmp(cmd, "dump"))
 		return cmd_dump(argc, argv);

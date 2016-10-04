@@ -5,8 +5,11 @@
 
 struct page;
 
-#define virt_to_page(kaddr)		((struct page *) (kaddr))
-#define page_address(kaddr)		((void *) (kaddr))
+#define virt_to_page(p)							\
+	((struct page *) (((unsigned long) (p)) & PAGE_MASK))
+#define offset_in_page(p)		((unsigned long) (p) & ~PAGE_MASK)
+
+#define page_address(p)			((void *) (p))
 
 #define kmap_atomic(page)		page_address(page)
 #define kunmap_atomic(addr)		do {} while (0)

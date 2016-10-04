@@ -11,6 +11,7 @@
 
 int cmd_format(int argc, char *argv[]);
 
+int cmd_unlock(int argc, char *argv[]);
 int cmd_assemble(int argc, char *argv[]);
 int cmd_incremental(int argc, char *argv[]);
 int cmd_run(int argc, char *argv[]);

@@ -20,9 +20,10 @@ else
 	LDFLAGS+=-flto
 endif
 
-PKGCONFIG_LIBS="blkid uuid liburcu"
+PKGCONFIG_LIBS="blkid uuid liburcu libsodium"
 CFLAGS+=`pkg-config --cflags	${PKGCONFIG_LIBS}`
-LDLIBS+=`pkg-config --libs	${PKGCONFIG_LIBS}` -lm -lpthread -lrt
+LDLIBS+=`pkg-config --libs	${PKGCONFIG_LIBS}` 		\
+	-lm -lpthread -lrt -lscrypt -lkeyutils
 
 ifeq ($(PREFIX),/usr)
 	ROOT_SBINDIR=/sbin
@@ -48,7 +49,9 @@ OBJS=bcache.o			\
      cmd_fs.o			\
      cmd_fsck.o			\
      cmd_format.o		\
+     cmd_key.o			\
      cmd_run.o			\
+     crypto.o			\
      libbcache.o		\
      qcow2.o			\
      tools-util.o		\

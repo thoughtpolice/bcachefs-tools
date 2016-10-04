@@ -12,7 +12,7 @@
 #include "extents.h"
 #include "journal.h"
 #include "keylist.h"
-#include "super.h"
+#include "super-io.h"
 
 #include <linux/random.h>
 #include <linux/sort.h>
@@ -80,7 +80,7 @@ bool bch_btree_node_format_fits(struct cache_set *c, struct btree *b,
 {
 	size_t u64s = btree_node_u64s_with_format(b, new_f);
 
-	return __set_bytes(b->data, u64s) < btree_bytes(c);
+	return __vstruct_bytes(struct btree_node, u64s) < btree_bytes(c);
 }
 
 /* Btree node freeing/allocation: */
@@ -298,8 +298,11 @@ static struct btree *bch_btree_node_alloc(struct cache_set *c,
 
 	bch_bset_init_first(b, &b->data->keys);
 	memset(&b->nr, 0, sizeof(b->nr));
-	b->data->magic = cpu_to_le64(bset_magic(&c->disk_sb));
-	SET_BSET_BTREE_LEVEL(&b->data->keys, level);
+	b->data->magic = cpu_to_le64(bset_magic(c));
+	b->data->flags = 0;
+	SET_BTREE_NODE_ID(b->data, id);
+	SET_BTREE_NODE_LEVEL(b->data, level);
+	b->data->ptr = bkey_i_to_extent(&b->key)->v.start->ptr;
 
 	bch_btree_build_aux_trees(b);
 
@@ -1292,7 +1295,7 @@ static struct btree *__btree_split_node(struct btree_iter *iter, struct btree *n
 	 */
 	k = set1->start;
 	while (1) {
-		if (bkey_next(k) == bset_bkey_last(set1))
+		if (bkey_next(k) == vstruct_last(set1))
 			break;
 		if (k->_data - set1->_data >= (le16_to_cpu(set1->u64s) * 3) / 5)
 			break;
@@ -1313,7 +1316,7 @@ static struct btree *__btree_split_node(struct btree_iter *iter, struct btree *n
 	n2->data->min_key =
 		btree_type_successor(n1->btree_id, n1->key.k.p);
 
-	set2->u64s = cpu_to_le16((u64 *) bset_bkey_last(set1) - (u64 *) k);
+	set2->u64s = cpu_to_le16((u64 *) vstruct_end(set1) - (u64 *) k);
 	set1->u64s = cpu_to_le16(le16_to_cpu(set1->u64s) - le16_to_cpu(set2->u64s));
 
 	set_btree_bset_end(n1, n1->set);
@@ -1333,7 +1336,7 @@ static struct btree *__btree_split_node(struct btree_iter *iter, struct btree *n
 	BUG_ON(!set2->u64s);
 
 	memcpy_u64s(set2->start,
-		    bset_bkey_last(set1),
+		    vstruct_end(set1),
 		    le16_to_cpu(set2->u64s));
 
 	btree_node_reset_sib_u64s(n1);
@@ -1393,12 +1396,12 @@ static void btree_split_insert_keys(struct btree_iter *iter, struct btree *b,
 	 */
 	i = btree_bset_first(b);
 	p = i->start;
-	while (p != bset_bkey_last(i))
+	while (p != vstruct_last(i))
 		if (bkey_deleted(p)) {
 			le16_add_cpu(&i->u64s, -p->u64s);
 			set_btree_bset_end(b, b->set);
 			memmove_u64s_down(p, bkey_next(p),
-					  (u64 *) bset_bkey_last(i) -
+					  (u64 *) vstruct_last(i) -
 					  (u64 *) p);
 		} else
 			p = bkey_next(p);
@@ -1428,9 +1431,7 @@ static void btree_split(struct btree *b, struct btree_iter *iter,
 	if (b->level)
 		btree_split_insert_keys(iter, n1, insert_keys, reserve);
 
-	if (__set_blocks(n1->data,
-			 le16_to_cpu(n1->data->keys.u64s),
-			 block_bytes(c)) > BTREE_SPLIT_THRESHOLD(c)) {
+	if (vstruct_blocks(n1->data, c->block_bits) > BTREE_SPLIT_THRESHOLD(c)) {
 		trace_bcache_btree_node_split(c, b, b->nr.live_u64s);
 
 		n2 = __btree_split_node(iter, n1, reserve);
@@ -1939,7 +1940,7 @@ retry:
 	u64s = 0;
 	trans_for_each_entry(trans, i)
 		if (!i->done)
-			u64s += jset_u64s(i->k->k.u64s);
+			u64s += jset_u64s(i->k->k.u64s + i->extra_res);
 
 	memset(&trans->journal_res, 0, sizeof(trans->journal_res));
 
@@ -1966,7 +1967,7 @@ retry:
 		 * written one
 		 */
 		if (!i->done) {
-			u64s += i->k->k.u64s;
+			u64s += i->k->k.u64s + i->extra_res;
 			if (!bch_btree_node_insert_fits(c,
 					i->iter->nodes[0], u64s)) {
 				split = i->iter;
@@ -2217,7 +2218,7 @@ int bch_btree_update(struct cache_set *c, enum btree_id id,
 int bch_btree_delete_range(struct cache_set *c, enum btree_id id,
 			   struct bpos start,
 			   struct bpos end,
-			   u64 version,
+			   struct bversion version,
 			   struct disk_reservation *disk_res,
 			   struct extent_insert_hook *hook,
 			   u64 *journal_seq)

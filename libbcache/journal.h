@@ -111,11 +111,7 @@
 #include <linux/hash.h>
 
 #include "journal_types.h"
-
-static inline struct jset_entry *jset_keys_next(struct jset_entry *j)
-{
-	return (void *) __bkey_idx(j, le16_to_cpu(j->u64s));
-}
+//#include "super-io.h"
 
 /*
  * Only used for holding the journal entries we read in btree_journal_read()
@@ -182,7 +178,7 @@ static inline void bch_journal_add_entry_at(struct journal_buf *buf,
 					    unsigned type, enum btree_id id,
 					    unsigned level, unsigned offset)
 {
-	struct jset_entry *entry = bkey_idx(buf->data, offset);
+	struct jset_entry *entry = vstruct_idx(buf->data, offset);
 
 	entry->u64s = cpu_to_le16(u64s);
 	entry->btree_id = id;
@@ -336,7 +332,7 @@ static inline int bch_journal_error(struct journal *j)
 
 static inline bool is_journal_device(struct cache *ca)
 {
-	return ca->mi.state == CACHE_ACTIVE && ca->mi.tier == 0;
+	return ca->mi.state == BCH_MEMBER_STATE_ACTIVE && ca->mi.tier == 0;
 }
 
 static inline bool journal_flushes_device(struct cache *ca)
@@ -367,21 +363,16 @@ ssize_t bch_journal_print_debug(struct journal *, char *);
 
 int bch_cache_journal_alloc(struct cache *);
 
-static inline __le64 *__journal_buckets(struct cache_sb *sb)
+static inline unsigned bch_nr_journal_buckets(struct bch_sb_field_journal *j)
 {
-	return sb->_data + bch_journal_buckets_offset(sb);
-}
-
-static inline u64 journal_bucket(struct cache_sb *sb, unsigned nr)
-{
-	return le64_to_cpu(__journal_buckets(sb)[nr]);
-}
-
-static inline void set_journal_bucket(struct cache_sb *sb, unsigned nr, u64 bucket)
-{
-	__journal_buckets(sb)[nr] = cpu_to_le64(bucket);
+	return j
+		? (__le64 *) vstruct_end(&j->field) - j->buckets
+		: 0;
 }
 
 int bch_journal_move(struct cache *);
+
+void bch_journal_free_cache(struct cache *);
+int bch_journal_init_cache(struct cache *);
 
 #endif /* _BCACHE_JOURNAL_H */

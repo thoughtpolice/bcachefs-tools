@@ -18,6 +18,7 @@
 #include "journal.h"
 #include "keylist.h"
 #include "move.h"
+#include "super-io.h"
 #include "writeback.h"
 
 #include <linux/slab.h>
@@ -118,8 +119,8 @@ u8 bch_btree_key_recalc_oldest_gen(struct cache_set *c, struct bkey_s_c k)
 /*
  * For runtime mark and sweep:
  */
-u8 __bch_btree_mark_key(struct cache_set *c, enum bkey_type type,
-			struct bkey_s_c k)
+static u8 bch_btree_mark_key(struct cache_set *c, enum bkey_type type,
+			     struct bkey_s_c k)
 {
 	switch (type) {
 	case BKEY_TYPE_BTREE:
@@ -133,10 +134,14 @@ u8 __bch_btree_mark_key(struct cache_set *c, enum bkey_type type,
 	}
 }
 
-static u8 btree_mark_key(struct cache_set *c, struct btree *b,
-			 struct bkey_s_c k)
+u8 bch_btree_mark_key_initial(struct cache_set *c, enum bkey_type type,
+			  struct bkey_s_c k)
 {
-	return __bch_btree_mark_key(c, btree_node_type(b), k);
+	atomic64_set(&c->key_version,
+		     max_t(u64, k.k->version.lo,
+			   atomic64_read(&c->key_version)));
+
+	return bch_btree_mark_key(c, type, k);
 }
 
 static bool btree_gc_mark_node(struct cache_set *c, struct btree *b)
@@ -151,7 +156,8 @@ static bool btree_gc_mark_node(struct cache_set *c, struct btree *b)
 					       btree_node_is_extents(b),
 					       &unpacked) {
 			bkey_debugcheck(c, b, k);
-			stale = max(stale, btree_mark_key(c, b, k));
+			stale = max(stale, bch_btree_mark_key(c,
+							btree_node_type(b), k));
 		}
 
 		if (btree_gc_rewrite_disabled(c))
@@ -218,7 +224,7 @@ static int bch_gc_btree(struct cache_set *c, enum btree_id btree_id)
 	mutex_lock(&c->btree_root_lock);
 
 	b = c->btree_roots[btree_id].b;
-	__bch_btree_mark_key(c, BKEY_TYPE_BTREE, bkey_i_to_s_c(&b->key));
+	bch_btree_mark_key(c, BKEY_TYPE_BTREE, bkey_i_to_s_c(&b->key));
 	gc_pos_set(c, gc_pos_btree_root(b->btree_id));
 
 	mutex_unlock(&c->btree_root_lock);
@@ -265,22 +271,21 @@ static void bch_mark_allocator_buckets(struct cache_set *c)
 static void bch_mark_metadata(struct cache_set *c)
 {
 	struct cache *ca;
-	unsigned i;
+	unsigned i, j;
+	u64 b;
 
 	for_each_cache(ca, c, i) {
-		unsigned j;
-		u64 *i;
-
-		for (j = 0; j < bch_nr_journal_buckets(ca->disk_sb.sb); j++)
-			bch_mark_metadata_bucket(ca,
-				&ca->buckets[journal_bucket(ca->disk_sb.sb, j)],
-				true);
+		for (j = 0; j < ca->journal.nr; j++) {
+			b = ca->journal.buckets[j];
+			bch_mark_metadata_bucket(ca, ca->buckets + b, true);
+		}
 
 		spin_lock(&ca->prio_buckets_lock);
 
-		for (i = ca->prio_buckets;
-		     i < ca->prio_buckets + prio_buckets(ca) * 2; i++)
-			bch_mark_metadata_bucket(ca, &ca->buckets[*i], true);
+		for (j = 0; j < prio_buckets(ca) * 2; j++) {
+			b = ca->prio_buckets[j];
+			bch_mark_metadata_bucket(ca, ca->buckets + b, true);
+		}
 
 		spin_unlock(&ca->prio_buckets_lock);
 	}
@@ -476,9 +481,8 @@ static void bch_coalesce_nodes(struct btree *old_nodes[GC_MERGE_NODES],
 
 	/* Check if all keys in @old_nodes could fit in one fewer node */
 	if (nr_old_nodes <= 1 ||
-	    __set_blocks(old_nodes[0]->data,
-			 DIV_ROUND_UP(u64s, nr_old_nodes - 1),
-			 block_bytes(c)) > blocks)
+	    __vstruct_blocks(struct btree_node, c->block_bits,
+			     DIV_ROUND_UP(u64s, nr_old_nodes - 1)) > blocks)
 		return;
 
 	res = bch_btree_reserve_get(c, parent, nr_old_nodes,
@@ -542,9 +546,9 @@ static void bch_coalesce_nodes(struct btree *old_nodes[GC_MERGE_NODES],
 		u64s = 0;
 
 		for (k = s2->start;
-		     k < bset_bkey_last(s2) &&
-		     __set_blocks(n1->data, le16_to_cpu(s1->u64s) + u64s + k->u64s,
-				  block_bytes(c)) <= blocks;
+		     k < vstruct_last(s2) &&
+		     vstruct_blocks_plus(n1->data, c->block_bits,
+					 u64s + k->u64s) <= blocks;
 		     k = bkey_next(k)) {
 			last = k;
 			u64s += k->u64s;
@@ -554,7 +558,7 @@ static void bch_coalesce_nodes(struct btree *old_nodes[GC_MERGE_NODES],
 			/* n2 fits entirely in n1 */
 			n1->key.k.p = n1->data->max_key = n2->data->max_key;
 
-			memcpy_u64s(bset_bkey_last(s1),
+			memcpy_u64s(vstruct_last(s1),
 				    s2->start,
 				    le16_to_cpu(s2->u64s));
 			le16_add_cpu(&s1->u64s, le16_to_cpu(s2->u64s));
@@ -578,12 +582,12 @@ static void bch_coalesce_nodes(struct btree *old_nodes[GC_MERGE_NODES],
 				btree_type_successor(iter->btree_id,
 						     n1->data->max_key);
 
-			memcpy_u64s(bset_bkey_last(s1),
+			memcpy_u64s(vstruct_last(s1),
 				    s2->start, u64s);
 			le16_add_cpu(&s1->u64s, u64s);
 
 			memmove(s2->start,
-				bset_bkey_idx(s2, u64s),
+				vstruct_idx(s2, u64s),
 				(le16_to_cpu(s2->u64s) - u64s) * sizeof(u64));
 			s2->u64s = cpu_to_le16(le16_to_cpu(s2->u64s) - u64s);
 
@@ -866,7 +870,7 @@ static void bch_initial_gc_btree(struct cache_set *c, enum btree_id id)
 			for_each_btree_node_key_unpack(b, k, &node_iter,
 						       btree_node_is_extents(b),
 						       &unpacked)
-				btree_mark_key(c, b, k);
+				bch_btree_mark_key_initial(c, btree_node_type(b), k);
 		}
 
 		bch_btree_iter_cond_resched(&iter);
@@ -874,8 +878,8 @@ static void bch_initial_gc_btree(struct cache_set *c, enum btree_id id)
 
 	bch_btree_iter_unlock(&iter);
 
-	__bch_btree_mark_key(c, BKEY_TYPE_BTREE,
-			     bkey_i_to_s_c(&c->btree_roots[id].b->key));
+	bch_btree_mark_key(c, BKEY_TYPE_BTREE,
+			   bkey_i_to_s_c(&c->btree_roots[id].b->key));
 }
 
 int bch_initial_gc(struct cache_set *c, struct list_head *journal)
@@ -888,6 +892,13 @@ int bch_initial_gc(struct cache_set *c, struct list_head *journal)
 
 		bch_journal_mark(c, journal);
 	}
+
+	/*
+	 * Skip past versions that might have possibly been used (as nonces),
+	 * but hadn't had their pointers written:
+	 */
+	if (c->sb.encryption_type)
+		atomic64_add(1 << 16, &c->key_version);
 
 	bch_mark_metadata(c);
 

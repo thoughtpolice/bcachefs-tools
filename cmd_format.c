@@ -24,6 +24,7 @@
 
 #include "cmds.h"
 #include "libbcache.h"
+#include "crypto.h"
 #include "opts.h"
 #include "util.h"
 
@@ -80,6 +81,7 @@ static void usage(void)
 	     "      --metadata_checksum_type=(none|crc32c|crc64)\n"
 	     "      --data_checksum_type=(none|crc32c|crc64)\n"
 	     "      --compression_type=(none|lz4|gzip)\n"
+	     "      --encrypted\n"
 	     "      --error_action=(continue|readonly|panic)\n"
 	     "                              Action to take on filesystem error\n"
 	     "      --max_journal_entry_size=size\n"
@@ -107,6 +109,7 @@ static void usage(void)
 	OPT(0,		metadata_checksum_type,	required_argument)	\
 	OPT(0,		data_checksum_type,	required_argument)	\
 	OPT(0,		compression_type,	required_argument)	\
+	OPT(0,		encrypted,		no_argument)		\
 	OPT('e',	error_action,		required_argument)	\
 	OPT(0,		max_journal_entry_size,	required_argument)	\
 	OPT('L',	label,			required_argument)	\
@@ -164,6 +167,7 @@ int cmd_format(int argc, char *argv[])
 	unsigned meta_csum_type = BCH_CSUM_CRC32C;
 	unsigned data_csum_type = BCH_CSUM_CRC32C;
 	unsigned compression_type = BCH_COMPRESSION_NONE;
+	bool encrypted = false;
 	unsigned on_error_action = BCH_ON_ERROR_RO;
 	char *label = NULL;
 	uuid_le uuid;
@@ -208,6 +212,9 @@ int cmd_format(int argc, char *argv[])
 						bch_compression_types,
 						"compression type");
 			break;
+		case Opt_encrypted:
+			encrypted = true;
+			break;
 		case Opt_error_action:
 		case 'e':
 			on_error_action = read_string_list_or_die(optarg,
@@ -242,7 +249,7 @@ int cmd_format(int argc, char *argv[])
 		case Opt_tier:
 		case 't':
 			if (kstrtouint(optarg, 10, &tier) ||
-			    tier >= CACHE_TIERS)
+			    tier >= BCH_TIER_MAX)
 				die("invalid tier");
 			break;
 		case Opt_discard:
@@ -270,6 +277,24 @@ int cmd_format(int argc, char *argv[])
 	if (uuid_is_null(uuid.b))
 		uuid_generate(uuid.b);
 
+	if (encrypted) {
+		passphrase = read_passphrase("Enter passphrase: ");
+
+		if (isatty(STDIN_FILENO)) {
+			char *pass2 =
+				read_passphrase("Enter same passphrase again: ");
+
+			if (strcmp(passphrase, pass2)) {
+				memzero_explicit(passphrase, strlen(passphrase));
+				memzero_explicit(pass2, strlen(pass2));
+				die("Passphrases do not match");
+			}
+
+			memzero_explicit(pass2, strlen(pass2));
+			free(pass2);
+		}
+	}
+
 	darray_foreach(dev, devices)
 		dev->fd = open_for_format(dev->path, force);
 
@@ -279,6 +304,7 @@ int cmd_format(int argc, char *argv[])
 		      meta_csum_type,
 		      data_csum_type,
 		      compression_type,
+		      passphrase,
 		      1,
 		      1,
 		      on_error_action,

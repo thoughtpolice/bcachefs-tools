@@ -5,6 +5,7 @@
 #include "btree_iter.h"
 #include "buckets.h"
 #include "journal.h"
+#include "vstructs.h"
 
 struct cache_set;
 struct bkey_format_state;
@@ -200,7 +201,7 @@ static inline bool bset_unwritten(struct btree *b, struct bset *i)
 static inline unsigned bset_end_sector(struct cache_set *c, struct btree *b,
 				       struct bset *i)
 {
-	return round_up(bset_byte_offset(b, bset_bkey_last(i)),
+	return round_up(bset_byte_offset(b, vstruct_end(i)),
 			block_bytes(c)) >> 9;
 }
 
@@ -208,7 +209,7 @@ static inline size_t bch_btree_keys_u64s_remaining(struct cache_set *c,
 						   struct btree *b)
 {
 	struct bset *i = btree_bset_last(b);
-	unsigned used = bset_byte_offset(b, bset_bkey_last(i)) / sizeof(u64) +
+	unsigned used = bset_byte_offset(b, vstruct_end(i)) / sizeof(u64) +
 		b->whiteout_u64s +
 		b->uncompacted_whiteout_u64s;
 	unsigned total = c->sb.btree_node_size << 6;
@@ -235,7 +236,7 @@ static inline struct btree_node_entry *want_new_bset(struct cache_set *c,
 {
 	struct bset *i = btree_bset_last(b);
 	unsigned offset = max_t(unsigned, b->written << 9,
-				bset_byte_offset(b, bset_bkey_last(i)));
+				bset_byte_offset(b, vstruct_end(i)));
 	ssize_t n = (ssize_t) btree_bytes(c) - (ssize_t)
 		(offset + sizeof(struct btree_node_entry) +
 		 b->whiteout_u64s * sizeof(u64) +
@@ -244,8 +245,8 @@ static inline struct btree_node_entry *want_new_bset(struct cache_set *c,
 	EBUG_ON(offset > btree_bytes(c));
 
 	if ((unlikely(bset_written(b, i)) && n > 0) ||
-	    (unlikely(__set_bytes(i, le16_to_cpu(i->u64s)) >
-		      btree_write_set_buffer(b)) && n > btree_write_set_buffer(b)))
+	    (unlikely(vstruct_bytes(i) > btree_write_set_buffer(b)) &&
+	     n > btree_write_set_buffer(b)))
 		return (void *) b->data + offset;
 
 	return NULL;
@@ -308,6 +309,7 @@ struct btree_insert {
 	struct btree_insert_entry {
 		struct btree_iter *iter;
 		struct bkey_i	*k;
+		unsigned	extra_res;
 		/*
 		 * true if entire key was inserted - can only be false for
 		 * extents
@@ -326,6 +328,14 @@ int __bch_btree_insert_at(struct btree_insert *);
 	((struct btree_insert_entry) {					\
 		.iter		= (_iter),				\
 		.k		= (_k),					\
+		.done		= false,				\
+	})
+
+#define BTREE_INSERT_ENTRY_EXTRA_RES(_iter, _k, _extra)			\
+	((struct btree_insert_entry) {					\
+		.iter		= (_iter),				\
+		.k		= (_k),					\
+		.extra_res = (_extra),					\
 		.done		= false,				\
 	})
 
@@ -391,7 +401,7 @@ static inline bool journal_res_insert_fits(struct btree_insert *trans,
 		return true;
 
 	for (i = insert; i < trans->entries + trans->nr; i++)
-		u64s += jset_u64s(i->k->k.u64s);
+		u64s += jset_u64s(i->k->k.u64s + i->extra_res);
 
 	return u64s <= trans->journal_res.u64s;
 }
@@ -404,7 +414,7 @@ int bch_btree_update(struct cache_set *, enum btree_id,
 		     struct bkey_i *, u64 *);
 
 int bch_btree_delete_range(struct cache_set *, enum btree_id,
-			   struct bpos, struct bpos, u64,
+			   struct bpos, struct bpos, struct bversion,
 			   struct disk_reservation *,
 			   struct extent_insert_hook *, u64 *);
 

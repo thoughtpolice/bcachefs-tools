@@ -534,12 +534,10 @@ static void bch_mark_extent(struct cache_set *c, struct bkey_s_c_extent e,
 
 	rcu_read_lock();
 	extent_for_each_online_device_crc(c, e, crc, ptr, ca) {
-		bool dirty = bch_extent_ptr_is_dirty(c, e, ptr);
-
-		trace_bcache_mark_bucket(ca, e.k, ptr, sectors, dirty);
+		trace_bcache_mark_bucket(ca, e.k, ptr, sectors, !ptr->cached);
 
 		bch_mark_pointer(c, e, ca, crc, ptr, sectors,
-				 dirty ? type : S_CACHED,
+				 ptr->cached ? S_CACHED : type,
 				 may_make_unavailable,
 				 stats, gc_will_visit, journal_seq);
 	}
@@ -559,9 +557,12 @@ static void __bch_mark_key(struct cache_set *c, struct bkey_s_c k,
 				may_make_unavailable, stats,
 				gc_will_visit, journal_seq);
 		break;
-	case BCH_RESERVATION:
-		stats->persistent_reserved += sectors;
+	case BCH_RESERVATION: {
+		struct bkey_s_c_reservation r = bkey_s_c_to_reservation(k);
+
+		stats->persistent_reserved += r.v->nr_replicas * sectors;
 		break;
+	}
 	}
 }
 

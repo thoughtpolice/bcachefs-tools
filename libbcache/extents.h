@@ -26,7 +26,7 @@ struct cache_set;
 struct journal_res;
 
 struct extent_pick_ptr {
-	struct bch_extent_crc64		crc;
+	struct bch_extent_crc128	crc;
 	struct bch_extent_ptr		ptr;
 	struct cache			*ca;
 };
@@ -53,10 +53,11 @@ bch_insert_fixup_extent(struct btree_insert *,
 			struct btree_insert_entry *);
 
 bool bch_extent_normalize(struct cache_set *, struct bkey_s);
+void bch_extent_mark_replicas_cached(struct cache_set *,
+				     struct bkey_s_extent, unsigned);
 
-unsigned bch_extent_nr_ptrs_from(struct bkey_s_c_extent,
-				 const struct bch_extent_ptr *);
 unsigned bch_extent_nr_ptrs(struct bkey_s_c_extent);
+unsigned bch_extent_nr_dirty_ptrs(struct bkey_s_c);
 
 static inline bool bkey_extent_is_data(const struct bkey *k)
 {
@@ -117,6 +118,8 @@ static inline size_t extent_entry_bytes(const union bch_extent_entry *entry)
 		return sizeof(struct bch_extent_crc32);
 	case BCH_EXTENT_ENTRY_crc64:
 		return sizeof(struct bch_extent_crc64);
+	case BCH_EXTENT_ENTRY_crc128:
+		return sizeof(struct bch_extent_crc128);
 	case BCH_EXTENT_ENTRY_ptr:
 		return sizeof(struct bch_extent_ptr);
 	default:
@@ -143,6 +146,7 @@ union bch_extent_crc {
 	u8				type;
 	struct bch_extent_crc32		crc32;
 	struct bch_extent_crc64		crc64;
+	struct bch_extent_crc128	crc128;
 };
 
 /* downcast, preserves const */
@@ -185,10 +189,11 @@ enum bch_extent_crc_type {
 	BCH_EXTENT_CRC_NONE,
 	BCH_EXTENT_CRC32,
 	BCH_EXTENT_CRC64,
+	BCH_EXTENT_CRC128,
 };
 
 static inline enum bch_extent_crc_type
-extent_crc_type(const union bch_extent_crc *crc)
+__extent_crc_type(const union bch_extent_crc *crc)
 {
 	if (!crc)
 		return BCH_EXTENT_CRC_NONE;
@@ -198,16 +203,31 @@ extent_crc_type(const union bch_extent_crc *crc)
 		return BCH_EXTENT_CRC32;
 	case BCH_EXTENT_ENTRY_crc64:
 		return BCH_EXTENT_CRC64;
+	case BCH_EXTENT_ENTRY_crc128:
+		return BCH_EXTENT_CRC128;
 	default:
 		BUG();
 	}
 }
 
+#define extent_crc_type(_crc)						\
+({									\
+	BUILD_BUG_ON(!type_is(_crc, struct bch_extent_crc32 *) &&	\
+		     !type_is(_crc, struct bch_extent_crc64 *) &&	\
+		     !type_is(_crc, struct bch_extent_crc128 *) &&	\
+		     !type_is(_crc, union bch_extent_crc *));		\
+									\
+	  type_is(_crc, struct bch_extent_crc32 *)  ? BCH_EXTENT_CRC32	\
+	: type_is(_crc, struct bch_extent_crc64 *)  ? BCH_EXTENT_CRC64	\
+	: type_is(_crc, struct bch_extent_crc128 *) ? BCH_EXTENT_CRC128	\
+	: __extent_crc_type((union bch_extent_crc *) _crc);		\
+})
+
 #define extent_entry_next(_entry)					\
 	((typeof(_entry)) ((void *) (_entry) + extent_entry_bytes(_entry)))
 
 #define extent_entry_last(_e)						\
-	bkey_idx((_e).v, bkey_val_u64s((_e).k))
+	vstruct_idx((_e).v, bkey_val_u64s((_e).k))
 
 /* Iterate over all entries: */
 
@@ -283,20 +303,16 @@ out:									\
 #define extent_ptr_next(_e, _ptr)					\
 	extent_ptr_next_filter(_e, _ptr, true)
 
-#define extent_for_each_ptr_from_filter(_e, _ptr, _start, _filter)	\
-	for ((_ptr) = (_start);				\
+#define extent_for_each_ptr_filter(_e, _ptr, _filter)			\
+	for ((_ptr) = &(_e).v->start->ptr;				\
 	     ((_ptr) = extent_ptr_next_filter(_e, _ptr, _filter));	\
 	     (_ptr)++)
 
-#define extent_for_each_ptr_from(_e, _ptr, _start)			\
-	extent_for_each_ptr_from_filter(_e, _ptr, _start, true)
-
 #define extent_for_each_ptr(_e, _ptr)					\
-	extent_for_each_ptr_from_filter(_e, _ptr, &(_e).v->start->ptr, true)
+	extent_for_each_ptr_filter(_e, _ptr, true)
 
 #define extent_for_each_online_device(_c, _e, _ptr, _ca)		\
-	extent_for_each_ptr_from_filter(_e, _ptr, &(_e).v->start->ptr,	\
-					((_ca) = PTR_CACHE(_c, _ptr)))
+	extent_for_each_ptr_filter(_e, _ptr, ((_ca) = PTR_CACHE(_c, _ptr)))
 
 #define extent_ptr_prev(_e, _ptr)					\
 ({									\
@@ -321,67 +337,114 @@ out:									\
 	     (_ptr);							\
 	     (_ptr) = extent_ptr_prev(_e, _ptr))
 
-void bch_extent_entry_append(struct bkey_i_extent *, union bch_extent_entry *);
 void bch_extent_crc_append(struct bkey_i_extent *, unsigned, unsigned,
-			   unsigned, u64, unsigned);
+			   unsigned, unsigned, struct bch_csum, unsigned);
+
+static inline void __extent_entry_push(struct bkey_i_extent *e)
+{
+	union bch_extent_entry *entry = extent_entry_last(extent_i_to_s(e));
+
+	EBUG_ON(bkey_val_u64s(&e->k) + extent_entry_u64s(entry) >
+		BKEY_EXTENT_VAL_U64s_MAX);
+
+	e->k.u64s += extent_entry_u64s(entry);
+}
 
 static inline void extent_ptr_append(struct bkey_i_extent *e,
 				     struct bch_extent_ptr ptr)
 {
 	ptr.type = 1 << BCH_EXTENT_ENTRY_ptr;
-	bch_extent_entry_append(e, to_entry(&ptr));
+	extent_entry_last(extent_i_to_s(e))->ptr = ptr;
+	__extent_entry_push(e);
 }
 
-/* XXX: inefficient */
-static inline bool bch_extent_ptr_is_dirty(const struct cache_set *c,
-					   struct bkey_s_c_extent e,
-					   const struct bch_extent_ptr *ptr)
+static inline struct bch_extent_crc128 crc_to_128(const struct bkey *k,
+						  const union bch_extent_crc *crc)
 {
-	if (bkey_extent_is_cached(e.k))
-		return false;
+	EBUG_ON(!k->size);
 
-	/* Dirty pointers come last */
-	return bch_extent_nr_ptrs_from(e, ptr) <= c->opts.data_replicas;
-}
-
-extern const unsigned bch_crc_size[];
-
-static inline struct bch_extent_crc64 crc_to_64(const struct bkey *k,
-						const union bch_extent_crc *crc)
-{
 	switch (extent_crc_type(crc)) {
 	case BCH_EXTENT_CRC_NONE:
-		return (struct bch_extent_crc64) {
-			.compressed_size	= k->size,
-			.uncompressed_size	= k->size,
+		return (struct bch_extent_crc128) {
+			._compressed_size	= k->size - 1,
+			._uncompressed_size	= k->size - 1,
 		};
 	case BCH_EXTENT_CRC32:
-		return (struct bch_extent_crc64) {
-			.compressed_size	= crc->crc32.compressed_size,
-			.uncompressed_size	= crc->crc32.uncompressed_size,
+		return (struct bch_extent_crc128) {
+			.type			= 1 << BCH_EXTENT_ENTRY_crc128,
+			._compressed_size	= crc->crc32._compressed_size,
+			._uncompressed_size	= crc->crc32._uncompressed_size,
 			.offset			= crc->crc32.offset,
 			.csum_type		= crc->crc32.csum_type,
 			.compression_type	= crc->crc32.compression_type,
-			.csum			= crc->crc32.csum,
+			.csum.lo		= crc->crc32.csum,
 		};
 	case BCH_EXTENT_CRC64:
-		return crc->crc64;
+		return (struct bch_extent_crc128) {
+			.type			= 1 << BCH_EXTENT_ENTRY_crc128,
+			._compressed_size	= crc->crc64._compressed_size,
+			._uncompressed_size	= crc->crc64._uncompressed_size,
+			.offset			= crc->crc64.offset,
+			.nonce			= crc->crc64.nonce,
+			.csum_type		= crc->crc64.csum_type,
+			.compression_type	= crc->crc64.compression_type,
+			.csum.lo		= crc->crc64.csum_lo,
+			.csum.hi		= crc->crc64.csum_hi,
+		};
+	case BCH_EXTENT_CRC128:
+		return crc->crc128;
 	default:
 		BUG();
 	}
 }
 
-static inline unsigned crc_compressed_size(const struct bkey *k,
-					   const union bch_extent_crc *crc)
-{
-	return crc_to_64(k, crc).compressed_size;
-}
+#define crc_compressed_size(_k, _crc)					\
+({									\
+	unsigned _size = 0;						\
+									\
+	switch (extent_crc_type(_crc)) {				\
+	case BCH_EXTENT_CRC_NONE:					\
+		_size = ((const struct bkey *) (_k))->size;		\
+		break;							\
+	case BCH_EXTENT_CRC32:						\
+		_size = ((struct bch_extent_crc32 *) _crc)		\
+			->_compressed_size + 1;				\
+		break;							\
+	case BCH_EXTENT_CRC64:						\
+		_size = ((struct bch_extent_crc64 *) _crc)		\
+			->_compressed_size + 1;				\
+		break;							\
+	case BCH_EXTENT_CRC128:						\
+		_size = ((struct bch_extent_crc128 *) _crc)		\
+			->_compressed_size + 1;				\
+		break;							\
+	}								\
+	_size;								\
+})
 
-static inline unsigned crc_uncompressed_size(const struct bkey *k,
-					     const union bch_extent_crc *crc)
-{
-	return crc_to_64(k, crc).uncompressed_size;
-}
+#define crc_uncompressed_size(_k, _crc)					\
+({									\
+	unsigned _size = 0;						\
+									\
+	switch (extent_crc_type(_crc)) {				\
+	case BCH_EXTENT_CRC_NONE:					\
+		_size = ((const struct bkey *) (_k))->size;		\
+		break;							\
+	case BCH_EXTENT_CRC32:						\
+		_size = ((struct bch_extent_crc32 *) _crc)		\
+			->_uncompressed_size + 1;			\
+		break;							\
+	case BCH_EXTENT_CRC64:						\
+		_size = ((struct bch_extent_crc64 *) _crc)		\
+			->_uncompressed_size + 1;			\
+		break;							\
+	case BCH_EXTENT_CRC128:						\
+		_size = ((struct bch_extent_crc128 *) _crc)		\
+			->_uncompressed_size + 1;			\
+		break;							\
+	}								\
+	_size;								\
+})
 
 static inline unsigned crc_offset(const union bch_extent_crc *crc)
 {
@@ -392,6 +455,23 @@ static inline unsigned crc_offset(const union bch_extent_crc *crc)
 		return crc->crc32.offset;
 	case BCH_EXTENT_CRC64:
 		return crc->crc64.offset;
+	case BCH_EXTENT_CRC128:
+		return crc->crc128.offset;
+	default:
+		BUG();
+	}
+}
+
+static inline unsigned crc_nonce(const union bch_extent_crc *crc)
+{
+	switch (extent_crc_type(crc)) {
+	case BCH_EXTENT_CRC_NONE:
+	case BCH_EXTENT_CRC32:
+		return 0;
+	case BCH_EXTENT_CRC64:
+		return crc->crc64.nonce;
+	case BCH_EXTENT_CRC128:
+		return crc->crc128.nonce;
 	default:
 		BUG();
 	}
@@ -406,6 +486,8 @@ static inline unsigned crc_csum_type(const union bch_extent_crc *crc)
 		return crc->crc32.csum_type;
 	case BCH_EXTENT_CRC64:
 		return crc->crc64.csum_type;
+	case BCH_EXTENT_CRC128:
+		return crc->crc128.csum_type;
 	default:
 		BUG();
 	}
@@ -420,27 +502,33 @@ static inline unsigned crc_compression_type(const union bch_extent_crc *crc)
 		return crc->crc32.compression_type;
 	case BCH_EXTENT_CRC64:
 		return crc->crc64.compression_type;
+	case BCH_EXTENT_CRC128:
+		return crc->crc128.compression_type;
 	default:
 		BUG();
 	}
 }
 
-static inline u64 crc_csum(const union bch_extent_crc *crc)
+static inline struct bch_csum crc_csum(const union bch_extent_crc *crc)
 {
 	switch (extent_crc_type(crc)) {
 	case BCH_EXTENT_CRC_NONE:
-		return 0;
+		return (struct bch_csum) { 0 };
 	case BCH_EXTENT_CRC32:
-		return crc->crc32.csum;
+		return (struct bch_csum) { .lo = crc->crc32.csum };
 	case BCH_EXTENT_CRC64:
-		return crc->crc64.csum;
+		return (struct bch_csum) {
+			.lo = crc->crc64.csum_lo,
+			.hi = crc->crc64.csum_hi,
+		};
+	case BCH_EXTENT_CRC128:
+		return crc->crc128.csum;
 	default:
 		BUG();
 	}
 }
 
-static inline unsigned bkey_extent_is_compressed(struct cache_set *c,
-						 struct bkey_s_c k)
+static inline unsigned bkey_extent_is_compressed(struct bkey_s_c k)
 {
 	struct bkey_s_c_extent e;
 	const struct bch_extent_ptr *ptr;
@@ -453,7 +541,7 @@ static inline unsigned bkey_extent_is_compressed(struct cache_set *c,
 		e = bkey_s_c_to_extent(k);
 
 		extent_for_each_ptr_crc(e, ptr, crc)
-			if (bch_extent_ptr_is_dirty(c, e, ptr) &&
+			if (!ptr->cached &&
 			    crc_compression_type(crc) != BCH_COMPRESSION_NONE &&
 			    crc_compressed_size(e.k, crc) < k.k->size)
 				ret = max_t(unsigned, ret,
@@ -461,6 +549,17 @@ static inline unsigned bkey_extent_is_compressed(struct cache_set *c,
 	}
 
 	return ret;
+}
+
+static inline unsigned extent_current_nonce(struct bkey_s_c_extent e)
+{
+	const union bch_extent_crc *crc;
+
+	extent_for_each_crc(e, crc)
+		if (bch_csum_type_is_encryption(crc_csum_type(crc)))
+			return crc_offset(crc) + crc_nonce(crc);
+
+	return 0;
 }
 
 void bch_extent_narrow_crcs(struct bkey_s_extent);

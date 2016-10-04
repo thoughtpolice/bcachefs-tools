@@ -59,22 +59,20 @@ static int write_invalidate_inode_pages_range(struct address_space *mapping,
 
 /* i_size updates: */
 
-static int inode_set_size(struct bch_inode_info *ei, struct bch_inode *bi,
+static int inode_set_size(struct bch_inode_info *ei,
+			  struct bch_inode_unpacked *bi,
 			  void *p)
 {
 	loff_t *new_i_size = p;
-	unsigned i_flags = le32_to_cpu(bi->i_flags);
 
 	lockdep_assert_held(&ei->update_lock);
 
-	bi->i_size = cpu_to_le64(*new_i_size);
+	bi->i_size = *new_i_size;
 
 	if (atomic_long_read(&ei->i_size_dirty_count))
-		i_flags |= BCH_INODE_I_SIZE_DIRTY;
+		bi->i_flags |= BCH_INODE_I_SIZE_DIRTY;
 	else
-		i_flags &= ~BCH_INODE_I_SIZE_DIRTY;
-
-	bi->i_flags = cpu_to_le32(i_flags);
+		bi->i_flags &= ~BCH_INODE_I_SIZE_DIRTY;
 
 	return 0;
 }
@@ -122,23 +120,22 @@ i_sectors_hook_fn(struct extent_insert_hook *hook,
 }
 
 static int inode_set_i_sectors_dirty(struct bch_inode_info *ei,
-				    struct bch_inode *bi, void *p)
+				    struct bch_inode_unpacked *bi, void *p)
 {
-	BUG_ON(le32_to_cpu(bi->i_flags) & BCH_INODE_I_SECTORS_DIRTY);
+	BUG_ON(bi->i_flags & BCH_INODE_I_SECTORS_DIRTY);
 
-	bi->i_flags = cpu_to_le32(le32_to_cpu(bi->i_flags)|
-				  BCH_INODE_I_SECTORS_DIRTY);
+	bi->i_flags |= BCH_INODE_I_SECTORS_DIRTY;
 	return 0;
 }
 
 static int inode_clear_i_sectors_dirty(struct bch_inode_info *ei,
-				       struct bch_inode *bi, void *p)
+				       struct bch_inode_unpacked *bi,
+				       void *p)
 {
-	BUG_ON(!(le32_to_cpu(bi->i_flags) & BCH_INODE_I_SECTORS_DIRTY));
+	BUG_ON(!(bi->i_flags & BCH_INODE_I_SECTORS_DIRTY));
 
-	bi->i_sectors	= cpu_to_le64(atomic64_read(&ei->i_sectors));
-	bi->i_flags	= cpu_to_le32(le32_to_cpu(bi->i_flags) &
-				      ~BCH_INODE_I_SECTORS_DIRTY);
+	bi->i_sectors	= atomic64_read(&ei->i_sectors);
+	bi->i_flags	&= ~BCH_INODE_I_SECTORS_DIRTY;
 	return 0;
 }
 
@@ -203,7 +200,10 @@ static int __must_check i_sectors_dirty_get(struct bch_inode_info *ei,
 struct bchfs_extent_trans_hook {
 	struct bchfs_write_op		*op;
 	struct extent_insert_hook	hook;
-	struct bkey_i_inode		new_inode;
+
+	struct bch_inode_unpacked	inode_u;
+	struct bkey_inode_buf		inode_p;
+
 	bool				need_inode_update;
 };
 
@@ -222,6 +222,7 @@ bchfs_extent_update_hook(struct extent_insert_hook *hook,
 		(k.k && bkey_extent_is_allocation(k.k));
 	s64 sectors = (s64) (next_pos.offset - committed_pos.offset) * sign;
 	u64 offset = min(next_pos.offset << 9, h->op->new_i_size);
+	bool do_pack = false;
 
 	BUG_ON((next_pos.offset << 9) > round_up(offset, PAGE_SIZE));
 
@@ -234,7 +235,9 @@ bchfs_extent_update_hook(struct extent_insert_hook *hook,
 			return BTREE_HOOK_RESTART_TRANS;
 		}
 
-		h->new_inode.v.i_size = cpu_to_le64(offset);
+		h->inode_u.i_size = offset;
+		do_pack = true;
+
 		ei->i_size = offset;
 
 		if (h->op->is_dio)
@@ -247,7 +250,9 @@ bchfs_extent_update_hook(struct extent_insert_hook *hook,
 			return BTREE_HOOK_RESTART_TRANS;
 		}
 
-		le64_add_cpu(&h->new_inode.v.i_sectors, sectors);
+		h->inode_u.i_sectors += sectors;
+		do_pack = true;
+
 		atomic64_add(sectors, &ei->i_sectors);
 
 		h->op->sectors_added += sectors;
@@ -258,6 +263,9 @@ bchfs_extent_update_hook(struct extent_insert_hook *hook,
 			spin_unlock(&inode->i_lock);
 		}
 	}
+
+	if (do_pack)
+		bch_inode_pack(&h->inode_p, &h->inode_u);
 
 	return BTREE_HOOK_DO_INSERT;
 }
@@ -310,13 +318,32 @@ static int bchfs_write_index_update(struct bch_write_op *wop)
 				break;
 			}
 
-			bkey_reassemble(&hook.new_inode.k_i, inode);
+			if (WARN_ONCE(bkey_bytes(inode.k) >
+				      sizeof(hook.inode_p),
+				      "inode %llu too big (%zu bytes, buf %zu)",
+				      extent_iter.pos.inode,
+				      bkey_bytes(inode.k),
+				      sizeof(hook.inode_p))) {
+				ret = -ENOENT;
+				break;
+			}
+
+			bkey_reassemble(&hook.inode_p.inode.k_i, inode);
+			ret = bch_inode_unpack(bkey_s_c_to_inode(inode),
+					       &hook.inode_u);
+			if (WARN_ONCE(ret,
+				      "error %i unpacking inode %llu",
+				      ret, extent_iter.pos.inode)) {
+				ret = -ENOENT;
+				break;
+			}
 
 			ret = bch_btree_insert_at(wop->c, &wop->res,
 					&hook.hook, op_journal_seq(wop),
 					BTREE_INSERT_NOFAIL|BTREE_INSERT_ATOMIC,
 					BTREE_INSERT_ENTRY(&extent_iter, k),
-					BTREE_INSERT_ENTRY(&inode_iter, &hook.new_inode.k_i));
+					BTREE_INSERT_ENTRY_EXTRA_RES(&inode_iter,
+							&hook.inode_p.inode.k_i, 2));
 		} else {
 			ret = bch_btree_insert_at(wop->c, &wop->res,
 					&hook.hook, op_journal_seq(wop),
@@ -350,25 +377,15 @@ err:
 struct bch_page_state {
 union { struct {
 	/*
-	 * BCH_PAGE_ALLOCATED: page is _fully_ written on disk, and not
-	 * compressed - which means to write this page we don't have to reserve
-	 * space (the new write will never take up more space on disk than what
-	 * it's overwriting)
-	 *
-	 * BCH_PAGE_UNALLOCATED: page is not fully written on disk, or is
-	 * compressed - before writing we have to reserve space with
-	 * bch_reserve_sectors()
-	 *
-	 * BCH_PAGE_RESERVED: page has space reserved on disk (reservation will
-	 * be consumed when the page is written).
+	 * page is _fully_ written on disk, and not compressed - which means to
+	 * write this page we don't have to reserve space (the new write will
+	 * never take up more space on disk than what it's overwriting)
 	 */
-	enum {
-		BCH_PAGE_UNALLOCATED	= 0,
-		BCH_PAGE_ALLOCATED,
-	}			alloc_state:2;
+	unsigned allocated:1;
 
 	/* Owns PAGE_SECTORS sized reservation: */
 	unsigned		reserved:1;
+	unsigned		nr_replicas:4;
 
 	/*
 	 * Number of sectors on disk - for i_blocks
@@ -431,11 +448,9 @@ static int bch_get_page_reservation(struct cache_set *c, struct page *page,
 	struct disk_reservation res;
 	int ret = 0;
 
-	BUG_ON(s->alloc_state == BCH_PAGE_ALLOCATED &&
-	       s->sectors != PAGE_SECTORS);
+	BUG_ON(s->allocated && s->sectors != PAGE_SECTORS);
 
-	if (s->reserved ||
-	    s->alloc_state == BCH_PAGE_ALLOCATED)
+	if (s->allocated || s->reserved)
 		return 0;
 
 	ret = bch_disk_reservation_get(c, &res, PAGE_SECTORS, !check_enospc
@@ -448,7 +463,8 @@ static int bch_get_page_reservation(struct cache_set *c, struct page *page,
 			bch_disk_reservation_put(c, &res);
 			return 0;
 		}
-		new.reserved = 1;
+		new.reserved	= 1;
+		new.nr_replicas	= res.nr_replicas;
 	});
 
 	return 0;
@@ -585,10 +601,10 @@ static void bch_mark_pages_unalloc(struct bio *bio)
 	struct bio_vec bv;
 
 	bio_for_each_segment(bv, bio, iter)
-		page_state(bv.bv_page)->alloc_state = BCH_PAGE_UNALLOCATED;
+		page_state(bv.bv_page)->allocated = 0;
 }
 
-static void bch_add_page_sectors(struct bio *bio, const struct bkey *k)
+static void bch_add_page_sectors(struct bio *bio, struct bkey_s_c k)
 {
 	struct bvec_iter iter;
 	struct bio_vec bv;
@@ -597,12 +613,17 @@ static void bch_add_page_sectors(struct bio *bio, const struct bkey *k)
 		struct bch_page_state *s = page_state(bv.bv_page);
 
 		/* sectors in @k from the start of this page: */
-		unsigned k_sectors = k->size - (iter.bi_sector - k->p.offset);
+		unsigned k_sectors = k.k->size - (iter.bi_sector - k.k->p.offset);
 
 		unsigned page_sectors = min(bv.bv_len >> 9, k_sectors);
 
-		BUG_ON(s->sectors + page_sectors > PAGE_SECTORS);
+		if (!s->sectors)
+			s->nr_replicas = bch_extent_nr_dirty_ptrs(k);
+		else
+			s->nr_replicas = min_t(unsigned, s->nr_replicas,
+					       bch_extent_nr_dirty_ptrs(k));
 
+		BUG_ON(s->sectors + page_sectors > PAGE_SECTORS);
 		s->sectors += page_sectors;
 	}
 }
@@ -634,7 +655,7 @@ static void bchfs_read(struct cache_set *c, struct bch_read_bio *rbio, u64 inode
 
 		EBUG_ON(s->reserved);
 
-		s->alloc_state = BCH_PAGE_ALLOCATED;
+		s->allocated = 1;
 		s->sectors = 0;
 	}
 
@@ -650,7 +671,7 @@ static void bchfs_read(struct cache_set *c, struct bch_read_bio *rbio, u64 inode
 		k = bkey_i_to_s_c(&tmp.k);
 
 		if (!bkey_extent_is_allocation(k.k) ||
-		    bkey_extent_is_compressed(c, k))
+		    bkey_extent_is_compressed(k))
 			bch_mark_pages_unalloc(bio);
 
 		bch_extent_pick_ptr(c, k, &pick);
@@ -667,7 +688,7 @@ static void bchfs_read(struct cache_set *c, struct bch_read_bio *rbio, u64 inode
 		swap(bio->bi_iter.bi_size, bytes);
 
 		if (bkey_extent_is_allocation(k.k))
-			bch_add_page_sectors(bio, k.k);
+			bch_add_page_sectors(bio, k);
 
 		if (pick.ca) {
 			PTR_BUCKET(pick.ca, &pick.ptr)->read_prio =
@@ -859,6 +880,10 @@ static void bch_writepage_io_alloc(struct cache_set *c,
 				   struct page *page)
 {
 	u64 inum = ei->vfs_inode.i_ino;
+	unsigned nr_replicas = page_state(page)->nr_replicas;
+
+	EBUG_ON(!nr_replicas);
+	/* XXX: disk_reservation->gen isn't plumbed through */
 
 	if (!w->io) {
 alloc_io:
@@ -881,7 +906,8 @@ alloc_io:
 		w->io->op.op.index_update_fn = bchfs_write_index_update;
 	}
 
-	if (bio_add_page_contig(&w->io->bio.bio, page)) {
+	if (w->io->op.op.res.nr_replicas != nr_replicas ||
+	    bio_add_page_contig(&w->io->bio.bio, page)) {
 		bch_writepage_do_io(w);
 		goto alloc_io;
 	}
@@ -936,13 +962,13 @@ do_io:
 
 	/* Before unlocking the page, transfer reservation to w->io: */
 	old = page_state_cmpxchg(page_state(page), new, {
-		BUG_ON(!new.reserved &&
-		       (new.sectors != PAGE_SECTORS ||
-			new.alloc_state != BCH_PAGE_ALLOCATED));
+		EBUG_ON(!new.reserved &&
+			(new.sectors != PAGE_SECTORS ||
+			!new.allocated));
 
-		if (new.alloc_state == BCH_PAGE_ALLOCATED &&
+		if (new.allocated &&
 		    w->io->op.op.compression_type != BCH_COMPRESSION_NONE)
-			new.alloc_state = BCH_PAGE_UNALLOCATED;
+			new.allocated = 0;
 		else if (!new.reserved)
 			goto out;
 		new.reserved = 0;
@@ -1919,7 +1945,7 @@ int bch_truncate(struct inode *inode, struct iattr *iattr)
 
 	mutex_lock(&ei->update_lock);
 	setattr_copy(inode, iattr);
-	inode->i_mtime = inode->i_ctime = CURRENT_TIME;
+	inode->i_mtime = inode->i_ctime = current_fs_time(inode->i_sb);
 
 	/* clear I_SIZE_DIRTY: */
 	i_size_dirty_put(ei);
@@ -1981,7 +2007,7 @@ static long bch_fpunch(struct inode *inode, loff_t offset, loff_t len)
 		ret = bch_discard(c,
 				  POS(ino, discard_start),
 				  POS(ino, discard_end),
-				  0,
+				  ZERO_VERSION,
 				  &disk_res,
 				  &i_sectors_hook.hook,
 				  &ei->journal_seq);
@@ -2132,12 +2158,11 @@ static long bch_fallocate(struct inode *inode, int mode,
 	struct cache_set *c = inode->i_sb->s_fs_info;
 	struct i_sectors_hook i_sectors_hook;
 	struct btree_iter iter;
-	struct bkey_i reservation;
-	struct bkey_s_c k;
 	struct bpos end;
 	loff_t block_start, block_end;
 	loff_t new_size = offset + len;
 	unsigned sectors;
+	unsigned replicas = READ_ONCE(c->opts.data_replicas);
 	int ret;
 
 	bch_btree_iter_init_intent(&iter, c, BTREE_ID_EXTENTS, POS_MIN);
@@ -2186,13 +2211,16 @@ static long bch_fallocate(struct inode *inode, int mode,
 
 	while (bkey_cmp(iter.pos, end) < 0) {
 		struct disk_reservation disk_res = { 0 };
+		struct bkey_i_reservation reservation;
+		struct bkey_s_c k;
 
 		k = bch_btree_iter_peek_with_holes(&iter);
 		if ((ret = btree_iter_err(k)))
 			goto btree_iter_err;
 
 		/* already reserved */
-		if (k.k->type == BCH_RESERVATION) {
+		if (k.k->type == BCH_RESERVATION &&
+		    bkey_s_c_to_reservation(k).v->nr_replicas >= replicas) {
 			bch_btree_iter_advance_pos(&iter);
 			continue;
 		}
@@ -2204,29 +2232,32 @@ static long bch_fallocate(struct inode *inode, int mode,
 			}
 		}
 
-		bkey_init(&reservation.k);
+		bkey_reservation_init(&reservation.k_i);
 		reservation.k.type	= BCH_RESERVATION;
 		reservation.k.p		= k.k->p;
 		reservation.k.size	= k.k->size;
 
-		bch_cut_front(iter.pos, &reservation);
+		bch_cut_front(iter.pos, &reservation.k_i);
 		bch_cut_back(end, &reservation.k);
 
 		sectors = reservation.k.size;
+		reservation.v.nr_replicas = bch_extent_nr_dirty_ptrs(k);
 
-		if (!bkey_extent_is_allocation(k.k) ||
-		    bkey_extent_is_compressed(c, k)) {
+		if (reservation.v.nr_replicas < replicas ||
+		    bkey_extent_is_compressed(k)) {
 			ret = bch_disk_reservation_get(c, &disk_res,
 						       sectors, 0);
 			if (ret)
 				goto err_put_sectors_dirty;
+
+			reservation.v.nr_replicas = disk_res.nr_replicas;
 		}
 
 		ret = bch_btree_insert_at(c, &disk_res, &i_sectors_hook.hook,
 					  &ei->journal_seq,
 					  BTREE_INSERT_ATOMIC|
 					  BTREE_INSERT_NOFAIL,
-					  BTREE_INSERT_ENTRY(&iter, &reservation));
+					  BTREE_INSERT_ENTRY(&iter, &reservation.k_i));
 		bch_disk_reservation_put(c, &disk_res);
 btree_iter_err:
 		if (ret < 0 && ret != -EINTR)

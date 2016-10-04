@@ -7,6 +7,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <uuid/uuid.h>
@@ -14,29 +15,16 @@
 #include "linux/bcache.h"
 #include "libbcache.h"
 #include "checksum.h"
+#include "crypto.h"
 #include "opts.h"
+#include "super-io.h"
+
+#define NSEC_PER_SEC	1000000000L
 
 #define BCH_MIN_NR_NBUCKETS	(1 << 10)
 
 /* first bucket should start 1 mb in, in sectors: */
 #define FIRST_BUCKET_OFFSET	(1 << 11)
-
-void __do_write_sb(int fd, void *sb, size_t bytes)
-{
-	char zeroes[SB_SECTOR << 9] = {0};
-
-	/* Zero start of disk */
-	xpwrite(fd, zeroes, SB_SECTOR << 9, 0);
-
-	/* Write superblock */
-	xpwrite(fd, sb, bytes, SB_SECTOR << 9);
-
-	fsync(fd);
-	close(fd);
-}
-
-#define do_write_sb(_fd, _sb)			\
-	__do_write_sb(_fd, _sb, ((void *) __bset_bkey_last(_sb)) - (void *) _sb);
 
 /* minimum size filesystem we can create, given a bucket size: */
 static u64 min_size(unsigned bucket_size)
@@ -45,12 +33,26 @@ static u64 min_size(unsigned bucket_size)
 		BCH_MIN_NR_NBUCKETS) * bucket_size;
 }
 
+static void init_layout(struct bch_sb_layout *l)
+{
+	memset(l, 0, sizeof(*l));
+
+	l->magic		= BCACHE_MAGIC;
+	l->layout_type		= 0;
+	l->nr_superblocks	= 2;
+	l->sb_max_size_bits	= 7;
+	l->sb_offset[0]		= cpu_to_le64(BCH_SB_SECTOR);
+	l->sb_offset[1]		= cpu_to_le64(BCH_SB_SECTOR +
+					      (1 << l->sb_max_size_bits));
+}
+
 void bcache_format(struct dev_opts *devs, size_t nr_devs,
 		   unsigned block_size,
 		   unsigned btree_node_size,
 		   unsigned meta_csum_type,
 		   unsigned data_csum_type,
 		   unsigned compression_type,
+		   const char *passphrase,
 		   unsigned meta_replicas,
 		   unsigned data_replicas,
 		   unsigned on_error_action,
@@ -58,8 +60,10 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 		   char *label,
 		   uuid_le uuid)
 {
-	struct cache_sb *sb;
+	struct bch_sb *sb;
 	struct dev_opts *i;
+	struct bch_sb_field_members *mi;
+	unsigned u64s, j;
 
 	/* calculate block size: */
 	if (!block_size)
@@ -124,16 +128,20 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 
 	max_journal_entry_size = roundup_pow_of_two(max_journal_entry_size);
 
-	sb = calloc(1, sizeof(*sb) + sizeof(struct cache_member) * nr_devs);
+	sb = calloc(1, sizeof(*sb) +
+		    sizeof(struct bch_sb_field_members) +
+		    sizeof(struct bch_member) * nr_devs +
+		    sizeof(struct bch_sb_field_crypt));
 
-	sb->offset	= __cpu_to_le64(SB_SECTOR);
-	sb->version	= __cpu_to_le64(BCACHE_SB_VERSION_CDEV_V3);
+	sb->version	= cpu_to_le64(BCACHE_SB_VERSION_CDEV_V4);
 	sb->magic	= BCACHE_MAGIC;
-	sb->block_size	= __cpu_to_le16(block_size);
+	sb->block_size	= cpu_to_le16(block_size);
 	sb->user_uuid	= uuid;
-	sb->nr_in_set	= nr_devs;
+	sb->nr_devices	= nr_devs;
 
-	uuid_generate(sb->set_uuid.b);
+	init_layout(&sb->layout);
+
+	uuid_generate(sb->uuid.b);
 
 	if (label)
 		strncpy((char *) sb->label, label, sizeof(sb->label));
@@ -142,44 +150,85 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 	 * don't have a userspace crc32c implementation handy, just always use
 	 * crc64
 	 */
-	SET_CACHE_SB_CSUM_TYPE(sb,		BCH_CSUM_CRC64);
-	SET_CACHE_SET_META_PREFERRED_CSUM_TYPE(sb,	meta_csum_type);
-	SET_CACHE_SET_DATA_PREFERRED_CSUM_TYPE(sb,	data_csum_type);
-	SET_CACHE_SET_COMPRESSION_TYPE(sb,	compression_type);
+	SET_BCH_SB_CSUM_TYPE(sb,		BCH_CSUM_CRC64);
+	SET_BCH_SB_META_CSUM_TYPE(sb,		meta_csum_type);
+	SET_BCH_SB_DATA_CSUM_TYPE(sb,		data_csum_type);
+	SET_BCH_SB_COMPRESSION_TYPE(sb,		compression_type);
 
-	SET_CACHE_SET_BTREE_NODE_SIZE(sb,	btree_node_size);
-	SET_CACHE_SET_META_REPLICAS_WANT(sb,	meta_replicas);
-	SET_CACHE_SET_META_REPLICAS_HAVE(sb,	meta_replicas);
-	SET_CACHE_SET_DATA_REPLICAS_WANT(sb,	data_replicas);
-	SET_CACHE_SET_DATA_REPLICAS_HAVE(sb,	data_replicas);
-	SET_CACHE_SET_ERROR_ACTION(sb,		on_error_action);
-	SET_CACHE_SET_STR_HASH_TYPE(sb,		BCH_STR_HASH_SIPHASH);
-	SET_CACHE_SET_JOURNAL_ENTRY_SIZE(sb,	ilog2(max_journal_entry_size));
+	SET_BCH_SB_BTREE_NODE_SIZE(sb,		btree_node_size);
+	SET_BCH_SB_GC_RESERVE(sb,		8);
+	SET_BCH_SB_META_REPLICAS_WANT(sb,	meta_replicas);
+	SET_BCH_SB_META_REPLICAS_HAVE(sb,	meta_replicas);
+	SET_BCH_SB_DATA_REPLICAS_WANT(sb,	data_replicas);
+	SET_BCH_SB_DATA_REPLICAS_HAVE(sb,	data_replicas);
+	SET_BCH_SB_ERROR_ACTION(sb,		on_error_action);
+	SET_BCH_SB_STR_HASH_TYPE(sb,		BCH_STR_HASH_SIPHASH);
+	SET_BCH_SB_JOURNAL_ENTRY_SIZE(sb,	ilog2(max_journal_entry_size));
 
-	for (i = devs; i < devs + nr_devs; i++) {
-		struct cache_member *m = sb->members + (i - devs);
+	struct timespec now;
+	if (clock_gettime(CLOCK_REALTIME, &now))
+		die("error getting current time: %s", strerror(errno));
 
-		uuid_generate(m->uuid.b);
-		m->nbuckets	= __cpu_to_le64(i->nbuckets);
-		m->first_bucket	= __cpu_to_le16(i->first_bucket);
-		m->bucket_size	= __cpu_to_le16(i->bucket_size);
+	sb->time_base_lo	= cpu_to_le64(now.tv_sec * NSEC_PER_SEC + now.tv_nsec);
+	sb->time_precision	= cpu_to_le32(1);
 
-		SET_CACHE_TIER(m,		i->tier);
-		SET_CACHE_REPLACEMENT(m,	CACHE_REPLACEMENT_LRU);
-		SET_CACHE_DISCARD(m,		i->discard);
+	if (passphrase) {
+		struct bch_sb_field_crypt *crypt = vstruct_end(sb);
+
+		u64s = sizeof(struct bch_sb_field_crypt) / sizeof(u64);
+
+		le32_add_cpu(&sb->u64s, u64s);
+		crypt->field.u64s = cpu_to_le32(u64s);
+		crypt->field.type = BCH_SB_FIELD_crypt;
+
+		bch_sb_crypt_init(sb, crypt, passphrase);
+		SET_BCH_SB_ENCRYPTION_TYPE(sb, 1);
 	}
 
-	sb->u64s = __cpu_to_le16(bch_journal_buckets_offset(sb));
+	mi = vstruct_end(sb);
+	u64s = (sizeof(struct bch_sb_field_members) +
+		sizeof(struct bch_member) * nr_devs) / sizeof(u64);
+
+	le32_add_cpu(&sb->u64s, u64s);
+	mi->field.u64s = cpu_to_le32(u64s);
+	mi->field.type = BCH_SB_FIELD_members;
 
 	for (i = devs; i < devs + nr_devs; i++) {
-		struct cache_member *m = sb->members + (i - devs);
+		struct bch_member *m = mi->members + (i - devs);
 
-		sb->disk_uuid	= m->uuid;
-		sb->nr_this_dev	= i - devs;
-		sb->csum	= __cpu_to_le64(__csum_set(sb, __le16_to_cpu(sb->u64s),
-							   CACHE_SB_CSUM_TYPE(sb)));
+		uuid_generate(m->uuid.b);
+		m->nbuckets	= cpu_to_le64(i->nbuckets);
+		m->first_bucket	= cpu_to_le16(i->first_bucket);
+		m->bucket_size	= cpu_to_le16(i->bucket_size);
 
-		do_write_sb(i->fd, sb);
+		SET_BCH_MEMBER_TIER(m,		i->tier);
+		SET_BCH_MEMBER_REPLACEMENT(m,	CACHE_REPLACEMENT_LRU);
+		SET_BCH_MEMBER_DISCARD(m,	i->discard);
+	}
+
+	for (i = devs; i < devs + nr_devs; i++) {
+		sb->dev_idx = i - devs;
+
+		static const char zeroes[BCH_SB_SECTOR << 9];
+		struct nonce nonce = { 0 };
+
+		/* Zero start of disk */
+		xpwrite(i->fd, zeroes, BCH_SB_SECTOR << 9, 0);
+
+		xpwrite(i->fd, &sb->layout, sizeof(sb->layout),
+			BCH_SB_LAYOUT_SECTOR << 9);
+
+		for (j = 0; j < sb->layout.nr_superblocks; j++) {
+			sb->offset = sb->layout.sb_offset[j];
+
+			sb->csum = csum_vstruct(NULL, BCH_SB_CSUM_TYPE(sb),
+						   nonce, sb);
+			xpwrite(i->fd, sb, vstruct_bytes(sb),
+				le64_to_cpu(sb->offset) << 9);
+		}
+
+		fsync(i->fd);
+		close(i->fd);
 	}
 
 	bcache_super_print(sb, HUMAN_READABLE);
@@ -187,16 +236,39 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 	free(sb);
 }
 
-void bcache_super_print(struct cache_sb *sb, int units)
+struct bch_sb *bcache_super_read(const char *path)
 {
-	unsigned i;
+	struct bch_sb sb, *ret;
+
+	int fd = open(path, O_RDONLY);
+	if (fd < 0)
+		die("couldn't open %s", path);
+
+	xpread(fd, &sb, sizeof(sb), BCH_SB_SECTOR << 9);
+
+	if (memcmp(&sb.magic, &BCACHE_MAGIC, sizeof(sb.magic)))
+		die("not a bcache superblock");
+
+	size_t bytes = vstruct_bytes(&sb);
+
+	ret = malloc(bytes);
+
+	xpread(fd, ret, bytes, BCH_SB_SECTOR << 9);
+
+	return ret;
+}
+
+void bcache_super_print(struct bch_sb *sb, int units)
+{
+	struct bch_sb_field_members *mi;
 	char user_uuid_str[40], internal_uuid_str[40], member_uuid_str[40];
-	char label[SB_LABEL_SIZE + 1];
+	char label[BCH_SB_LABEL_SIZE + 1];
+	unsigned i;
 
 	memset(label, 0, sizeof(label));
 	memcpy(label, sb->label, sizeof(sb->label));
 	uuid_unparse(sb->user_uuid.b, user_uuid_str);
-	uuid_unparse(sb->set_uuid.b, internal_uuid_str);
+	uuid_unparse(sb->uuid.b, internal_uuid_str);
 
 	printf("External UUID:			%s\n"
 	       "Internal UUID:			%s\n"
@@ -226,44 +298,50 @@ void bcache_super_print(struct cache_sb *sb, int units)
 	       label,
 	       le64_to_cpu(sb->version),
 	       pr_units(le16_to_cpu(sb->block_size), units),
-	       pr_units(CACHE_SET_BTREE_NODE_SIZE(sb), units),
-	       pr_units(1U << CACHE_SET_JOURNAL_ENTRY_SIZE(sb), units),
+	       pr_units(BCH_SB_BTREE_NODE_SIZE(sb), units),
+	       pr_units(1U << BCH_SB_JOURNAL_ENTRY_SIZE(sb), units),
 
-	       CACHE_SET_ERROR_ACTION(sb) < BCH_NR_ERROR_ACTIONS
-	       ? bch_error_actions[CACHE_SET_ERROR_ACTION(sb)]
+	       BCH_SB_ERROR_ACTION(sb) < BCH_NR_ERROR_ACTIONS
+	       ? bch_error_actions[BCH_SB_ERROR_ACTION(sb)]
 	       : "unknown",
 
-	       CACHE_SET_CLEAN(sb),
+	       BCH_SB_CLEAN(sb),
 
-	       CACHE_SET_META_REPLICAS_HAVE(sb),
-	       CACHE_SET_META_REPLICAS_WANT(sb),
-	       CACHE_SET_DATA_REPLICAS_HAVE(sb),
-	       CACHE_SET_DATA_REPLICAS_WANT(sb),
+	       BCH_SB_META_REPLICAS_HAVE(sb),
+	       BCH_SB_META_REPLICAS_WANT(sb),
+	       BCH_SB_DATA_REPLICAS_HAVE(sb),
+	       BCH_SB_DATA_REPLICAS_WANT(sb),
 
-	       CACHE_SET_META_PREFERRED_CSUM_TYPE(sb) < BCH_CSUM_NR
-	       ? bch_csum_types[CACHE_SET_META_PREFERRED_CSUM_TYPE(sb)]
+	       BCH_SB_META_CSUM_TYPE(sb) < BCH_CSUM_NR
+	       ? bch_csum_types[BCH_SB_META_CSUM_TYPE(sb)]
 	       : "unknown",
 
-	       CACHE_SET_DATA_PREFERRED_CSUM_TYPE(sb) < BCH_CSUM_NR
-	       ? bch_csum_types[CACHE_SET_DATA_PREFERRED_CSUM_TYPE(sb)]
+	       BCH_SB_DATA_CSUM_TYPE(sb) < BCH_CSUM_NR
+	       ? bch_csum_types[BCH_SB_DATA_CSUM_TYPE(sb)]
 	       : "unknown",
 
-	       CACHE_SET_COMPRESSION_TYPE(sb) < BCH_COMPRESSION_NR
-	       ? bch_compression_types[CACHE_SET_COMPRESSION_TYPE(sb)]
+	       BCH_SB_COMPRESSION_TYPE(sb) < BCH_COMPRESSION_NR
+	       ? bch_compression_types[BCH_SB_COMPRESSION_TYPE(sb)]
 	       : "unknown",
 
-	       CACHE_SET_STR_HASH_TYPE(sb) < BCH_STR_HASH_NR
-	       ? bch_str_hash_types[CACHE_SET_STR_HASH_TYPE(sb)]
+	       BCH_SB_STR_HASH_TYPE(sb) < BCH_STR_HASH_NR
+	       ? bch_str_hash_types[BCH_SB_STR_HASH_TYPE(sb)]
 	       : "unknown",
 
-	       CACHE_INODE_32BIT(sb),
-	       CACHE_SET_GC_RESERVE(sb),
-	       CACHE_SET_ROOT_RESERVE(sb),
+	       BCH_SB_INODE_32BIT(sb),
+	       BCH_SB_GC_RESERVE(sb),
+	       BCH_SB_ROOT_RESERVE(sb),
 
-	       sb->nr_in_set);
+	       sb->nr_devices);
 
-	for (i = 0; i < sb->nr_in_set; i++) {
-		struct cache_member *m = sb->members + i;
+	mi = bch_sb_get_members(sb);
+	if (!mi) {
+		printf("Member info section missing\n");
+		return;
+	}
+
+	for (i = 0; i < sb->nr_devices; i++) {
+		struct bch_member *m = mi->members + i;
 		time_t last_mount = le64_to_cpu(m->last_mount);
 
 		uuid_unparse(m->uuid.b, member_uuid_str);
@@ -290,41 +368,18 @@ void bcache_super_print(struct cache_sb *sb, int units)
 		       le64_to_cpu(m->nbuckets),
 		       last_mount ? ctime(&last_mount) : "(never)",
 
-		       CACHE_STATE(m) < CACHE_STATE_NR
-		       ? bch_cache_state[CACHE_STATE(m)]
+		       BCH_MEMBER_STATE(m) < BCH_MEMBER_STATE_NR
+		       ? bch_cache_state[BCH_MEMBER_STATE(m)]
 		       : "unknown",
 
-		       CACHE_TIER(m),
-		       CACHE_HAS_METADATA(m),
-		       CACHE_HAS_DATA(m),
+		       BCH_MEMBER_TIER(m),
+		       BCH_MEMBER_HAS_METADATA(m),
+		       BCH_MEMBER_HAS_DATA(m),
 
-		       CACHE_REPLACEMENT(m) < CACHE_REPLACEMENT_NR
-		       ? bch_cache_replacement_policies[CACHE_REPLACEMENT(m)]
+		       BCH_MEMBER_REPLACEMENT(m) < CACHE_REPLACEMENT_NR
+		       ? bch_cache_replacement_policies[BCH_MEMBER_REPLACEMENT(m)]
 		       : "unknown",
 
-		       CACHE_DISCARD(m));
+		       BCH_MEMBER_DISCARD(m));
 	}
-}
-
-struct cache_sb *bcache_super_read(const char *path)
-{
-	struct cache_sb sb, *ret;
-	size_t bytes;
-
-	int fd = open(path, O_RDONLY);
-	if (fd < 0)
-		die("couldn't open %s", path);
-
-	xpread(fd, &sb, sizeof(sb), SB_SECTOR << 9);
-
-	if (memcmp(&sb.magic, &BCACHE_MAGIC, sizeof(sb.magic)))
-		die("not a bcache superblock");
-
-	bytes = sizeof(sb) + le16_to_cpu(sb.u64s) * sizeof(u64);
-
-	ret = calloc(1, bytes);
-
-	xpread(fd, ret, bytes, SB_SECTOR << 9);
-
-	return ret;
 }

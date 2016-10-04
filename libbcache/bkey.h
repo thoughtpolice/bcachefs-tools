@@ -5,6 +5,7 @@
 #include <linux/bcache.h>
 
 #include "util.h"
+#include "vstructs.h"
 
 void bch_to_binary(char *, const u64 *, unsigned);
 int bch_bkey_to_text(char *, size_t, const struct bkey *);
@@ -28,15 +29,7 @@ struct bkey_s {
 	};
 };
 
-#define bkey_next(_k)							\
-({									\
-	BUILD_BUG_ON(!type_is(_k, struct bkey *) &&			\
-		     !type_is(_k, struct bkey_i *) &&			\
-		     !type_is(_k, struct bkey_packed *));		\
-									\
-	((typeof(_k)) __bkey_idx(((struct bkey *) (_k)),		\
-				 ((struct bkey *) (_k))->u64s));	\
-})
+#define bkey_next(_k)		vstruct_next(_k)
 
 static inline unsigned bkey_val_u64s(const struct bkey *k)
 {
@@ -217,6 +210,22 @@ static inline struct bpos bpos_min(struct bpos l, struct bpos r)
 
 void bch_bpos_swab(struct bpos *);
 void bch_bkey_swab_key(const struct bkey_format *, struct bkey_packed *);
+
+static __always_inline int bversion_cmp(struct bversion l, struct bversion r)
+{
+	if (l.hi != r.hi)
+		return l.hi < r.hi ? -1 : 1;
+	if (l.lo != r.lo)
+		return l.lo < r.lo ? -1 : 1;
+	return 0;
+}
+
+#define ZERO_VERSION	((struct bversion) { .hi = 0, .lo = 0 })
+
+static __always_inline int bversion_zero(struct bversion v)
+{
+	return !bversion_cmp(v, ZERO_VERSION);
+}
 
 #ifdef CONFIG_BCACHE_DEBUG
 /* statement expressions confusing unlikely()? */
@@ -555,6 +564,7 @@ static inline void __bch_extent_assert(u8 type, u8 nr)
 }
 
 __BKEY_VAL_ACCESSORS(extent,		BCH_EXTENT, __bch_extent_assert);
+BKEY_VAL_ACCESSORS(reservation,		BCH_RESERVATION);
 
 BKEY_VAL_ACCESSORS(inode,		BCH_INODE_FS);
 BKEY_VAL_ACCESSORS(inode_blockdev,	BCH_INODE_BLOCKDEV);

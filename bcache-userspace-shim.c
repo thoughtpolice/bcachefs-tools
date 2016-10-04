@@ -144,6 +144,7 @@ enum fsck_err_opts fsck_err_opt;
 #include "six.c"
 //#include "stats.c"
 #include "super.c"
+#include "super-io.c"
 //#include "sysfs.c"
 #include "tier.c"
 #include "trace.c"
