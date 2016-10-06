@@ -2,8 +2,6 @@
 #include <unistd.h>
 #include <keyutils.h>
 #include <uuid/uuid.h>
-#include <nih/command.h>
-#include <nih/option.h>
 
 #include "bcache.h"
 #include "libbcache.h"
@@ -11,11 +9,6 @@
 
 int cmd_unlock(int argc, char *argv[])
 {
-	NihOption opts[] = {
-		NIH_OPTION_LAST
-	};
-	char **args = bch_nih_init(argc, argv, opts);
-
 	struct bcache_disk_key disk_key;
 	struct bcache_key key;
 	struct cache_sb *sb;
@@ -23,10 +16,10 @@ int cmd_unlock(int argc, char *argv[])
 	char uuid[40];
 	char description[60];
 
-	if (!args[0] || args[1])
+	if (argc != 2)
 		die("please supply a single device");
 
-	sb = bcache_super_read(args[0]);
+	sb = bcache_super_read(argv[1]);
 
 	if (!CACHE_SET_ENCRYPTION_KEY(sb))
 		die("filesystem is not encrypted");

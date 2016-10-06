@@ -4,7 +4,7 @@ INSTALL=install
 CFLAGS+=-std=gnu99 -O2 -Wall -g -D_FILE_OFFSET_BITS=64 -I.
 LDFLAGS+=-static
 
-PKGCONFIG_LIBS="blkid uuid libnih"
+PKGCONFIG_LIBS="blkid uuid"
 CFLAGS+=`pkg-config --cflags	${PKGCONFIG_LIBS}`
 LDLIBS+=`pkg-config --libs	${PKGCONFIG_LIBS}` -lscrypt -lsodium -lkeyutils -lm
 

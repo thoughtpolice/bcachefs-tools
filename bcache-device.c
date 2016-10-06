@@ -1,7 +1,7 @@
-
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <getopt.h>
 #include <libgen.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -12,8 +12,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-
-#include <nih/option.h>
 
 #include "bcache.h"
 #include "libbcache.h"
@@ -183,20 +181,14 @@ int cmd_device_show(int argc, char *argv[])
 
 int cmd_device_add(int argc, char *argv[])
 {
-	NihOption opts[] = {
-	//	{ int shortoption, char *longoption, char *help, NihOptionGroup, char *argname, void *value, NihOptionSetter}
-		NIH_OPTION_LAST
-	};
-	char **args = bch_nih_init(argc, argv, opts);
-
-	if (nr_args(args) < 2)
+	if (argc < 3)
 		die("Please supply a filesystem and at least one device to add");
 
-	struct bcache_handle fs = bcache_fs_open(args[0]);
+	struct bcache_handle fs = bcache_fs_open(argv[1]);
 
-	for (unsigned i = 1; args[i]; i++) {
+	for (unsigned i = 2; i < argc; i++) {
 		struct bch_ioctl_disk_add ia = {
-			.dev = (__u64) args[i],
+			.dev = (__u64) argv[i],
 		};
 
 		if (ioctl(fs.fd, BCH_IOCTL_DISK_ADD, &ia))
@@ -206,28 +198,51 @@ int cmd_device_add(int argc, char *argv[])
 	return 0;
 }
 
+static void usage(void)
+{
+	puts("bcache device_remove - remove one or more devices from a filesystem\n"
+	     "Usage: bcache device_remove filesystem [devices]\n"
+	     "\n"
+	     "Options:\n"
+	     "  -f, --force		    Force removal, even if some data\n"
+	     "                              couldn't be migrated\n"
+	     "      --force-metadata	    Force removal, even if some metadata\n"
+	     "                              couldn't be migrated\n"
+	     "  -h, --help                  display this help and exit\n"
+	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	exit(EXIT_SUCCESS);
+}
+
 int cmd_device_remove(int argc, char *argv[])
 {
-	int force_data = 0, force_metadata = 0;
-	NihOption opts[] = {
-	//	{ int shortoption, char *longoption, char *help, NihOptionGroup, char *argname, void *value, NihOptionSetter}
-
-		{ 'f', "force",			N_("force if data present"),
-			NULL, NULL,	&force_data, NULL },
-		{ '\0', "force-metadata",	N_("force if metadata present"),
-			NULL, NULL,	&force_metadata, NULL},
-		NIH_OPTION_LAST
+	static const struct option longopts[] = {
+		{ "force",		0, NULL, 'f' },
+		{ "force-metadata",	0, NULL, 'F' },
+		{ "help",		0, NULL, 'h' },
+		{ NULL }
 	};
-	char **args = bch_nih_init(argc, argv, opts);
+	int opt, force_data = 0, force_metadata = 0;
 
-	if (nr_args(args) < 2)
+	while ((opt = getopt_long(argc, argv, "fh", longopts, NULL)) != -1)
+		switch (opt) {
+		case 'f':
+			force_data = 1;
+			break;
+		case 'F':
+			force_metadata = 1;
+			break;
+		case 'h':
+			usage();
+		}
+
+	if (argc < 3)
 		die("Please supply a filesystem and at least one device to add");
 
-	struct bcache_handle fs = bcache_fs_open(args[0]);
+	struct bcache_handle fs = bcache_fs_open(argv[1]);
 
-	for (unsigned i = 1; args[i]; i++) {
+	for (unsigned i = 2; i < argc; i++) {
 		struct bch_ioctl_disk_remove ir = {
-			.dev = (__u64) args[0],
+			.dev = (__u64) argv[i],
 		};
 
 		if (force_data)

@@ -135,7 +135,4 @@ bool ask_proceed(void);
 
 void memzero_explicit(void *, size_t);
 
-struct nih_option;
-char **bch_nih_init(int argc, char *argv[], struct nih_option *options);
-
 #endif /* _UTIL_H */

@@ -513,21 +513,3 @@ void memzero_explicit(void *buf, size_t len)
     void *(* volatile memset_s)(void *s, int c, size_t n) = memset;
     memset_s(buf, 0, len);
 }
-
-/* libnih options: */
-
-#include <nih/option.h>
-#include <nih/main.h>
-
-#define PACKAGE_NAME "bcache"
-#define PACKAGE_VERSION "1.0"
-#define PACKAGE_BUGREPORT "linux-bcache@vger.kernel.org"
-
-char **bch_nih_init(int argc, char *argv[], NihOption *options)
-{
-	nih_main_init(argv[0]);
-	nih_option_set_synopsis(_("Manage bcache devices"));
-	nih_option_set_help( _("Helps you manage bcache devices"));
-
-	return nih_option_parser(NULL, argc, argv, options, 0);
-}
