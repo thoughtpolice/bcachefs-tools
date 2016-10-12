@@ -1,7 +1,7 @@
 
 PREFIX=/usr
 INSTALL=install
-CFLAGS+=-std=gnu99 -O2 -Wall -g -D_FILE_OFFSET_BITS=64 -I.
+CFLAGS+=-std=gnu99 -O2 -Wall -g -MMD -D_FILE_OFFSET_BITS=64 -I.
 LDFLAGS+=-static
 
 PKGCONFIG_LIBS="blkid uuid"
@@ -26,6 +26,8 @@ libccan.a: $(CCANOBJS)
 bcache-objs = bcache.o bcache-assemble.o bcache-device.o bcache-format.o\
 	bcache-fs.o bcache-run.o bcache-key.o libbcache.o crypto.o util.o
 
+-include $(bcache-objs:.o=.d)
+
 bcache: $(bcache-objs) libccan.a
 
 .PHONY: install
@@ -38,7 +40,7 @@ install: bcache
 
 .PHONY: clean
 clean:
-	$(RM) bcache *.o *.a
+	$(RM) bcache *.o *.d *.a
 
 .PHONY: deb
 deb: all

@@ -2,6 +2,7 @@ bcache
 probe-bcache
 .*
 *.o
+*.d
 *.a
 tags
 cscope*
