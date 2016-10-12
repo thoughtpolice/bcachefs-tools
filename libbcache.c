@@ -351,9 +351,10 @@ void bcache_super_print(struct cache_sb *sb, int units)
 		printf("\n"
 		       "Device %u:\n"
 		       "  UUID:				%s\n"
-		       "  bucket_size:			%s\n"
-		       "  first_bucket:			%u\n"
-		       "  nbuckets:			%llu\n"
+		       "  Size:				%s\n"
+		       "  Bucket size:			%s\n"
+		       "  First bucket:			%u\n"
+		       "  Buckets:			%llu\n"
 		       "  Last mount:			%s\n"
 		       "  State:			%s\n"
 		       "  Tier:				%llu\n"
@@ -362,6 +363,8 @@ void bcache_super_print(struct cache_sb *sb, int units)
 		       "  Replacement policy:		%s\n"
 		       "  Discard:			%llu\n",
 		       i, member_uuid_str,
+		       pr_units(le16_to_cpu(m->bucket_size) *
+				le64_to_cpu(m->nbuckets), units).b,
 		       pr_units(le16_to_cpu(m->bucket_size), units).b,
 		       le16_to_cpu(m->first_bucket),
 		       le64_to_cpu(m->nbuckets),
