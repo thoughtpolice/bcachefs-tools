@@ -31,10 +31,10 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 		   unsigned meta_csum_type,
 		   unsigned data_csum_type,
 		   unsigned compression_type,
-		   const char *passphrase,
 		   unsigned meta_replicas,
 		   unsigned data_replicas,
 		   unsigned on_error_action,
+		   unsigned max_journal_entry_size,
 		   char *label,
 		   uuid_le uuid);
 

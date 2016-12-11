@@ -813,21 +813,7 @@ LE64_BITMASK(CACHE_SET_ROOT_RESERVE,	struct cache_sb, flags2, 0,  6);
  */
 LE64_BITMASK(CACHE_SET_CLEAN,		struct cache_sb, flags2, 6, 7);
 
-/*
- * If nonzero, encryption is enabled; overrides DATA/META_CSUM_TYPE. Also
- * indicates encryption algorithm in use, if/when we get more than one:
- *
- */
-LE64_BITMASK(CACHE_SET_ENCRYPTION_TYPE,	struct cache_sb, flags2, 6,  10);
-
-/*
- * If nonzero, we have an encryption key in the superblock, which is the key
- * used to encrypt all other data/metadata. The key will normally be encrypted
- * with the key userspace provides, but if encryption has been turned off we'll
- * just store the master key unencrypted in the superblock so we can access the
- * previously encrypted data.
- */
-LE64_BITMASK(CACHE_SET_ENCRYPTION_KEY,	struct cache_sb, flags2, 10, 11);
+LE64_BITMASK(CACHE_SET_JOURNAL_ENTRY_SIZE, struct cache_sb, flags2, 7, 15);
 
 /* options: */
 

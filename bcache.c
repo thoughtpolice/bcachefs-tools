@@ -30,7 +30,6 @@ static void usage(void)
 	     "\n"
 	     "Commands for formatting, startup and shutdown\n"
 	     "  format         Format a new filesystem\n"
-	     "  unlock         Unlock an encrypted filesystem prior to running/mounting\n"
 	     "  assemble       Assemble an existing multi device filesystem\n"
 	     "  incremental    Incrementally assemble an existing multi device filesystem\n"
 	     "  run            Start a partially assembled filesystem\n"
@@ -83,9 +82,6 @@ int main(int argc, char *argv[])
 		return cmd_device_add(argc, argv);
 	if (!strcmp(cmd, "device_remove"))
 		return cmd_device_remove(argc, argv);
-
-	if (!strcmp(cmd, "unlock"))
-		return cmd_unlock(argc, argv);
 
 	usage();
 	return 0;

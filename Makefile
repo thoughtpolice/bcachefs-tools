@@ -6,7 +6,7 @@ LDFLAGS+=-static
 
 PKGCONFIG_LIBS="blkid uuid"
 CFLAGS+=`pkg-config --cflags	${PKGCONFIG_LIBS}`
-LDLIBS+=`pkg-config --libs	${PKGCONFIG_LIBS}` -lscrypt -lsodium -lkeyutils -lm
+LDLIBS+=`pkg-config --libs	${PKGCONFIG_LIBS}` -lm
 
 ifeq ($(PREFIX),/usr)
 	ROOT_SBINDIR=/sbin
@@ -24,7 +24,7 @@ libccan.a: $(CCANOBJS)
 	$(AR) r $@ $(CCANOBJS)
 
 bcache-objs = bcache.o bcache-assemble.o bcache-device.o bcache-format.o\
-	bcache-fs.o bcache-run.o bcache-key.o libbcache.o crypto.o util.o
+	bcache-fs.o bcache-run.o libbcache.o util.o
 
 -include $(bcache-objs:.o=.d)
 
@@ -44,4 +44,9 @@ clean:
 
 .PHONY: deb
 deb: all
-	debuild -nc -us -uc -i -I
+	debuild --unsigned-source	\
+		--unsigned-changes	\
+		--no-pre-clean		\
+		--build=binary		\
+		--diff-ignore		\
+		--tar-ignore

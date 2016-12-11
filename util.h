@@ -58,14 +58,20 @@ static inline void le64_add_cpu(__le64 *var, u64 val)
 	(void) (&_max1 == &_max2);		\
 	_max1 > _max2 ? _max1 : _max2; })
 
+#define max_t(type, x, y) ({			\
+	type __max1 = (x);			\
+	type __max2 = (y);			\
+	__max1 > __max2 ? __max1: __max2; })
+
 #define die(arg, ...)					\
 do {							\
 	fprintf(stderr, arg "\n", ##__VA_ARGS__);	\
 	exit(EXIT_FAILURE);				\
 } while (0)
 
-u64 rounddown_pow_of_two(u64);
 unsigned ilog2(u64);
+u64 rounddown_pow_of_two(u64);
+u64 roundup_pow_of_two(u64);
 
 char *skip_spaces(const char *str);
 char *strim(char *s);

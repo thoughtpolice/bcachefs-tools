@@ -1,4 +1,5 @@
 #include <alloca.h>
+#include <assert.h>
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -21,28 +22,28 @@
 
 /* Integer stuff: */
 
-u64 rounddown_pow_of_two(u64 n)
-{
-	u64 ret;
-
-	do {
-		ret = n;
-		n &= n - 1;
-	} while (n);
-
-	return ret;
-}
-
 unsigned ilog2(u64 n)
 {
 	unsigned ret = 0;
 
-	while (n) {
+	assert(n > 0);
+
+	while (n > 1) {
 		ret++;
 		n >>= 1;
 	}
 
 	return ret;
+}
+
+u64 rounddown_pow_of_two(u64 n)
+{
+	return 1ULL << ilog2(n);
+}
+
+u64 roundup_pow_of_two(u64 n)
+{
+	return 1ULL << (ilog2(n - 1) + 1);
 }
 
 char *skip_spaces(const char *str)

@@ -15,7 +15,6 @@
 
 #include "bcache-ondisk.h"
 #include "libbcache.h"
-#include "crypto.h"
 
 const char * const cache_state[] = {
 	"active",
@@ -125,10 +124,10 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 		   unsigned meta_csum_type,
 		   unsigned data_csum_type,
 		   unsigned compression_type,
-		   const char *passphrase,
 		   unsigned meta_replicas,
 		   unsigned data_replicas,
 		   unsigned on_error_action,
+		   unsigned max_journal_entry_size,
 		   char *label,
 		   uuid_le uuid)
 {
@@ -191,6 +190,13 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 			btree_node_size = min(btree_node_size, i->bucket_size);
 	}
 
+	if (!max_journal_entry_size) {
+		/* 2 MB default: */
+		max_journal_entry_size = 4096;
+	}
+
+	max_journal_entry_size = roundup_pow_of_two(max_journal_entry_size);
+
 	sb = calloc(1, sizeof(*sb) + sizeof(struct cache_member) * nr_devs);
 
 	sb->offset	= __cpu_to_le64(SB_SECTOR);
@@ -221,22 +227,7 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 	SET_CACHE_SET_DATA_REPLICAS_HAVE(sb,	data_replicas);
 	SET_CACHE_SET_ERROR_ACTION(sb,		on_error_action);
 	SET_CACHE_SET_STR_HASH_TYPE(sb,		BCH_STR_HASH_SIPHASH);
-
-	if (passphrase) {
-		struct bcache_key key;
-		struct bcache_disk_key disk_key;
-
-		derive_passphrase(&key, passphrase);
-		disk_key_init(&disk_key);
-		disk_key_encrypt(sb, &disk_key, &key);
-
-		memcpy(sb->encryption_key, &disk_key, sizeof(disk_key));
-		SET_CACHE_SET_ENCRYPTION_TYPE(sb, 1);
-		SET_CACHE_SET_ENCRYPTION_KEY(sb, 1);
-
-		memzero_explicit(&disk_key, sizeof(disk_key));
-		memzero_explicit(&key, sizeof(key));
-	}
+	SET_CACHE_SET_JOURNAL_ENTRY_SIZE(sb,	ilog2(max_journal_entry_size));
 
 	for (i = devs; i < devs + nr_devs; i++) {
 		struct cache_member *m = sb->members + (i - devs);
@@ -286,6 +277,7 @@ void bcache_super_print(struct cache_sb *sb, int units)
 	       "Version:			%llu\n"
 	       "Block_size:			%s\n"
 	       "Btree node size:		%s\n"
+	       "Max journal entry size:		%s\n"
 	       "Error action:			%s\n"
 	       "Clean:				%llu\n"
 
@@ -308,6 +300,7 @@ void bcache_super_print(struct cache_sb *sb, int units)
 	       le64_to_cpu(sb->version),
 	       pr_units(le16_to_cpu(sb->block_size), units).b,
 	       pr_units(CACHE_SET_BTREE_NODE_SIZE(sb), units).b,
+	       pr_units(1U << CACHE_SET_JOURNAL_ENTRY_SIZE(sb), units).b,
 
 	       CACHE_SET_ERROR_ACTION(sb) < BCH_NR_ERROR_ACTIONS
 	       ? error_actions[CACHE_SET_ERROR_ACTION(sb)]
