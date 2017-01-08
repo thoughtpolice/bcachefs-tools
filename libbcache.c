@@ -11,10 +11,9 @@
 
 #include <uuid/uuid.h>
 
-#include "ccan/ilog/ilog.h"
-
-#include "bcache-ondisk.h"
+#include "linux/bcache.h"
 #include "libbcache.h"
+#include "checksum.h"
 
 const char * const cache_state[] = {
 	"active",
@@ -154,7 +153,7 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 			i->bucket_size = max(block_size, 256U);
 
 			if (i->size >= min_size(i->bucket_size)) {
-				unsigned scale = max(1U,
+				unsigned scale = max(1,
 					ilog2(i->size / min_size(i->bucket_size)) / 4);
 
 				scale = rounddown_pow_of_two(scale);
@@ -216,8 +215,8 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 	 * crc64
 	 */
 	SET_CACHE_SB_CSUM_TYPE(sb,		BCH_CSUM_CRC64);
-	SET_CACHE_SET_META_CSUM_TYPE(sb,	meta_csum_type);
-	SET_CACHE_SET_DATA_CSUM_TYPE(sb,	data_csum_type);
+	SET_CACHE_SET_META_PREFERRED_CSUM_TYPE(sb,	meta_csum_type);
+	SET_CACHE_SET_DATA_PREFERRED_CSUM_TYPE(sb,	data_csum_type);
 	SET_CACHE_SET_COMPRESSION_TYPE(sb,	compression_type);
 
 	SET_CACHE_SET_BTREE_NODE_SIZE(sb,	btree_node_size);
@@ -313,12 +312,12 @@ void bcache_super_print(struct cache_sb *sb, int units)
 	       CACHE_SET_DATA_REPLICAS_HAVE(sb),
 	       CACHE_SET_DATA_REPLICAS_WANT(sb),
 
-	       CACHE_SET_META_CSUM_TYPE(sb) < BCH_CSUM_NR
-	       ? csum_types[CACHE_SET_META_CSUM_TYPE(sb)]
+	       CACHE_SET_META_PREFERRED_CSUM_TYPE(sb) < BCH_CSUM_NR
+	       ? csum_types[CACHE_SET_META_PREFERRED_CSUM_TYPE(sb)]
 	       : "unknown",
 
-	       CACHE_SET_DATA_CSUM_TYPE(sb) < BCH_CSUM_NR
-	       ? csum_types[CACHE_SET_DATA_CSUM_TYPE(sb)]
+	       CACHE_SET_DATA_PREFERRED_CSUM_TYPE(sb) < BCH_CSUM_NR
+	       ? csum_types[CACHE_SET_DATA_PREFERRED_CSUM_TYPE(sb)]
 	       : "unknown",
 
 	       CACHE_SET_COMPRESSION_TYPE(sb) < BCH_COMPRESSION_NR

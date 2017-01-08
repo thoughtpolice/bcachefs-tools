@@ -11,7 +11,7 @@
 
 #include <uuid/uuid.h>
 
-#include "bcache.h"
+#include "bcache-cmds.h"
 
 int cmd_run(int argc, char *argv[])
 {
@@ -25,7 +25,7 @@ int cmd_stop(int argc, char *argv[])
 
 	struct bcache_handle fs = bcache_fs_open(argv[1]);
 
-	if (ioctl(fs.fd, BCH_IOCTL_STOP))
+	if (ioctl(fs.ioctl_fd, BCH_IOCTL_STOP))
 		die("BCH_IOCTL_STOP error: %s", strerror(errno));
 
 	return 0;

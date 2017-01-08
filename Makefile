@@ -1,12 +1,21 @@
 
 PREFIX=/usr
 INSTALL=install
-CFLAGS+=-std=gnu99 -O2 -Wall -g -MMD -D_FILE_OFFSET_BITS=64 -I.
-LDFLAGS+=-static
+CFLAGS+=-std=gnu99 -O2 -g -flto -MMD -Wall			\
+	-Wno-unused-but-set-variable				\
+	-Wno-pointer-sign					\
+	-fno-strict-aliasing					\
+	-I. -Iinclude -Ilibbcache				\
+	-D_FILE_OFFSET_BITS=64					\
+	-D_GNU_SOURCE						\
+	-D_LGPL_SOURCE						\
+	-DRCU_MEMBARRIER					\
+	$(EXTRA_CFLAGS)
+LDFLAGS+=-O2 -g -flto
 
-PKGCONFIG_LIBS="blkid uuid"
+PKGCONFIG_LIBS="blkid uuid liburcu"
 CFLAGS+=`pkg-config --cflags	${PKGCONFIG_LIBS}`
-LDLIBS+=`pkg-config --libs	${PKGCONFIG_LIBS}` -lm
+LDLIBS+=`pkg-config --libs	${PKGCONFIG_LIBS}` -lm -lpthread -lrt
 
 ifeq ($(PREFIX),/usr)
 	ROOT_SBINDIR=/sbin
@@ -20,15 +29,18 @@ all: bcache
 CCANSRCS=$(wildcard ccan/*/*.c)
 CCANOBJS=$(patsubst %.c,%.o,$(CCANSRCS))
 
-libccan.a: $(CCANOBJS)
-	$(AR) r $@ $(CCANOBJS)
+# Linux kernel shim:
+LINUX_SRCS=$(wildcard linux/*.c linux/*/*.c)
+LINUX_OBJS=$(LINUX_SRCS:.c=.o)
 
-bcache-objs = bcache.o bcache-assemble.o bcache-device.o bcache-format.o\
-	bcache-fs.o bcache-run.o libbcache.o util.o
+OBJS=bcache.o bcache-assemble.o bcache-device.o bcache-format.o	\
+	bcache-fs.o bcache-run.o bcache-userspace-shim.o	\
+	libbcache.o tools-util.o $(LINUX_OBJS) $(CCANOBJS)
 
--include $(bcache-objs:.o=.d)
+DEPS=$(OBJS:.o=.d)
+-include $(DEPS)
 
-bcache: $(bcache-objs) libccan.a
+bcache: $(OBJS)
 
 .PHONY: install
 install: bcache
@@ -40,7 +52,7 @@ install: bcache
 
 .PHONY: clean
 clean:
-	$(RM) bcache *.o *.d *.a
+	$(RM) bcache $(OBJS) $(DEPS)
 
 .PHONY: deb
 deb: all
@@ -50,3 +62,11 @@ deb: all
 		--build=binary		\
 		--diff-ignore		\
 		--tar-ignore
+
+.PHONE: update-bcache-sources
+update-bcache-sources:
+	echo BCACHE_REVISION=`cd $(LINUX_DIR); git rev-parse HEAD` > .bcache_revision
+	cp $(LINUX_DIR)/drivers/md/bcache/*.[ch] libbcache/
+	cp $(LINUX_DIR)/include/trace/events/bcache.h include/trace/events/
+	cp $(LINUX_DIR)/include/uapi/linux/bcache.h include/linux/
+	cp $(LINUX_DIR)/include/uapi/linux/bcache-ioctl.h include/linux/

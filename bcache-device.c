@@ -1,4 +1,3 @@
-#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -13,7 +12,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include "bcache.h"
+#include "bcache-cmds.h"
 #include "libbcache.h"
 
 /* This code belongs under show_fs */
@@ -191,7 +190,7 @@ int cmd_device_add(int argc, char *argv[])
 			.dev = (__u64) argv[i],
 		};
 
-		if (ioctl(fs.fd, BCH_IOCTL_DISK_ADD, &ia))
+		if (ioctl(fs.ioctl_fd, BCH_IOCTL_DISK_ADD, &ia))
 			die("BCH_IOCTL_DISK_ADD error: %s", strerror(errno));
 	}
 
@@ -250,7 +249,7 @@ int cmd_device_remove(int argc, char *argv[])
 		if (force_metadata)
 			ir.flags |= BCH_FORCE_IF_METADATA_MISSING;
 
-		if (ioctl(fs.fd, BCH_IOCTL_DISK_REMOVE, &ir))
+		if (ioctl(fs.ioctl_fd, BCH_IOCTL_DISK_REMOVE, &ir))
 			die("BCH_IOCTL_DISK_REMOVE error: %s\n", strerror(errno));
 	}
 

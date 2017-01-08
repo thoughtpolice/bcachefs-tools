@@ -21,37 +21,42 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
-#include "bcache.h"
+#include "bcache-cmds.h"
 
 static void usage(void)
 {
 	puts("bcache - tool for managing bcache volumes/filesystems\n"
 	     "usage: bcache <command> [<args>]\n"
 	     "\n"
-	     "Commands for formatting, startup and shutdown\n"
+	     "Commands for formatting, startup and shutdown:\n"
 	     "  format         Format a new filesystem\n"
 	     "  assemble       Assemble an existing multi device filesystem\n"
 	     "  incremental    Incrementally assemble an existing multi device filesystem\n"
 	     "  run            Start a partially assembled filesystem\n"
 	     "  stop	       Stop a running filesystem\n"
 	     "\n"
-	     "Commands for managing a running filesystem\n"
+	     "Commands for managing a running filesystem:\n"
 	     "  fs_show        Show various information about a filesystem\n"
 	     "  fs_set         Modify filesystem options\n"
 	     "\n"
-	     "Commands for managing a specific device in a filesystem\n"
+	     "Commands for managing a specific device in a filesystem:\n"
 	     "  device_show    Show information about a formatted device\n"
 	     "  device_add     Add a device to an existing (running) filesystem\n"
-	     "  device_remove  Remove a device from an existing (running) filesystem\n");
-	exit(EXIT_SUCCESS);
+	     "  device_remove  Remove a device from an existing (running) filesystem\n"
+	     "\n"
+	     "Repair:\n"
+	     "  bcache fsck    Check an existing filesystem for errors\n");
 }
 
 int main(int argc, char *argv[])
 {
 	char *cmd;
 
+	setvbuf(stdout, NULL, _IOLBF, 0);
+
 	if (argc < 2) {
 		printf("%s: missing command\n", argv[0]);
+		usage();
 		exit(EXIT_FAILURE);
 	}
 
@@ -82,6 +87,9 @@ int main(int argc, char *argv[])
 		return cmd_device_add(argc, argv);
 	if (!strcmp(cmd, "device_remove"))
 		return cmd_device_remove(argc, argv);
+
+	if (!strcmp(cmd, "fsck"))
+		return cmd_fsck(argc, argv);
 
 	usage();
 	return 0;

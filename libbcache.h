@@ -1,7 +1,7 @@
 #ifndef _LIBBCACHE_H
 #define _LIBBCACHE_H
 
-#include "util.h"
+#include "tools-util.h"
 #include "stdbool.h"
 
 extern const char * const cache_state[];

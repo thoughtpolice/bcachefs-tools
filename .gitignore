@@ -1,4 +1,5 @@
 bcache
+bcache-userspace
 probe-bcache
 .*
 *.o

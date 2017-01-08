@@ -8,7 +8,7 @@
 
 #include <sys/ioctl.h>
 
-#include "bcache.h"
+#include "bcache-cmds.h"
 
 int cmd_assemble(int argc, char *argv[])
 {

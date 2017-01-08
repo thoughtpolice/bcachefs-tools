@@ -5,7 +5,7 @@ Section: utils
 Priority: optional
 Standards-Version: 3.9.5
 Build-Depends: debhelper (>= 9), pkg-config, libblkid-dev, uuid-dev,
-	libscrypt-dev, libsodium-dev, libkeyutils-dev
+	libscrypt-dev, libsodium-dev, libkeyutils-dev, liburcu-dev
 Vcs-Browser: http://anonscm.debian.org/gitweb/?p=collab-maint/bcache-tools.git
 Vcs-Git: git://anonscm.debian.org/collab-maint/bcache-tools.git
 Homepage: http://bcache.evilpiepirate.org/

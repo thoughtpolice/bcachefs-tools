@@ -5,8 +5,6 @@
  *
  * GPLv2
  */
-#define _GNU_SOURCE
-
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -24,7 +22,7 @@
 
 #include "ccan/darray/darray.h"
 
-#include "bcache.h"
+#include "bcache-cmds.h"
 #include "libbcache.h"
 
 /* Open a block device, do magic blkid stuff: */
