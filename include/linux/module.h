@@ -9,7 +9,7 @@
 struct module;
 
 #define module_init(initfn)					\
-	__attribute__((constructor(109)))			\
+	__attribute__((constructor(120)))			\
 	static void __call_##initfn(void) { BUG_ON(initfn()); }
 
 #if 0
