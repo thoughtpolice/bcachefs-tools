@@ -117,7 +117,7 @@ struct block_device *blkdev_get_by_path(const char *path, fmode_t mode,
 					void *holder)
 {
 	struct block_device *bdev;
-	int flags = O_DIRECT;
+	int fd, flags = O_DIRECT;
 
 	if ((mode & (FMODE_READ|FMODE_WRITE)) == (FMODE_READ|FMODE_WRITE))
 		flags = O_RDWR;
@@ -129,17 +129,19 @@ struct block_device *blkdev_get_by_path(const char *path, fmode_t mode,
 	if (mode & FMODE_EXCL)
 		flags |= O_EXCL;
 
+	fd = open(path, flags);
+	if (fd < 0)
+		return ERR_PTR(-errno);
+
 	bdev = malloc(sizeof(*bdev));
 	memset(bdev, 0, sizeof(*bdev));
 
 	strncpy(bdev->name, path, sizeof(bdev->name));
 	bdev->name[sizeof(bdev->name) - 1] = '\0';
 
-	bdev->bd_fd = open(path, flags);
+	bdev->bd_fd	= fd;
 	bdev->bd_holder = holder;
-	bdev->bd_disk = &bdev->__bd_disk;
-
-	BUG_ON(bdev->bd_fd < 0);
+	bdev->bd_disk	= &bdev->__bd_disk;
 
 	return bdev;
 }
