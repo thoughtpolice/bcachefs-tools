@@ -26,14 +26,11 @@ static const struct bch_extent_ptr *moving_pred(struct cache *ca,
 {
 	const struct bch_extent_ptr *ptr;
 
-	if (bkey_extent_is_data(k.k)) {
-		struct bkey_s_c_extent e = bkey_s_c_to_extent(k);
-
-		extent_for_each_ptr(e, ptr)
-			if ((ca->sb.nr_this_dev == ptr->dev) &&
-			    PTR_BUCKET(ca, ptr)->mark.copygc)
-				return ptr;
-	}
+	if (bkey_extent_is_data(k.k) &&
+	    (ptr = bch_extent_has_device(bkey_s_c_to_extent(k),
+					 ca->sb.nr_this_dev)) &&
+	    PTR_BUCKET(ca, ptr)->mark.copygc)
+		return ptr;
 
 	return NULL;
 }
@@ -273,6 +270,9 @@ int bch_moving_gc_thread_start(struct cache *ca)
 
 	/* The moving gc read thread must be stopped */
 	BUG_ON(ca->moving_gc_read != NULL);
+
+	if (ca->set->opts.nochanges)
+		return 0;
 
 	if (cache_set_init_fault("moving_gc_start"))
 		return -ENOMEM;

@@ -14,74 +14,7 @@
 #include "linux/bcache.h"
 #include "libbcache.h"
 #include "checksum.h"
-
-const char * const cache_state[] = {
-	"active",
-	"ro",
-	"failed",
-	"spare",
-	NULL
-};
-
-const char * const replacement_policies[] = {
-	"lru",
-	"fifo",
-	"random",
-	NULL
-};
-
-const char * const csum_types[] = {
-	"none",
-	"crc32c",
-	"crc64",
-	NULL
-};
-
-const char * const compression_types[] = {
-	"none",
-	"lz4",
-	"gzip",
-	NULL
-};
-
-const char * const str_hash_types[] = {
-	"crc32c",
-	"crc64",
-	"siphash",
-	"sha1",
-	NULL
-};
-
-const char * const error_actions[] = {
-	"continue",
-	"readonly",
-	"panic",
-	NULL
-};
-
-const char * const member_states[] = {
-	"active",
-	"ro",
-	"failed",
-	"spare",
-	NULL
-};
-
-const char * const bdev_cache_mode[] = {
-	"writethrough",
-	"writeback",
-	"writearound",
-	"none",
-	NULL
-};
-
-const char * const bdev_state[] = {
-	"detached",
-	"clean",
-	"dirty",
-	"inconsistent",
-	NULL
-};
+#include "opts.h"
 
 #define BCH_MIN_NR_NBUCKETS	(1 << 10)
 
@@ -93,15 +26,10 @@ void __do_write_sb(int fd, void *sb, size_t bytes)
 	char zeroes[SB_SECTOR << 9] = {0};
 
 	/* Zero start of disk */
-	if (pwrite(fd, zeroes, SB_SECTOR << 9, 0) != SB_SECTOR << 9) {
-		perror("write error trying to zero start of disk\n");
-		exit(EXIT_FAILURE);
-	}
+	xpwrite(fd, zeroes, SB_SECTOR << 9, 0);
+
 	/* Write superblock */
-	if (pwrite(fd, sb, bytes, SB_SECTOR << 9) != bytes) {
-		perror("write error trying to write superblock\n");
-		exit(EXIT_FAILURE);
-	}
+	xpwrite(fd, sb, bytes, SB_SECTOR << 9);
 
 	fsync(fd);
 	close(fd);
@@ -142,7 +70,7 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 	/* calculate bucket sizes: */
 	for (i = devs; i < devs + nr_devs; i++) {
 		if (!i->size)
-			i->size = get_size(i->path, i->fd);
+			i->size = get_size(i->path, i->fd) >> 9;
 
 		if (!i->bucket_size) {
 			if (i->size < min_size(block_size))
@@ -297,12 +225,12 @@ void bcache_super_print(struct cache_sb *sb, int units)
 	       internal_uuid_str,
 	       label,
 	       le64_to_cpu(sb->version),
-	       pr_units(le16_to_cpu(sb->block_size), units).b,
-	       pr_units(CACHE_SET_BTREE_NODE_SIZE(sb), units).b,
-	       pr_units(1U << CACHE_SET_JOURNAL_ENTRY_SIZE(sb), units).b,
+	       pr_units(le16_to_cpu(sb->block_size), units),
+	       pr_units(CACHE_SET_BTREE_NODE_SIZE(sb), units),
+	       pr_units(1U << CACHE_SET_JOURNAL_ENTRY_SIZE(sb), units),
 
 	       CACHE_SET_ERROR_ACTION(sb) < BCH_NR_ERROR_ACTIONS
-	       ? error_actions[CACHE_SET_ERROR_ACTION(sb)]
+	       ? bch_error_actions[CACHE_SET_ERROR_ACTION(sb)]
 	       : "unknown",
 
 	       CACHE_SET_CLEAN(sb),
@@ -313,19 +241,19 @@ void bcache_super_print(struct cache_sb *sb, int units)
 	       CACHE_SET_DATA_REPLICAS_WANT(sb),
 
 	       CACHE_SET_META_PREFERRED_CSUM_TYPE(sb) < BCH_CSUM_NR
-	       ? csum_types[CACHE_SET_META_PREFERRED_CSUM_TYPE(sb)]
+	       ? bch_csum_types[CACHE_SET_META_PREFERRED_CSUM_TYPE(sb)]
 	       : "unknown",
 
 	       CACHE_SET_DATA_PREFERRED_CSUM_TYPE(sb) < BCH_CSUM_NR
-	       ? csum_types[CACHE_SET_DATA_PREFERRED_CSUM_TYPE(sb)]
+	       ? bch_csum_types[CACHE_SET_DATA_PREFERRED_CSUM_TYPE(sb)]
 	       : "unknown",
 
 	       CACHE_SET_COMPRESSION_TYPE(sb) < BCH_COMPRESSION_NR
-	       ? compression_types[CACHE_SET_COMPRESSION_TYPE(sb)]
+	       ? bch_compression_types[CACHE_SET_COMPRESSION_TYPE(sb)]
 	       : "unknown",
 
 	       CACHE_SET_STR_HASH_TYPE(sb) < BCH_STR_HASH_NR
-	       ? str_hash_types[CACHE_SET_STR_HASH_TYPE(sb)]
+	       ? bch_str_hash_types[CACHE_SET_STR_HASH_TYPE(sb)]
 	       : "unknown",
 
 	       CACHE_INODE_32BIT(sb),
@@ -356,14 +284,14 @@ void bcache_super_print(struct cache_sb *sb, int units)
 		       "  Discard:			%llu\n",
 		       i, member_uuid_str,
 		       pr_units(le16_to_cpu(m->bucket_size) *
-				le64_to_cpu(m->nbuckets), units).b,
-		       pr_units(le16_to_cpu(m->bucket_size), units).b,
+				le64_to_cpu(m->nbuckets), units),
+		       pr_units(le16_to_cpu(m->bucket_size), units),
 		       le16_to_cpu(m->first_bucket),
 		       le64_to_cpu(m->nbuckets),
 		       last_mount ? ctime(&last_mount) : "(never)",
 
 		       CACHE_STATE(m) < CACHE_STATE_NR
-		       ? member_states[CACHE_STATE(m)]
+		       ? bch_cache_state[CACHE_STATE(m)]
 		       : "unknown",
 
 		       CACHE_TIER(m),
@@ -371,7 +299,7 @@ void bcache_super_print(struct cache_sb *sb, int units)
 		       CACHE_HAS_DATA(m),
 
 		       CACHE_REPLACEMENT(m) < CACHE_REPLACEMENT_NR
-		       ? replacement_policies[CACHE_REPLACEMENT(m)]
+		       ? bch_cache_replacement_policies[CACHE_REPLACEMENT(m)]
 		       : "unknown",
 
 		       CACHE_DISCARD(m));
@@ -387,8 +315,7 @@ struct cache_sb *bcache_super_read(const char *path)
 	if (fd < 0)
 		die("couldn't open %s", path);
 
-	if (pread(fd, &sb, sizeof(sb), SB_SECTOR << 9) != sizeof(sb))
-		die("error reading superblock");
+	xpread(fd, &sb, sizeof(sb), SB_SECTOR << 9);
 
 	if (memcmp(&sb.magic, &BCACHE_MAGIC, sizeof(sb.magic)))
 		die("not a bcache superblock");
@@ -397,8 +324,7 @@ struct cache_sb *bcache_super_read(const char *path)
 
 	ret = calloc(1, bytes);
 
-	if (pread(fd, ret, bytes, SB_SECTOR << 9) != bytes)
-		die("error reading superblock");
+	xpread(fd, ret, bytes, SB_SECTOR << 9);
 
 	return ret;
 }

@@ -1,7 +1,9 @@
 
 #include <errno.h>
-#include <linux/byteorder.h>
 #include <linux/types.h>
+
+#include "libbcache.h"
+#include "tools-util.h"
 
 /* stub out the bcache code we aren't building: */
 
@@ -52,6 +54,56 @@ int bch_cache_accounting_add_kobjs(struct cache_accounting *acc,
 void bch_cache_accounting_destroy(struct cache_accounting *acc) {}
 void bch_cache_accounting_init(struct cache_accounting *acc,
 			       struct closure *parent) {}
+
+#define bch_fmt(_c, fmt)	fmt "\n"
+
+enum fsck_err_opts fsck_err_opt;
+
+/* Returns true if error should be fixed: */
+
+/* XXX: flag if we ignore errors */
+
+/*
+ * If it's an error that we can't ignore, and we're running non
+ * interactively - return true and have the error fixed so that we don't have to
+ * bail out and stop the fsck early, so that the user can see all the errors
+ * present:
+ */
+#define __fsck_err(c, _can_fix, _can_ignore, _nofix_msg, msg, ...)	\
+({									\
+	bool _fix = false;						\
+									\
+	if (_can_fix) {							\
+		switch (fsck_err_opt) {					\
+		case FSCK_ERR_ASK:					\
+			printf(msg ": fix?", ##__VA_ARGS__);		\
+			_fix = ask_yn();				\
+									\
+			break;						\
+		case FSCK_ERR_YES:					\
+			bch_err(c, msg ", fixing", ##__VA_ARGS__);	\
+			_fix = true;					\
+			break;						\
+		case FSCK_ERR_NO:					\
+			bch_err(c, msg, ##__VA_ARGS__);			\
+			_fix = false;					\
+			break;						\
+		}							\
+	} else if (_can_ignore) {					\
+		bch_err(c, msg, ##__VA_ARGS__);				\
+	}								\
+									\
+	if (_can_fix && !_can_ignore && fsck_err_opt == FSCK_ERR_NO)	\
+		_fix = true;						\
+									\
+	if (!_fix && !_can_ignore) {					\
+		printf("Fatal filesystem inconsistency, halting\n");	\
+		ret = BCH_FSCK_ERRORS_NOT_FIXED;			\
+		goto fsck_err;						\
+	}								\
+									\
+	_fix;								\
+})
 
 //#include "acl.c"
 #include "alloc.c"
@@ -113,31 +165,3 @@ SHIM_KTYPE(bch_cache_set);
 SHIM_KTYPE(bch_cache_set_internal);
 SHIM_KTYPE(bch_cache_set_time_stats);
 SHIM_KTYPE(bch_cache_set_opts_dir);
-
-//#include "tools-util.h"
-
-int cmd_fsck(int argc, char *argv[])
-{
-	DECLARE_COMPLETION_ONSTACK(shutdown);
-	struct cache_set_opts opts = cache_set_opts_empty();
-	struct cache_set *c = NULL;
-	const char *err;
-
-	printf("registering %s...\n", argv[1]);
-
-	err = bch_register_cache_set(argv + 1, argc - 1, opts, &c);
-	if (err) {
-		BUG_ON(c);
-		fprintf(stderr, "error opening %s: %s\n", argv[1], err);
-		exit(EXIT_FAILURE);
-	}
-
-	c->stop_completion = &shutdown;
-	bch_cache_set_stop(c);
-	closure_put(&c->cl);
-
-	/* Killable? */
-	wait_for_completion(&shutdown);
-
-	return 0;
-}

@@ -7,3 +7,4 @@ probe-bcache
 *.a
 tags
 cscope*
+bcache-tools

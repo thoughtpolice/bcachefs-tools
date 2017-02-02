@@ -1,17 +1,20 @@
 #ifndef _LIBBCACHE_H
 #define _LIBBCACHE_H
 
-#include "tools-util.h"
+#include <linux/uuid.h>
 #include "stdbool.h"
 
-extern const char * const cache_state[];
-extern const char * const replacement_policies[];
-extern const char * const csum_types[];
-extern const char * const compression_types[];
-extern const char * const str_hash_types[];
-extern const char * const error_actions[];
-extern const char * const bdev_cache_mode[];
-extern const char * const bdev_state[];
+#include "tools-util.h"
+
+struct cache_sb;
+
+enum fsck_err_opts {
+	FSCK_ERR_ASK,
+	FSCK_ERR_YES,
+	FSCK_ERR_NO,
+};
+
+extern enum fsck_err_opts fsck_err_opt;
 
 struct dev_opts {
 	int		fd;

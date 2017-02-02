@@ -1,7 +1,7 @@
 
 PREFIX=/usr
 INSTALL=install
-CFLAGS+=-std=gnu99 -O2 -g -flto -MMD -Wall			\
+CFLAGS+=-std=gnu99 -O2 -g -MMD -Wall				\
 	-Wno-unused-but-set-variable				\
 	-Wno-pointer-sign					\
 	-fno-strict-aliasing					\
@@ -11,7 +11,14 @@ CFLAGS+=-std=gnu99 -O2 -g -flto -MMD -Wall			\
 	-D_LGPL_SOURCE						\
 	-DRCU_MEMBARRIER					\
 	$(EXTRA_CFLAGS)
-LDFLAGS+=-O2 -g -flto
+LDFLAGS+=-O2 -g
+
+ifdef D
+	CFLAGS+=-Werror
+else
+	CFLAGS+=-flto -Werror
+	LDFLAGS+=-flto
+endif
 
 PKGCONFIG_LIBS="blkid uuid liburcu"
 CFLAGS+=`pkg-config --cflags	${PKGCONFIG_LIBS}`
@@ -33,9 +40,18 @@ CCANOBJS=$(patsubst %.c,%.o,$(CCANSRCS))
 LINUX_SRCS=$(wildcard linux/*.c linux/*/*.c)
 LINUX_OBJS=$(LINUX_SRCS:.c=.o)
 
-OBJS=bcache.o bcache-assemble.o bcache-device.o bcache-format.o	\
-	bcache-fs.o bcache-run.o bcache-userspace-shim.o	\
-	libbcache.o tools-util.o $(LINUX_OBJS) $(CCANOBJS)
+OBJS=bcache.o			\
+     bcache-userspace-shim.o	\
+     cmd_assemble.o		\
+     cmd_device.o		\
+     cmd_fs.o			\
+     cmd_fsck.o			\
+     cmd_format.o		\
+     cmd_run.o			\
+     libbcache.o		\
+     tools-util.o		\
+     $(LINUX_OBJS)		\
+     $(CCANOBJS)
 
 DEPS=$(OBJS:.o=.d)
 -include $(DEPS)

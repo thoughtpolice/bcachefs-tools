@@ -11,7 +11,8 @@
 
 #include <uuid/uuid.h>
 
-#include "bcache-cmds.h"
+#include "cmds.h"
+#include "linux/bcache-ioctl.h"
 
 int cmd_run(int argc, char *argv[])
 {

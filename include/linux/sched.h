@@ -141,4 +141,14 @@ static inline u64 ktime_get_seconds(void)
 	return ts.tv_sec;
 }
 
+static inline struct timespec current_kernel_time(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ts;
+}
+
+#define CURRENT_TIME		(current_kernel_time())
+
 #endif /* __TOOLS_LINUX_SCHED_H */

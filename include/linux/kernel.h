@@ -8,6 +8,7 @@
 #include <limits.h>
 
 #include <linux/bug.h>
+#include <linux/byteorder.h>
 #include <linux/compiler.h>
 
 #define IS_ENABLED(opt)		0

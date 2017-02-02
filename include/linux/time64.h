@@ -61,6 +61,11 @@ static inline struct timespec64 timespec_to_timespec64(const struct timespec ts)
 # define ns_to_timespec64		ns_to_timespec
 # define timespec64_add_ns		timespec_add_ns
 
+static inline s64 timespec_to_ns(const struct timespec *ts)
+{
+	return ((s64) ts->tv_sec * NSEC_PER_SEC) + ts->tv_nsec;
+}
+
 #else
 
 static inline struct timespec timespec64_to_timespec(const struct timespec64 ts64)

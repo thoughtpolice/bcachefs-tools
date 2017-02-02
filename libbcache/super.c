@@ -99,14 +99,17 @@ static bool bch_is_open(struct block_device *bdev)
 }
 
 static const char *bch_blkdev_open(const char *path, void *holder,
+				   struct cache_set_opts opts,
 				   struct block_device **ret)
 {
 	struct block_device *bdev;
+	fmode_t mode = opts.nochanges > 0
+		? FMODE_READ
+		: FMODE_READ|FMODE_WRITE|FMODE_EXCL;
 	const char *err;
 
 	*ret = NULL;
-	bdev = blkdev_get_by_path(path, FMODE_READ|FMODE_WRITE|FMODE_EXCL,
-				  holder);
+	bdev = blkdev_get_by_path(path, mode, holder);
 
 	if (bdev == ERR_PTR(-EBUSY)) {
 		bdev = lookup_bdev(path);
@@ -369,6 +372,7 @@ int bch_super_realloc(struct bcache_superblock *sb, unsigned u64s)
 }
 
 static const char *read_super(struct bcache_superblock *sb,
+			      struct cache_set_opts opts,
 			      const char *path)
 {
 	const char *err;
@@ -378,7 +382,7 @@ static const char *read_super(struct bcache_superblock *sb,
 
 	memset(sb, 0, sizeof(*sb));
 
-	err = bch_blkdev_open(path, &sb, &sb->bdev);
+	err = bch_blkdev_open(path, &sb, opts, &sb->bdev);
 	if (err)
 		return err;
 retry:
@@ -614,6 +618,9 @@ static void __bcache_write_super(struct cache_set *c)
 
 	closure_init(cl, &c->cl);
 
+	if (c->opts.nochanges)
+		goto no_io;
+
 	le64_add_cpu(&c->disk_sb.seq, 1);
 
 	for_each_cache(ca, c, i) {
@@ -636,7 +643,7 @@ static void __bcache_write_super(struct cache_set *c)
 		percpu_ref_get(&ca->ref);
 		__write_super(c, &ca->disk_sb);
 	}
-
+no_io:
 	closure_return_with_destructor(cl, bcache_write_super_unlock);
 }
 
@@ -1147,6 +1154,9 @@ static struct cache_set *bch_cache_set_alloc(struct cache_sb *sb,
 	c->opts = cache_superblock_opts(sb);
 	cache_set_opts_apply(&c->opts, opts);
 
+	c->opts.nochanges	|= c->opts.noreplay;
+	c->opts.read_only	|= c->opts.nochanges;
+
 	c->block_bits		= ilog2(c->sb.block_size);
 
 	if (cache_set_init_fault("cache_set_alloc"))
@@ -1339,6 +1349,9 @@ static const char *run_cache_set(struct cache_set *c)
 		if (bch_initial_gc(c, &journal))
 			goto err;
 
+		if (c->opts.noreplay)
+			goto recovery_done;
+
 		bch_verbose(c, "mark and sweep done");
 
 		/*
@@ -1365,6 +1378,9 @@ static const char *run_cache_set(struct cache_set *c)
 
 		bch_verbose(c, "journal replay done");
 
+		if (c->opts.norecovery)
+			goto recovery_done;
+
 		/*
 		 * Write a new journal entry _before_ we start journalling new
 		 * data - otherwise, we could end up with btree node bsets with
@@ -1376,21 +1392,12 @@ static const char *run_cache_set(struct cache_set *c)
 		if (bch_journal_meta(&c->journal))
 			goto err;
 
-		bch_verbose(c, "starting fs gc:");
-		err = "error in fs gc";
-		ret = bch_gc_inode_nlinks(c);
+		bch_verbose(c, "starting fsck:");
+		err = "error in fsck";
+		ret = bch_fsck(c, !c->opts.nofsck);
 		if (ret)
 			goto err;
-		bch_verbose(c, "fs gc done");
-
-		if (!c->opts.nofsck) {
-			bch_verbose(c, "starting fsck:");
-			err = "error in fsck";
-			ret = bch_fsck(c);
-			if (ret)
-				goto err;
-			bch_verbose(c, "fsck done");
-		}
+		bch_verbose(c, "fsck done");
 	} else {
 		struct bkey_i_inode inode;
 		struct closure cl;
@@ -1433,12 +1440,9 @@ static const char *run_cache_set(struct cache_set *c)
 		/* Wait for new btree roots to be written: */
 		closure_sync(&cl);
 
-		bkey_inode_init(&inode.k_i);
+		bch_inode_init(c, &inode, 0, 0,
+			       S_IFDIR|S_IRWXU|S_IRUGO|S_IXUGO, 0);
 		inode.k.p.inode = BCACHE_ROOT_INO;
-		inode.v.i_mode = cpu_to_le16(S_IFDIR|S_IRWXU|S_IRUGO|S_IXUGO);
-		inode.v.i_nlink = cpu_to_le32(2);
-		get_random_bytes(&inode.v.i_hash_seed, sizeof(inode.v.i_hash_seed));
-		SET_INODE_STR_HASH_TYPE(&inode.v, c->sb.str_hash_type);
 
 		err = "error creating root directory";
 		if (bch_btree_insert(c, BTREE_ID_INODES, &inode.k_i,
@@ -1449,7 +1453,7 @@ static const char *run_cache_set(struct cache_set *c)
 		if (bch_journal_meta(&c->journal))
 			goto err;
 	}
-
+recovery_done:
 	if (c->opts.read_only) {
 		bch_cache_set_read_only_sync(c);
 	} else {
@@ -1485,12 +1489,12 @@ static const char *run_cache_set(struct cache_set *c)
 	set_bit(CACHE_SET_RUNNING, &c->flags);
 	bch_attach_backing_devs(c);
 
-	closure_put(&c->caching);
-
 	bch_notify_cache_set_read_write(c);
-
-	BUG_ON(!list_empty(&journal));
-	return NULL;
+	err = NULL;
+out:
+	bch_journal_entries_free(&journal);
+	closure_put(&c->caching);
+	return err;
 err:
 	switch (ret) {
 	case BCH_FSCK_ERRORS_NOT_FIXED:
@@ -1519,12 +1523,8 @@ err:
 	}
 
 	BUG_ON(!err);
-
-	bch_journal_entries_free(&journal);
 	set_bit(CACHE_SET_ERROR, &c->flags);
-	bch_cache_set_unregister(c);
-	closure_put(&c->caching);
-	return err;
+	goto out;
 }
 
 static const char *can_add_cache(struct cache_sb *sb,
@@ -2056,8 +2056,9 @@ static const char *register_cache(struct bcache_superblock *sb,
 				  struct cache_set_opts opts)
 {
 	char name[BDEVNAME_SIZE];
-	const char *err = "cannot allocate memory";
+	const char *err;
 	struct cache_set *c;
+	bool allocated_cache_set = false;
 
 	err = validate_cache_super(sb);
 	if (err)
@@ -2067,41 +2068,36 @@ static const char *register_cache(struct bcache_superblock *sb,
 
 	c = cache_set_lookup(sb->sb->set_uuid);
 	if (c) {
-		if ((err = (can_attach_cache(sb->sb, c) ?:
-			    cache_alloc(sb, c, NULL))))
+		err = can_attach_cache(sb->sb, c);
+		if (err)
 			return err;
+	} else {
+		c = bch_cache_set_alloc(sb->sb, opts);
+		if (!c)
+			return "cannot allocate memory";
 
-		if (cache_set_nr_online_devices(c) == cache_set_nr_devices(c)) {
-			err = run_cache_set(c);
-			if (err)
-				return err;
-		}
-		goto out;
+		allocated_cache_set = true;
 	}
-
-	c = bch_cache_set_alloc(sb->sb, opts);
-	if (!c)
-		return err;
 
 	err = cache_alloc(sb, c, NULL);
 	if (err)
-		goto err_stop;
+		goto err;
 
 	if (cache_set_nr_online_devices(c) == cache_set_nr_devices(c)) {
 		err = run_cache_set(c);
 		if (err)
-			goto err_stop;
+			goto err;
+	} else {
+		err = "error creating kobject";
+		if (bch_cache_set_online(c))
+			goto err;
 	}
-
-	err = "error creating kobject";
-	if (bch_cache_set_online(c))
-		goto err_stop;
-out:
 
 	bch_info(c, "started");
 	return NULL;
-err_stop:
-	bch_cache_set_stop(c);
+err:
+	if (allocated_cache_set)
+		bch_cache_set_stop(c);
 	return err;
 }
 
@@ -2117,7 +2113,7 @@ int bch_cache_set_add_cache(struct cache_set *c, const char *path)
 
 	mutex_lock(&bch_register_lock);
 
-	err = read_super(&sb, path);
+	err = read_super(&sb, c->opts, path);
 	if (err)
 		goto err_unlock;
 
@@ -2261,7 +2257,7 @@ const char *bch_register_cache_set(char * const *devices, unsigned nr_devices,
 	mutex_lock(&bch_register_lock);
 
 	for (i = 0; i < nr_devices; i++) {
-		err = read_super(&sb[i], devices[i]);
+		err = read_super(&sb[i], opts, devices[i]);
 		if (err)
 			goto err_unlock;
 
@@ -2312,6 +2308,8 @@ const char *bch_register_cache_set(char * const *devices, unsigned nr_devices,
 out:
 	kfree(sb);
 	module_put(THIS_MODULE);
+	if (err)
+		c = NULL;
 	return err;
 err_unlock:
 	if (c)
@@ -2326,18 +2324,19 @@ err:
 const char *bch_register_one(const char *path)
 {
 	struct bcache_superblock sb;
+	struct cache_set_opts opts = cache_set_opts_empty();
 	const char *err;
 
 	mutex_lock(&bch_register_lock);
 
-	err = read_super(&sb, path);
+	err = read_super(&sb, opts, path);
 	if (err)
 		goto err;
 
 	if (__SB_IS_BDEV(le64_to_cpu(sb.sb->version)))
 		err = bch_backing_dev_register(&sb);
 	else
-		err = register_cache(&sb, cache_set_opts_empty());
+		err = register_cache(&sb, opts);
 
 	free_super(&sb);
 err:

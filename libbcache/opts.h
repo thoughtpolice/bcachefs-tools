@@ -6,6 +6,14 @@
 #include <linux/log2.h>
 #include <linux/string.h>
 
+extern const char * const bch_error_actions[];
+extern const char * const bch_csum_types[];
+extern const char * const bch_compression_types[];
+extern const char * const bch_str_hash_types[];
+extern const char * const bch_cache_replacement_policies[];
+extern const char * const bch_cache_modes[];
+extern const char * const bch_cache_state[];
+
 /*
  * Mount options; we also store defaults in the superblock.
  *
@@ -20,10 +28,6 @@
 
 extern const char * const bch_bool_opt[];
 extern const char * const bch_uint_opt[];
-extern const char * const bch_error_actions[];
-extern const char * const bch_csum_types[];
-extern const char * const bch_compression_types[];
-extern const char * const bch_str_hash_types[];
 
 /* dummy option, for options that aren't stored in the superblock */
 LE64_BITMASK(NO_SB_OPT,		struct cache_sb, flags, 0, 0);
@@ -44,6 +48,15 @@ LE64_BITMASK(NO_SB_OPT,		struct cache_sb, flags, 0, 0);
 	CACHE_SET_OPT(fix_errors,				\
 		      bch_bool_opt, 0, 2,			\
 		      NO_SB_OPT, true)				\
+	CACHE_SET_OPT(nochanges,				\
+		      bch_bool_opt, 0, 2,			\
+		      NO_SB_OPT, 0)				\
+	CACHE_SET_OPT(noreplay,					\
+		      bch_bool_opt, 0, 2,			\
+		      NO_SB_OPT, 0)				\
+	CACHE_SET_OPT(norecovery,				\
+		      bch_bool_opt, 0, 2,			\
+		      NO_SB_OPT, 0)				\
 	CACHE_SET_SB_OPTS()
 
 #define CACHE_SET_OPTS()					\

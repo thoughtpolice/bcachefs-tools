@@ -18,11 +18,13 @@
 
 #include "ccan/crc/crc.h"
 
+#include "linux/bcache-ioctl.h"
 #include "tools-util.h"
+#include "util.h"
 
 /* Integer stuff: */
 
-struct units_buf pr_units(u64 v, enum units units)
+struct units_buf __pr_units(u64 v, enum units units)
 {
 	struct units_buf ret;
 
@@ -52,65 +54,6 @@ struct units_buf pr_units(u64 v, enum units units)
 }
 
 /* Argument parsing stuff: */
-
-long strtoul_or_die(const char *p, size_t max, const char *msg)
-{
-	errno = 0;
-	long v = strtol(p, NULL, 10);
-	if (errno || v < 0 || v >= max)
-		die("Invalid %s %zi", msg, v);
-
-	return v;
-}
-
-u64 hatoi(const char *s)
-{
-	char *e;
-	long long i = strtoll(s, &e, 10);
-	switch (*e) {
-		case 't':
-		case 'T':
-			i *= 1024;
-		case 'g':
-		case 'G':
-			i *= 1024;
-		case 'm':
-		case 'M':
-			i *= 1024;
-		case 'k':
-		case 'K':
-			i *= 1024;
-	}
-	return i;
-}
-
-unsigned hatoi_validate(const char *s, const char *msg)
-{
-	u64 v = hatoi(s);
-
-	if (v & (v - 1))
-		die("%s must be a power of two", msg);
-
-	v /= 512;
-
-	if (v > USHRT_MAX)
-		die("%s too large\n", msg);
-
-	if (!v)
-		die("%s too small\n", msg);
-
-	return v;
-}
-
-unsigned nr_args(char * const *args)
-{
-	unsigned i;
-
-	for (i = 0; args[i]; i++)
-		;
-
-	return i;
-}
 
 /* File parsing (i.e. sysfs) */
 
@@ -151,46 +94,14 @@ u64 read_file_u64(int dirfd, const char *path)
 
 /* String list options: */
 
-ssize_t read_string_list(const char *buf, const char * const list[])
-{
-	size_t i;
-	char *s, *d = strdup(buf);
-	if (!d)
-		return -ENOMEM;
-
-	s = strim(d);
-
-	for (i = 0; list[i]; i++)
-		if (!strcmp(list[i], s))
-			break;
-
-	free(d);
-
-	if (!list[i])
-		return -EINVAL;
-
-	return i;
-}
-
 ssize_t read_string_list_or_die(const char *opt, const char * const list[],
 				const char *msg)
 {
-	ssize_t v = read_string_list(opt, list);
+	ssize_t v = bch_read_string_list(opt, list);
 	if (v < 0)
 		die("Bad %s %s", msg, opt);
 
 	return v;
-}
-
-void print_string_list(const char * const list[], size_t selected)
-{
-	size_t i;
-
-	for (i = 0; list[i]; i++) {
-		if (i)
-			putchar(' ');
-		printf(i == selected ? "[%s] ": "%s", list[i]);
-	}
 }
 
 /* Returns size of file or block device, in units of 512 byte sectors: */
@@ -296,14 +207,15 @@ struct bcache_handle bcache_fs_open(const char *path)
 	return ret;
 }
 
-bool ask_proceed(void)
+bool ask_yn(void)
 {
 	const char *short_yes = "yY";
 	char *buf = NULL;
 	size_t buflen = 0;
 	bool ret;
 
-	fputs("Proceed anyway? (y,n) ", stdout);
+	fputs(" (y,n) ", stdout);
+	fflush(stdout);
 
 	if (getline(&buf, &buflen, stdin) < 0)
 		die("error reading from standard input");

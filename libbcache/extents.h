@@ -1,15 +1,15 @@
 #ifndef _BCACHE_EXTENTS_H
 #define _BCACHE_EXTENTS_H
 
+#include "bcache.h"
 #include "bkey.h"
 
 #include <linux/bcache.h>
 
-struct bch_replace_info;
-union bch_extent_crc;
-struct btree_iter;
+struct btree_node_iter;
 struct btree_insert;
 struct btree_insert_entry;
+struct extent_insert_hook;
 
 struct btree_nr_keys bch_key_sort_fix_overlapping(struct bset *,
 						  struct btree *,
@@ -485,7 +485,8 @@ static inline void bch_extent_drop_ptr(struct bkey_s_extent e,
 	bch_extent_drop_redundant_crcs(e);
 }
 
-bool bch_extent_has_device(struct bkey_s_c_extent, unsigned);
+const struct bch_extent_ptr *
+bch_extent_has_device(struct bkey_s_c_extent, unsigned);
 
 bool bch_cut_front(struct bpos, struct bkey_i *);
 bool bch_cut_back(struct bpos, struct bkey *);

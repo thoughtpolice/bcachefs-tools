@@ -12,8 +12,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include "bcache-cmds.h"
+#include "cmds.h"
 #include "libbcache.h"
+#include "linux/bcache-ioctl.h"
 
 /* This code belongs under show_fs */
 #if 0
@@ -93,10 +94,10 @@ int cmd_device_show(int argc, char *argv[])
 	};
 	char **args = bch_nih_init(argc, argv, opts);
 
-	if (nr_args(args) != 1)
+	if (argc != 2)
 		die("Please supply a single device");
 
-	struct bcache_handle fs = bcache_fs_open(args[0]);
+	struct bcache_handle fs = bcache_fs_open(argv[1]);
 	struct dirent *entry;
 
 	struct bcache_dev devices[256];

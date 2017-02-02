@@ -4,8 +4,8 @@
  * GPLv2
  */
 
-#ifndef _BCACHE_H
-#define _BCACHE_H
+#ifndef _CMDS_H
+#define _CMDS_H
 
 #include "tools-util.h"
 
@@ -25,4 +25,4 @@ int cmd_device_remove(int argc, char *argv[]);
 
 int cmd_fsck(int argc, char *argv[]);
 
-#endif /* _BCACHE_H */
+#endif /* _CMDS_H */

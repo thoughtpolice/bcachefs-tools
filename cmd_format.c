@@ -22,8 +22,10 @@
 
 #include "ccan/darray/darray.h"
 
-#include "bcache-cmds.h"
+#include "cmds.h"
 #include "libbcache.h"
+#include "opts.h"
+#include "util.h"
 
 /* Open a block device, do magic blkid stuff: */
 static int open_for_format(const char *dev, bool force)
@@ -58,7 +60,8 @@ static int open_for_format(const char *dev, bool force)
 		else
 			printf("%s contains a %s filesystem\n",
 			       dev, fs_type);
-		if (!ask_proceed())
+		fputs("Proceed anyway?", stdout);
+		if (!ask_yn())
 			exit(EXIT_FAILURE);
 	}
 
@@ -96,7 +99,6 @@ static void usage(void)
 	     "  bcache format --tier 0 /dev/sdb --tier 1 /dev/sdc\n"
 	     "\n"
 	     "Report bugs to <linux-bcache@vger.kernel.org>");
-	exit(EXIT_SUCCESS);
 }
 
 #define OPTS								\
@@ -131,6 +133,27 @@ static const struct option format_opts[] = {
 #undef OPT
 	{ NULL }
 };
+
+static unsigned hatoi_validate(const char *s, const char *msg)
+{
+	u64 v;
+
+	if (bch_strtoull_h(s, &v))
+		die("bad %s %s", msg, s);
+
+	if (v & (v - 1))
+		die("%s must be a power of two", msg);
+
+	v /= 512;
+
+	if (v > USHRT_MAX)
+		die("%s too large\n", msg);
+
+	if (!v)
+		die("%s too small\n", msg);
+
+	return v;
+}
 
 int cmd_format(int argc, char *argv[])
 {
@@ -174,20 +197,21 @@ int cmd_format(int argc, char *argv[])
 			break;
 		case Opt_metadata_checksum_type:
 			meta_csum_type = read_string_list_or_die(optarg,
-						csum_types, "checksum type");
+						bch_csum_types, "checksum type");
 			break;
 		case Opt_data_checksum_type:
 			data_csum_type = read_string_list_or_die(optarg,
-						csum_types, "checksum type");
+						bch_csum_types, "checksum type");
 			break;
 		case Opt_compression_type:
 			compression_type = read_string_list_or_die(optarg,
-						compression_types, "compression type");
+						bch_compression_types,
+						"compression type");
 			break;
 		case Opt_error_action:
 		case 'e':
 			on_error_action = read_string_list_or_die(optarg,
-						error_actions, "error action");
+						bch_error_actions, "error action");
 			break;
 		case Opt_max_journal_entry_size:
 			max_journal_entry_size = hatoi_validate(optarg,
@@ -207,14 +231,19 @@ int cmd_format(int argc, char *argv[])
 			force = true;
 			break;
 		case Opt_fs_size:
-			filesystem_size = hatoi(optarg) >> 9;
+			if (bch_strtoull_h(optarg, &filesystem_size))
+				die("invalid filesystem size");
+
+			filesystem_size >>= 9;
 			break;
 		case Opt_bucket_size:
 			bucket_size = hatoi_validate(optarg, "bucket size");
 			break;
 		case Opt_tier:
 		case 't':
-			tier = strtoul_or_die(optarg, CACHE_TIERS, "tier");
+			if (kstrtouint(optarg, 10, &tier) ||
+			    tier >= CACHE_TIERS)
+				die("invalid tier");
 			break;
 		case Opt_discard:
 			discard = true;
@@ -231,6 +260,7 @@ int cmd_format(int argc, char *argv[])
 		case Opt_help:
 		case 'h':
 			usage();
+			exit(EXIT_SUCCESS);
 			break;
 		}
 

@@ -5,10 +5,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 #include <sys/ioctl.h>
 
-#include "bcache-cmds.h"
+#include "cmds.h"
+#include "linux/bcache-ioctl.h"
 
 int cmd_assemble(int argc, char *argv[])
 {

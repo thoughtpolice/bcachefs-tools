@@ -1,5 +1,5 @@
 
-#include "bcache-cmds.h"
+#include "cmds.h"
 
 struct bcache_fs {
 	/* options... */

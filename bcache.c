@@ -21,7 +21,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
-#include "bcache-cmds.h"
+#include "cmds.h"
 
 static void usage(void)
 {
