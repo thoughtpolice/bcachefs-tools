@@ -45,7 +45,10 @@ static void usage(void)
 	     "  device_remove  Remove a device from an existing (running) filesystem\n"
 	     "\n"
 	     "Repair:\n"
-	     "  bcache fsck    Check an existing filesystem for errors\n");
+	     "  bcache fsck    Check an existing filesystem for errors\n"
+	     "Debug:\n"
+	     "  bcache dump    Dump filesystem metadata to a qcow2 image\n"
+	     "  bcache list    List filesystem metadata in textual form\n");
 }
 
 int main(int argc, char *argv[])
@@ -90,6 +93,11 @@ int main(int argc, char *argv[])
 
 	if (!strcmp(cmd, "fsck"))
 		return cmd_fsck(argc, argv);
+
+	if (!strcmp(cmd, "dump"))
+		return cmd_dump(argc, argv);
+	if (!strcmp(cmd, "list"))
+		return cmd_list(argc, argv);
 
 	usage();
 	return 0;

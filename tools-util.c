@@ -104,22 +104,23 @@ ssize_t read_string_list_or_die(const char *opt, const char * const list[],
 	return v;
 }
 
-/* Returns size of file or block device, in units of 512 byte sectors: */
+/* Returns size of file or block device: */
 u64 get_size(const char *path, int fd)
 {
 	struct stat statbuf;
+	u64 ret;
+
 	if (fstat(fd, &statbuf))
 		die("Error statting %s: %s", path, strerror(errno));
 
 	if (!S_ISBLK(statbuf.st_mode))
-		return statbuf.st_size >> 9;
+		return statbuf.st_size;
 
-	u64 ret;
 	if (ioctl(fd, BLKGETSIZE64, &ret))
 		die("Error getting block device size on %s: %s\n",
 		    path, strerror(errno));
 
-	return ret >> 9;
+	return ret;
 }
 
 /* Returns blocksize in units of 512 byte sectors: */

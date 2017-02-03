@@ -25,4 +25,7 @@ int cmd_device_remove(int argc, char *argv[]);
 
 int cmd_fsck(int argc, char *argv[]);
 
+int cmd_dump(int argc, char *argv[]);
+int cmd_list(int argc, char *argv[]);
+
 #endif /* _CMDS_H */

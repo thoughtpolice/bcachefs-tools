@@ -16,7 +16,7 @@ LDFLAGS+=-O2 -g
 ifdef D
 	CFLAGS+=-Werror
 else
-	CFLAGS+=-flto -Werror
+	CFLAGS+=-flto
 	LDFLAGS+=-flto
 endif
 
@@ -43,12 +43,14 @@ LINUX_OBJS=$(LINUX_SRCS:.c=.o)
 OBJS=bcache.o			\
      bcache-userspace-shim.o	\
      cmd_assemble.o		\
+     cmd_debug.o		\
      cmd_device.o		\
      cmd_fs.o			\
      cmd_fsck.o			\
      cmd_format.o		\
      cmd_run.o			\
      libbcache.o		\
+     qcow2.o			\
      tools-util.o		\
      $(LINUX_OBJS)		\
      $(CCANOBJS)
