@@ -106,8 +106,6 @@ extern struct workqueue_struct *system_highpri_wq;
 extern struct workqueue_struct *system_long_wq;
 extern struct workqueue_struct *system_unbound_wq;
 extern struct workqueue_struct *system_freezable_wq;
-extern struct workqueue_struct *system_power_efficient_wq;
-extern struct workqueue_struct *system_freezable_power_efficient_wq;
 
 extern struct workqueue_struct *
 alloc_workqueue(const char *fmt, unsigned int flags,
