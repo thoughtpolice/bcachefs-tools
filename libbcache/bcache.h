@@ -464,24 +464,10 @@ struct cache {
  * BCH_FS_UNREGISTERING means we're not just shutting down, we're detaching
  * all the backing devices first (their cached data gets invalidated, and they
  * won't automatically reattach).
- *
- * BCH_FS_STOPPING always gets set first when we're closing down a cache set;
- * we'll continue to run normally for awhile with BCH_FS_STOPPING set (i.e.
- * flushing dirty data).
- *
- * BCH_FS_RUNNING means all cache devices have been registered and journal
- * replay is complete.
  */
 enum {
-	/* Startup: */
 	BCH_FS_INITIAL_GC_DONE,
-	BCH_FS_RUNNING,
-
-	/* Shutdown: */
 	BCH_FS_DETACHING,
-	BCH_FS_STOPPING,
-	BCH_FS_RO,
-	BCH_FS_RO_COMPLETE,
 	BCH_FS_EMERGENCY_RO,
 	BCH_FS_WRITE_DISABLE_COMPLETE,
 	BCH_FS_GC_STOPPING,
@@ -498,6 +484,21 @@ struct btree_debug {
 	struct dentry		*failed;
 };
 
+struct bch_tier {
+	unsigned		idx;
+	struct task_struct	*migrate;
+	struct bch_pd_controller pd;
+
+	struct cache_group	devs;
+};
+
+enum bch_fs_state {
+	BCH_FS_STARTING		= 0,
+	BCH_FS_STOPPING,
+	BCH_FS_RO,
+	BCH_FS_RW,
+};
+
 struct cache_set {
 	struct closure		cl;
 
@@ -506,13 +507,16 @@ struct cache_set {
 	struct kobject		internal;
 	struct kobject		opts_dir;
 	struct kobject		time_stats;
-	struct completion	*stop_completion;
 	unsigned long		flags;
 
 	int			minor;
 	struct device		*chardev;
 	struct super_block	*vfs_sb;
 	char			name[40];
+
+	/* ro/rw, add/remove devices: */
+	struct mutex		state_lock;
+	enum bch_fs_state	state;
 
 	/* Counts outstanding writes, for clean transition to read-only */
 	struct percpu_ref	writes;
@@ -640,7 +644,9 @@ struct cache_set {
 	 * allocate from:
 	 */
 	struct cache_group	cache_all;
-	struct cache_group	cache_tiers[BCH_TIER_MAX];
+	struct bch_tier		tiers[BCH_TIER_MAX];
+	/* NULL if we only have devices in one tier: */
+	struct bch_tier		*fastest_tier;
 
 	u64			capacity; /* sectors */
 
@@ -753,10 +759,6 @@ struct cache_set {
 	unsigned		writeback_pages_max;
 	atomic_long_t		nr_inodes;
 
-	/* TIERING */
-	struct task_struct	*tiering_read;
-	struct bch_pd_controller tiering_pd;
-
 	/* NOTIFICATIONS */
 	struct mutex		uevent_lock;
 	struct kobj_uevent_env	uevent_env;
@@ -827,6 +829,11 @@ struct cache_set {
 	BCH_TIME_STATS()
 #undef BCH_TIME_STAT
 };
+
+static inline bool bch_fs_running(struct cache_set *c)
+{
+	return c->state == BCH_FS_RO || c->state == BCH_FS_RW;
+}
 
 static inline unsigned bucket_pages(const struct cache *ca)
 {

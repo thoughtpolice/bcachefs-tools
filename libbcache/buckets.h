@@ -235,8 +235,16 @@ static inline u64 sectors_available(struct cache_set *c)
 static inline bool is_available_bucket(struct bucket_mark mark)
 {
 	return (!mark.owned_by_allocator &&
-		!mark.is_metadata &&
-		!mark.dirty_sectors);
+		mark.data_type == BUCKET_DATA &&
+		!mark.dirty_sectors &&
+		!mark.nouse);
+}
+
+static inline bool bucket_needs_journal_commit(struct bucket_mark m,
+					       u16 last_seq_ondisk)
+{
+	return m.journal_seq_valid &&
+		((s16) m.journal_seq - (s16) last_seq_ondisk > 0);
 }
 
 void bch_bucket_seq_cleanup(struct cache_set *);
@@ -244,7 +252,8 @@ void bch_bucket_seq_cleanup(struct cache_set *);
 void bch_invalidate_bucket(struct cache *, struct bucket *);
 void bch_mark_free_bucket(struct cache *, struct bucket *);
 void bch_mark_alloc_bucket(struct cache *, struct bucket *, bool);
-void bch_mark_metadata_bucket(struct cache *, struct bucket *, bool);
+void bch_mark_metadata_bucket(struct cache *, struct bucket *,
+			      enum bucket_data_type, bool);
 
 void __bch_gc_mark_key(struct cache_set *, struct bkey_s_c, s64, bool,
 		       struct bucket_stats_cache_set *);

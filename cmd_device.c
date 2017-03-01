@@ -121,10 +121,7 @@ int cmd_device_show(int argc, char *argv[])
 
 		char *dev_name = basename(dirname(link));
 
-		int fd = openat(dirfd(fs.sysfs), entry->d_name, O_RDONLY);
-		if (fd < 0)
-			die("couldn't open device %s: %s\n",
-			    entry->d_name, strerror(errno));
+		int fd = xopenat(dirfd(fs.sysfs), entry->d_name, O_RDONLY);
 
 		devices[nr_devices] = fill_dev(strdup(dev_name), nr, fd);
 		tiers[devices[nr_devices].tier]++;

@@ -539,15 +539,12 @@ int bch_enable_encryption(struct cache_set *c, bool keyed)
 	if (ret)
 		goto err;
 
-	crypt = container_of_or_null(bch_fs_sb_field_resize(c, NULL,
-						sizeof(*crypt) / sizeof(u64)),
-				     struct bch_sb_field_crypt, field);
+	crypt = bch_fs_sb_resize_crypt(c, sizeof(*crypt) / sizeof(u64));
 	if (!crypt) {
 		ret = -ENOMEM; /* XXX this technically could be -ENOSPC */
 		goto err;
 	}
 
-	crypt->field.type = BCH_SB_FIELD_crypt;
 	crypt->key = key;
 
 	/* write superblock */
@@ -560,7 +557,7 @@ err:
 	return ret;
 }
 
-void bch_fs_encryption_free(struct cache_set *c)
+void bch_fs_encryption_exit(struct cache_set *c)
 {
 	if (!IS_ERR_OR_NULL(c->poly1305))
 		crypto_free_shash(c->poly1305);

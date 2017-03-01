@@ -56,6 +56,6 @@ int cmd_fsck(int argc, char *argv[])
 	if (err)
 		die("error opening %s: %s", argv[optind], err);
 
-	bch_fs_stop_sync(c);
+	bch_fs_stop(c);
 	return 0;
 }

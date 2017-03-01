@@ -30,35 +30,35 @@ static void dump_usage(void)
 static void dump_one_device(struct cache_set *c, struct cache *ca, int fd)
 {
 	struct bch_sb *sb = ca->disk_sb.sb;
-	sparse_data data;
+	ranges data;
 	unsigned i;
 
 	darray_init(data);
 
 	/* Superblock: */
-	data_add(&data, BCH_SB_LAYOUT_SECTOR << 9,
-		 sizeof(struct bch_sb_layout));
+	range_add(&data, BCH_SB_LAYOUT_SECTOR << 9,
+		  sizeof(struct bch_sb_layout));
 
 	for (i = 0; i < sb->layout.nr_superblocks; i++)
-		data_add(&data,
-			 le64_to_cpu(sb->layout.sb_offset[i]) << 9,
-			 vstruct_bytes(sb));
+		range_add(&data,
+			  le64_to_cpu(sb->layout.sb_offset[i]) << 9,
+			  vstruct_bytes(sb));
 
 	/* Journal: */
 	for (i = 0; i < ca->journal.nr; i++)
 		if (ca->journal.bucket_seq[i] >= c->journal.last_seq_ondisk) {
 			u64 bucket = ca->journal.buckets[i];
 
-			data_add(&data,
-				 bucket_bytes(ca) * bucket,
-				 bucket_bytes(ca));
+			range_add(&data,
+				  bucket_bytes(ca) * bucket,
+				  bucket_bytes(ca));
 		}
 
 	/* Prios/gens: */
 	for (i = 0; i < prio_buckets(ca); i++)
-		data_add(&data,
-			 bucket_bytes(ca) * ca->prio_last_buckets[i],
-			 bucket_bytes(ca));
+		range_add(&data,
+			  bucket_bytes(ca) * ca->prio_last_buckets[i],
+			  bucket_bytes(ca));
 
 	/* Btree: */
 	for (i = 0; i < BTREE_ID_NR; i++) {
@@ -71,9 +71,9 @@ static void dump_one_device(struct cache_set *c, struct cache *ca, int fd)
 
 			extent_for_each_ptr(e, ptr)
 				if (ptr->dev == ca->dev_idx)
-					data_add(&data,
-						 ptr->offset << 9,
-						 b->written << 9);
+					range_add(&data,
+						  ptr->offset << 9,
+						  b->written << 9);
 		}
 		bch_btree_iter_unlock(&iter);
 	}
@@ -87,7 +87,7 @@ int cmd_dump(int argc, char *argv[])
 	struct bch_opts opts = bch_opts_empty();
 	struct cache_set *c = NULL;
 	const char *err;
-	char *out = NULL, *buf;
+	char *out = NULL;
 	unsigned i, nr_devices = 0;
 	bool force = false;
 	int fd, opt;
@@ -116,9 +116,6 @@ int cmd_dump(int argc, char *argv[])
 	if (!out)
 		die("Please supply output filename");
 
-	buf = alloca(strlen(out) + 10);
-	strcpy(buf, out);
-
 	err = bch_fs_open(argv + optind, argc - optind, opts, &c);
 	if (err)
 		die("error opening %s: %s", argv[optind], err);
@@ -140,12 +137,11 @@ int cmd_dump(int argc, char *argv[])
 		if (!c->cache[i])
 			continue;
 
-		if (nr_devices > 1)
-			sprintf(buf, "%s.%u", out, i);
-
-		fd = open(buf, mode, 0600);
-		if (fd < 0)
-			die("error opening %s: %s", buf, strerror(errno));
+		char *path = nr_devices > 1
+			? mprintf("%s.%u", out, i)
+			: strdup(out);
+		fd = xopen(path, mode, 0600);
+		free(path);
 
 		dump_one_device(c, c->cache[i], fd);
 		close(fd);
@@ -153,7 +149,7 @@ int cmd_dump(int argc, char *argv[])
 
 	up_read(&c->gc_lock);
 
-	bch_fs_stop_sync(c);
+	bch_fs_stop(c);
 	return 0;
 }
 
@@ -213,13 +209,19 @@ static void list_keys_usage(void)
 	     "Usage: bcache list_keys [OPTION]... <devices>\n"
 	     "\n"
 	     "Options:\n"
-	     "  -b btree_id   Integer btree id to list\n"
-	     "  -s start      Start pos (as inode:offset)\n"
-	     "  -e end        End pos\n"
-	     "  -m mode       Mode for listing\n"
-	     "  -h            Display this help and exit\n"
+	     "  -b (extents|inodes|dirents|xattrs)    Btree to list from\n"
+	     "  -s inode:offset                       Start position to list from\n"
+	     "  -e inode:offset                       End position\n"
+	     "  -m (keys|formats)                     List mode\n"
+	     "  -h                                    Display this help and exit\n"
 	     "Report bugs to <linux-bcache@vger.kernel.org>");
 }
+
+static const char * const list_modes[] = {
+	"keys",
+	"formats",
+	NULL
+};
 
 int cmd_list(int argc, char *argv[])
 {
@@ -229,7 +231,6 @@ int cmd_list(int argc, char *argv[])
 	struct bpos start = POS_MIN, end = POS_MAX;
 	const char *err;
 	int mode = 0, opt;
-	u64 v;
 
 	opts.nochanges	= true;
 	opts.norecovery	= true;
@@ -239,10 +240,8 @@ int cmd_list(int argc, char *argv[])
 	while ((opt = getopt(argc, argv, "b:s:e:m:h")) != -1)
 		switch (opt) {
 		case 'b':
-			if (kstrtoull(optarg, 10, &v) ||
-			    v >= BTREE_ID_NR)
-				die("invalid btree id");
-			btree_id = v;
+			btree_id = read_string_list_or_die(optarg,
+						bch_btree_ids, "btree id");
 			break;
 		case 's':
 			start	= parse_pos(optarg);
@@ -251,6 +250,8 @@ int cmd_list(int argc, char *argv[])
 			end	= parse_pos(optarg);
 			break;
 		case 'm':
+			mode = read_string_list_or_die(optarg,
+						list_modes, "list mode");
 			break;
 		case 'h':
 			list_keys_usage();
@@ -275,6 +276,6 @@ int cmd_list(int argc, char *argv[])
 		die("Invalid mode");
 	}
 
-	bch_fs_stop_sync(c);
+	bch_fs_stop(c);
 	return 0;
 }

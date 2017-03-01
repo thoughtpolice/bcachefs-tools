@@ -434,10 +434,10 @@ int bch_check_set_has_compressed_data(struct cache_set *c,
 		break;
 	}
 
-	return bch_compress_init(c);
+	return bch_fs_compress_init(c);
 }
 
-void bch_compress_free(struct cache_set *c)
+void bch_fs_compress_exit(struct cache_set *c)
 {
 	vfree(c->zlib_workspace);
 	mempool_exit(&c->lz4_workspace_pool);
@@ -450,14 +450,10 @@ void bch_compress_free(struct cache_set *c)
 	max_t(size_t, zlib_inflate_workspacesize(),			\
 	      zlib_deflate_workspacesize(MAX_WBITS, DEF_MEM_LEVEL))
 
-int bch_compress_init(struct cache_set *c)
+int bch_fs_compress_init(struct cache_set *c)
 {
 	unsigned order = get_order(BCH_ENCODED_EXTENT_MAX << 9);
 	int ret, cpu;
-
-	if (!bch_sb_test_feature(c->disk_sb, BCH_FEATURE_LZ4) &&
-	    !bch_sb_test_feature(c->disk_sb, BCH_FEATURE_GZIP))
-		return 0;
 
 	if (!c->bio_decompress_worker) {
 		c->bio_decompress_worker = alloc_percpu(*c->bio_decompress_worker);
@@ -473,6 +469,10 @@ int bch_compress_init(struct cache_set *c)
 			init_llist_head(&d->bio_list);
 		}
 	}
+
+	if (!bch_sb_test_feature(c->disk_sb, BCH_FEATURE_LZ4) &&
+	    !bch_sb_test_feature(c->disk_sb, BCH_FEATURE_GZIP))
+		return 0;
 
 	if (!mempool_initialized(&c->compression_bounce[READ])) {
 		ret = mempool_init_page_pool(&c->compression_bounce[READ],

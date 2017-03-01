@@ -2,7 +2,6 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <linux/sort.h>
 
 #include "qcow2.h"
 #include "tools-util.h"
@@ -69,18 +68,7 @@ static void add_l2(struct qcow2_image *img, u64 src_blk, u64 dst_offset)
 	img->l2_table[l2_index] = cpu_to_be64(dst_offset|QCOW_OFLAG_COPIED);
 }
 
-static int range_cmp(const void *_l, const void *_r)
-{
-	const struct range *l = _l, *r = _r;
-
-	if (l->start < r->start)
-		return -1;
-	if (l->start > r->start)
-		return  1;
-	return 0;
-}
-
-void qcow2_write_image(int infd, int outfd, sparse_data *data,
+void qcow2_write_image(int infd, int outfd, ranges *data,
 		       unsigned block_size)
 {
 	u64 image_size = get_size(NULL, infd);
@@ -98,30 +86,11 @@ void qcow2_write_image(int infd, int outfd, sparse_data *data,
 	struct range *r;
 	char *buf = xmalloc(block_size);
 	u64 src_offset, dst_offset;
-	sparse_data m;
 
 	assert(is_power_of_2(block_size));
 
-	sort(&darray_item(*data, 0),
-	     darray_size(*data),
-	     sizeof(darray_item(*data, 0)),
-	     range_cmp, NULL);
-
-	/* Round to blocksize, merge contiguous ranges: */
-	darray_init(m);
-	darray_foreach(r, *data) {
-		struct range *l = m.size ?  &m.item[m.size - 1] : NULL;
-
-		r->start = round_down(r->start, block_size);
-		r->end	= round_up(r->end, block_size);
-
-		if (l && l->end >= r->start)
-			l->end = max(l->end, r->end);
-		else
-			darray_append(m, *r);
-	}
-	darray_free(*data);
-	*data = m;
+	ranges_roundup(data, block_size);
+	ranges_sort_merge(data);
 
 	/* Write data: */
 	darray_foreach(r, *data)

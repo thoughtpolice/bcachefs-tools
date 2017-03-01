@@ -23,66 +23,82 @@
 
 #define BCH_MIN_NR_NBUCKETS	(1 << 10)
 
-/* first bucket should start 1 mb in, in sectors: */
-#define FIRST_BUCKET_OFFSET	(1 << 11)
-
 /* minimum size filesystem we can create, given a bucket size: */
 static u64 min_size(unsigned bucket_size)
 {
-	return (DIV_ROUND_UP(FIRST_BUCKET_OFFSET, bucket_size) +
-		BCH_MIN_NR_NBUCKETS) * bucket_size;
+	return BCH_MIN_NR_NBUCKETS * bucket_size;
 }
 
-static void init_layout(struct bch_sb_layout *l)
+static void init_layout(struct bch_sb_layout *l, unsigned block_size,
+			u64 start, u64 end)
 {
+	unsigned sb_size;
+	u64 backup; /* offset of 2nd sb */
+
 	memset(l, 0, sizeof(*l));
+
+	if (start != BCH_SB_SECTOR)
+		start = round_up(start, block_size);
+	end = round_down(end, block_size);
+
+	if (start >= end)
+		die("insufficient space for superblocks");
+
+	/*
+	 * Create two superblocks in the allowed range: reserve a maximum of 64k
+	 */
+	sb_size = min_t(u64, 128, end - start / 2);
+
+	backup = start + sb_size;
+	backup = round_up(backup, block_size);
+
+	backup = min(backup, end);
+
+	sb_size = min(end - backup, backup- start);
+	sb_size = rounddown_pow_of_two(sb_size);
+
+	if (sb_size < 8)
+		die("insufficient space for superblocks");
 
 	l->magic		= BCACHE_MAGIC;
 	l->layout_type		= 0;
 	l->nr_superblocks	= 2;
-	l->sb_max_size_bits	= 7;
-	l->sb_offset[0]		= cpu_to_le64(BCH_SB_SECTOR);
-	l->sb_offset[1]		= cpu_to_le64(BCH_SB_SECTOR +
-					      (1 << l->sb_max_size_bits));
+	l->sb_max_size_bits	= ilog2(sb_size);
+	l->sb_offset[0]		= cpu_to_le64(start);
+	l->sb_offset[1]		= cpu_to_le64(backup);
 }
 
-void bcache_format(struct dev_opts *devs, size_t nr_devs,
-		   unsigned block_size,
-		   unsigned btree_node_size,
-		   unsigned meta_csum_type,
-		   unsigned data_csum_type,
-		   unsigned compression_type,
-		   const char *passphrase,
-		   unsigned meta_replicas,
-		   unsigned data_replicas,
-		   unsigned on_error_action,
-		   unsigned max_journal_entry_size,
-		   char *label,
-		   uuid_le uuid)
+struct bch_sb *bcache_format(struct format_opts opts,
+			     struct dev_opts *devs, size_t nr_devs)
 {
 	struct bch_sb *sb;
 	struct dev_opts *i;
 	struct bch_sb_field_members *mi;
-	unsigned u64s, j;
+	unsigned u64s;
 
 	/* calculate block size: */
-	if (!block_size)
+	if (!opts.block_size)
 		for (i = devs; i < devs + nr_devs; i++)
-			block_size = max(block_size,
-					 get_blocksize(i->path, i->fd));
+			opts.block_size = max(opts.block_size,
+					      get_blocksize(i->path, i->fd));
 
 	/* calculate bucket sizes: */
 	for (i = devs; i < devs + nr_devs; i++) {
+		if (!i->sb_offset) {
+			i->sb_offset	= BCH_SB_SECTOR;
+			i->sb_end	= BCH_SB_SECTOR + 256;
+		}
+
 		if (!i->size)
 			i->size = get_size(i->path, i->fd) >> 9;
 
 		if (!i->bucket_size) {
-			if (i->size < min_size(block_size))
+			if (i->size < min_size(opts.block_size))
 				die("cannot format %s, too small (%llu sectors, min %llu)",
-				    i->path, i->size, min_size(block_size));
+				    i->path, i->size, min_size(opts.block_size));
 
 			/* Want a bucket size of at least 128k, if possible: */
-			i->bucket_size = max(block_size, 256U);
+			i->bucket_size = max(opts.block_size, 256U);
 
 			if (i->size >= min_size(i->bucket_size)) {
 				unsigned scale = max(1,
@@ -99,34 +115,36 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 			}
 		}
 
-		/* first bucket: 1 mb in */
-		i->first_bucket	= DIV_ROUND_UP(FIRST_BUCKET_OFFSET, i->bucket_size);
 		i->nbuckets	= i->size / i->bucket_size;
 
-		if (i->bucket_size < block_size)
+		if (i->bucket_size < opts.block_size)
 			die("Bucket size cannot be smaller than block size");
 
-		if (i->nbuckets - i->first_bucket < BCH_MIN_NR_NBUCKETS)
+		if (i->nbuckets < BCH_MIN_NR_NBUCKETS)
 			die("Not enough buckets: %llu, need %u (bucket size %u)",
-			    i->nbuckets - i->first_bucket, BCH_MIN_NR_NBUCKETS,
-			    i->bucket_size);
+			    i->nbuckets, BCH_MIN_NR_NBUCKETS, i->bucket_size);
 	}
 
 	/* calculate btree node size: */
-	if (!btree_node_size) {
+	if (!opts.btree_node_size) {
 		/* 256k default btree node size */
-		btree_node_size = 512;
+		opts.btree_node_size = 512;
 
 		for (i = devs; i < devs + nr_devs; i++)
-			btree_node_size = min(btree_node_size, i->bucket_size);
+			opts.btree_node_size =
+				min(opts.btree_node_size, i->bucket_size);
 	}
 
-	if (!max_journal_entry_size) {
+	if (!opts.max_journal_entry_size) {
 		/* 2 MB default: */
-		max_journal_entry_size = 4096;
+		opts.max_journal_entry_size = 4096;
 	}
 
-	max_journal_entry_size = roundup_pow_of_two(max_journal_entry_size);
+	opts.max_journal_entry_size =
+		roundup_pow_of_two(opts.max_journal_entry_size);
+
+	if (uuid_is_null(opts.uuid.b))
+		uuid_generate(opts.uuid.b);
 
 	sb = calloc(1, sizeof(*sb) +
 		    sizeof(struct bch_sb_field_members) +
@@ -135,35 +153,29 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 
 	sb->version	= cpu_to_le64(BCACHE_SB_VERSION_CDEV_V4);
 	sb->magic	= BCACHE_MAGIC;
-	sb->block_size	= cpu_to_le16(block_size);
-	sb->user_uuid	= uuid;
+	sb->block_size	= cpu_to_le16(opts.block_size);
+	sb->user_uuid	= opts.uuid;
 	sb->nr_devices	= nr_devs;
-
-	init_layout(&sb->layout);
 
 	uuid_generate(sb->uuid.b);
 
-	if (label)
-		strncpy((char *) sb->label, label, sizeof(sb->label));
+	if (opts.label)
+		strncpy((char *) sb->label, opts.label, sizeof(sb->label));
 
-	/*
-	 * don't have a userspace crc32c implementation handy, just always use
-	 * crc64
-	 */
-	SET_BCH_SB_CSUM_TYPE(sb,		BCH_CSUM_CRC64);
-	SET_BCH_SB_META_CSUM_TYPE(sb,		meta_csum_type);
-	SET_BCH_SB_DATA_CSUM_TYPE(sb,		data_csum_type);
-	SET_BCH_SB_COMPRESSION_TYPE(sb,		compression_type);
+	SET_BCH_SB_CSUM_TYPE(sb,		opts.meta_csum_type);
+	SET_BCH_SB_META_CSUM_TYPE(sb,		opts.meta_csum_type);
+	SET_BCH_SB_DATA_CSUM_TYPE(sb,		opts.data_csum_type);
+	SET_BCH_SB_COMPRESSION_TYPE(sb,		opts.compression_type);
 
-	SET_BCH_SB_BTREE_NODE_SIZE(sb,		btree_node_size);
+	SET_BCH_SB_BTREE_NODE_SIZE(sb,		opts.btree_node_size);
 	SET_BCH_SB_GC_RESERVE(sb,		8);
-	SET_BCH_SB_META_REPLICAS_WANT(sb,	meta_replicas);
-	SET_BCH_SB_META_REPLICAS_HAVE(sb,	meta_replicas);
-	SET_BCH_SB_DATA_REPLICAS_WANT(sb,	data_replicas);
-	SET_BCH_SB_DATA_REPLICAS_HAVE(sb,	data_replicas);
-	SET_BCH_SB_ERROR_ACTION(sb,		on_error_action);
+	SET_BCH_SB_META_REPLICAS_WANT(sb,	opts.meta_replicas);
+	SET_BCH_SB_META_REPLICAS_HAVE(sb,	opts.meta_replicas);
+	SET_BCH_SB_DATA_REPLICAS_WANT(sb,	opts.data_replicas);
+	SET_BCH_SB_DATA_REPLICAS_HAVE(sb,	opts.data_replicas);
+	SET_BCH_SB_ERROR_ACTION(sb,		opts.on_error_action);
 	SET_BCH_SB_STR_HASH_TYPE(sb,		BCH_STR_HASH_SIPHASH);
-	SET_BCH_SB_JOURNAL_ENTRY_SIZE(sb,	ilog2(max_journal_entry_size));
+	SET_BCH_SB_JOURNAL_ENTRY_SIZE(sb,	ilog2(opts.max_journal_entry_size));
 
 	struct timespec now;
 	if (clock_gettime(CLOCK_REALTIME, &now))
@@ -172,7 +184,7 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 	sb->time_base_lo	= cpu_to_le64(now.tv_sec * NSEC_PER_SEC + now.tv_nsec);
 	sb->time_precision	= cpu_to_le32(1);
 
-	if (passphrase) {
+	if (opts.encrypted) {
 		struct bch_sb_field_crypt *crypt = vstruct_end(sb);
 
 		u64s = sizeof(struct bch_sb_field_crypt) / sizeof(u64);
@@ -181,7 +193,7 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 		crypt->field.u64s = cpu_to_le32(u64s);
 		crypt->field.type = BCH_SB_FIELD_crypt;
 
-		bch_sb_crypt_init(sb, crypt, passphrase);
+		bch_sb_crypt_init(sb, crypt, opts.passphrase);
 		SET_BCH_SB_ENCRYPTION_TYPE(sb, 1);
 	}
 
@@ -198,7 +210,7 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 
 		uuid_generate(m->uuid.b);
 		m->nbuckets	= cpu_to_le64(i->nbuckets);
-		m->first_bucket	= cpu_to_le16(i->first_bucket);
+		m->first_bucket	= 0;
 		m->bucket_size	= cpu_to_le16(i->bucket_size);
 
 		SET_BCH_MEMBER_TIER(m,		i->tier);
@@ -209,42 +221,49 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 	for (i = devs; i < devs + nr_devs; i++) {
 		sb->dev_idx = i - devs;
 
-		static const char zeroes[BCH_SB_SECTOR << 9];
-		struct nonce nonce = { 0 };
+		init_layout(&sb->layout, opts.block_size,
+			    i->sb_offset, i->sb_end);
 
-		/* Zero start of disk */
-		xpwrite(i->fd, zeroes, BCH_SB_SECTOR << 9, 0);
+		if (i->sb_offset == BCH_SB_SECTOR) {
+			/* Zero start of disk */
+			static const char zeroes[BCH_SB_SECTOR << 9];
 
-		xpwrite(i->fd, &sb->layout, sizeof(sb->layout),
-			BCH_SB_LAYOUT_SECTOR << 9);
-
-		for (j = 0; j < sb->layout.nr_superblocks; j++) {
-			sb->offset = sb->layout.sb_offset[j];
-
-			sb->csum = csum_vstruct(NULL, BCH_SB_CSUM_TYPE(sb),
-						   nonce, sb);
-			xpwrite(i->fd, sb, vstruct_bytes(sb),
-				le64_to_cpu(sb->offset) << 9);
+			xpwrite(i->fd, zeroes, BCH_SB_SECTOR << 9, 0);
 		}
 
-		fsync(i->fd);
+		bcache_super_write(i->fd, sb);
 		close(i->fd);
 	}
 
-	bcache_super_print(sb, HUMAN_READABLE);
-
-	free(sb);
+	return sb;
 }
 
-struct bch_sb *bcache_super_read(const char *path)
+void bcache_super_write(int fd, struct bch_sb *sb)
+{
+	struct nonce nonce = { 0 };
+
+	for (unsigned i = 0; i < sb->layout.nr_superblocks; i++) {
+		sb->offset = sb->layout.sb_offset[i];
+
+		if (sb->offset == BCH_SB_SECTOR) {
+			/* Write backup layout */
+			xpwrite(fd, &sb->layout, sizeof(sb->layout),
+				BCH_SB_LAYOUT_SECTOR << 9);
+		}
+
+		sb->csum = csum_vstruct(NULL, BCH_SB_CSUM_TYPE(sb), nonce, sb);
+		xpwrite(fd, sb, vstruct_bytes(sb),
+			le64_to_cpu(sb->offset) << 9);
+	}
+
+	fsync(fd);
+}
+
+struct bch_sb *__bcache_super_read(int fd, u64 sector)
 {
 	struct bch_sb sb, *ret;
 
-	int fd = open(path, O_RDONLY);
-	if (fd < 0)
-		die("couldn't open %s", path);
-
-	xpread(fd, &sb, sizeof(sb), BCH_SB_SECTOR << 9);
+	xpread(fd, &sb, sizeof(sb), sector << 9);
 
 	if (memcmp(&sb.magic, &BCACHE_MAGIC, sizeof(sb.magic)))
 		die("not a bcache superblock");
@@ -253,9 +272,17 @@ struct bch_sb *bcache_super_read(const char *path)
 
 	ret = malloc(bytes);
 
-	xpread(fd, ret, bytes, BCH_SB_SECTOR << 9);
+	xpread(fd, ret, bytes, sector << 9);
 
 	return ret;
+}
+
+struct bch_sb *bcache_super_read(const char *path)
+{
+	int fd = xopen(path, O_RDONLY);
+	struct bch_sb *sb = __bcache_super_read(fd, BCH_SB_SECTOR);
+	close(fd);
+	return sb;
 }
 
 void bcache_super_print(struct bch_sb *sb, int units)

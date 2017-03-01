@@ -1,4 +1,3 @@
-#include <alloca.h>
 #include <assert.h>
 #include <ctype.h>
 #include <errno.h>
@@ -19,6 +18,7 @@
 #include "ccan/crc/crc.h"
 
 #include "linux/bcache-ioctl.h"
+#include "linux/sort.h"
 #include "tools-util.h"
 #include "util.h"
 
@@ -59,20 +59,12 @@ struct units_buf __pr_units(u64 v, enum units units)
 
 char *read_file_str(int dirfd, const char *path)
 {
-	int fd = openat(dirfd, path, O_RDONLY);
+	int fd = xopenat(dirfd, path, O_RDONLY);
+	size_t len = xfstat(fd).st_size;
 
-	if (fd < 0)
-		die("Unable to open %s\n", path);
+	char *buf = malloc(len + 1);
 
-	struct stat statbuf;
-	if (fstat(fd, &statbuf) < 0)
-		die("fstat error\n");
-
-	char *buf = malloc(statbuf.st_size + 1);
-
-	int len = read(fd, buf, statbuf.st_size);
-	if (len < 0)
-		die("read error while reading from file %s\n", path);
+	xpread(fd, buf, len, 0);
 
 	buf[len] = '\0';
 	if (len && buf[len - 1] == '\n')
@@ -107,48 +99,33 @@ ssize_t read_string_list_or_die(const char *opt, const char * const list[],
 /* Returns size of file or block device: */
 u64 get_size(const char *path, int fd)
 {
-	struct stat statbuf;
-	u64 ret;
-
-	if (fstat(fd, &statbuf))
-		die("Error statting %s: %s", path, strerror(errno));
+	struct stat statbuf = xfstat(fd);
 
 	if (!S_ISBLK(statbuf.st_mode))
 		return statbuf.st_size;
 
-	if (ioctl(fd, BLKGETSIZE64, &ret))
-		die("Error getting block device size on %s: %s\n",
-		    path, strerror(errno));
-
+	u64 ret;
+	xioctl(fd, BLKGETSIZE64, &ret);
 	return ret;
 }
 
 /* Returns blocksize in units of 512 byte sectors: */
 unsigned get_blocksize(const char *path, int fd)
 {
-	struct stat statbuf;
-	if (fstat(fd, &statbuf))
-		die("Error statting %s: %s", path, strerror(errno));
+	struct stat statbuf = xfstat(fd);
 
 	if (!S_ISBLK(statbuf.st_mode))
 		return statbuf.st_blksize >> 9;
 
 	unsigned ret;
-	if (ioctl(fd, BLKPBSZGET, &ret))
-		die("Error getting blocksize on %s: %s\n",
-		    path, strerror(errno));
-
+	xioctl(fd, BLKPBSZGET, &ret);
 	return ret >> 9;
 }
 
 /* Global control device: */
 int bcachectl_open(void)
 {
-	int fd = open("/dev/bcache-ctl", O_RDWR);
-	if (fd < 0)
-		die("Can't open bcache device: %s", strerror(errno));
-
-	return fd;
+	return xopen("/dev/bcache-ctl", O_RDWR);
 }
 
 /* Filesystem handles (ioctl, sysfs dir): */
@@ -162,47 +139,29 @@ struct bcache_handle bcache_fs_open(const char *path)
 
 	if (!uuid_parse(path, tmp)) {
 		/* It's a UUID, look it up in sysfs: */
-
-		char *sysfs = alloca(strlen(SYSFS_BASE) + strlen(path) + 1);
-		sprintf(sysfs, "%s%s", SYSFS_BASE, path);
-
-		ret.sysfs_fd = open(sysfs, O_RDONLY);
-		if (!ret.sysfs_fd)
-			die("Unable to open %s\n", path);
+		char *sysfs = mprintf("%s%s", SYSFS_BASE, path);
+		ret.sysfs_fd = xopen(sysfs, O_RDONLY);
 
 		char *minor = read_file_str(ret.sysfs_fd, "minor");
-		char *ctl = alloca(20 + strlen(minor));
+		char *ctl = mprintf("/dev/bcache%s-ctl", minor);
+		ret.ioctl_fd = xopen(ctl, O_RDWR);
 
-		sprintf(ctl, "/dev/bcache%s-ctl", minor);
+		free(sysfs);
 		free(minor);
-
-		ret.ioctl_fd = open(ctl, O_RDWR);
-		if (ret.ioctl_fd < 0)
-			die("Error opening control device: %s\n",
-			    strerror(errno));
+		free(ctl);
 	} else {
 		/* It's a path: */
-
-		ret.ioctl_fd = open(path, O_RDONLY);
-		if (ret.ioctl_fd < 0)
-			die("Error opening %s: %s\n",
-			    path, strerror(errno));
+		ret.ioctl_fd = xopen(path, O_RDONLY);
 
 		struct bch_ioctl_query_uuid uuid;
-		if (ioctl(ret.ioctl_fd, BCH_IOCTL_QUERY_UUID, &uuid))
-			die("ioctl error (not a bcache fs?): %s\n",
-			    strerror(errno));
+		xioctl(ret.ioctl_fd, BCH_IOCTL_QUERY_UUID, &uuid);
 
 		char uuid_str[40];
 		uuid_unparse(uuid.uuid.b, uuid_str);
 
-		char *sysfs = alloca(strlen(SYSFS_BASE) + strlen(uuid_str) + 1);
-		sprintf(sysfs, "%s%s", SYSFS_BASE, uuid_str);
-
-		ret.sysfs_fd = open(sysfs, O_RDONLY);
-		if (ret.sysfs_fd < 0)
-			die("Unable to open sysfs dir %s: %s\n",
-			    sysfs, strerror(errno));
+		char *sysfs = mprintf("%s%s", SYSFS_BASE, uuid_str);
+		ret.sysfs_fd = xopen(sysfs, O_RDONLY);
+		free(sysfs);
 	}
 
 	return ret;
@@ -224,4 +183,90 @@ bool ask_yn(void)
 	ret = strchr(short_yes, buf[0]);
 	free(buf);
 	return ret;
+}
+
+static int range_cmp(const void *_l, const void *_r)
+{
+	const struct range *l = _l, *r = _r;
+
+	if (l->start < r->start)
+		return -1;
+	if (l->start > r->start)
+		return  1;
+	return 0;
+}
+
+void ranges_sort_merge(ranges *r)
+{
+	struct range *t, *i;
+	ranges tmp = { NULL };
+
+	sort(&darray_item(*r, 0), darray_size(*r),
+	     sizeof(darray_item(*r, 0)), range_cmp, NULL);
+
+	/* Merge contiguous ranges: */
+	darray_foreach(i, *r) {
+		t = tmp.size ?  &tmp.item[tmp.size - 1] : NULL;
+
+		if (t && t->end >= i->start)
+			t->end = max(t->end, i->end);
+		else
+			darray_append(tmp, *i);
+	}
+
+	darray_free(*r);
+	*r = tmp;
+}
+
+void ranges_roundup(ranges *r, unsigned block_size)
+{
+	struct range *i;
+
+	darray_foreach(i, *r) {
+		i->start = round_down(i->start, block_size);
+		i->end	= round_up(i->end, block_size);
+	}
+}
+
+void ranges_rounddown(ranges *r, unsigned block_size)
+{
+	struct range *i;
+
+	darray_foreach(i, *r) {
+		i->start = round_up(i->start, block_size);
+		i->end	= round_down(i->end, block_size);
+		i->end	= max(i->end, i->start);
+	}
+}
+
+struct fiemap_extent fiemap_iter_next(struct fiemap_iter *iter)
+{
+	struct fiemap_extent e;
+
+	BUG_ON(iter->idx > iter->f.fm_mapped_extents);
+
+	if (iter->idx == iter->f.fm_mapped_extents) {
+		xioctl(iter->fd, FS_IOC_FIEMAP, &iter->f);
+
+		if (!iter->f.fm_mapped_extents)
+			return (struct fiemap_extent) { .fe_length = 0 };
+
+		iter->idx = 0;
+	}
+
+	e = iter->f.fm_extents[iter->idx++];
+	BUG_ON(!e.fe_length);
+
+	iter->f.fm_start = e.fe_logical + e.fe_length;
+
+	return e;
+}
+
+const char *strcmp_prefix(const char *a, const char *a_prefix)
+{
+	while (*a_prefix && *a == *a_prefix) {
+		a++;
+		a_prefix++;
+	}
+	return *a_prefix ? NULL : a;
 }

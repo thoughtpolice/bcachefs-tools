@@ -409,13 +409,13 @@ static const struct file_operations bfloat_failed_debug_ops = {
 	.read		= bch_read_bfloat_failed,
 };
 
-void bch_debug_exit_cache_set(struct cache_set *c)
+void bch_fs_debug_exit(struct cache_set *c)
 {
 	if (!IS_ERR_OR_NULL(c->debug))
 		debugfs_remove_recursive(c->debug);
 }
 
-void bch_debug_init_cache_set(struct cache_set *c)
+void bch_fs_debug_init(struct cache_set *c)
 {
 	struct btree_debug *bd;
 	char name[100];
@@ -432,18 +432,18 @@ void bch_debug_init_cache_set(struct cache_set *c)
 	     bd < c->btree_debug + ARRAY_SIZE(c->btree_debug);
 	     bd++) {
 		bd->id = bd - c->btree_debug;
-		bd->btree = debugfs_create_file(bch_btree_id_names[bd->id],
+		bd->btree = debugfs_create_file(bch_btree_ids[bd->id],
 						0400, c->debug, bd,
 						&btree_debug_ops);
 
 		snprintf(name, sizeof(name), "%s-formats",
-			 bch_btree_id_names[bd->id]);
+			 bch_btree_ids[bd->id]);
 
 		bd->btree_format = debugfs_create_file(name, 0400, c->debug, bd,
 						       &btree_format_debug_ops);
 
 		snprintf(name, sizeof(name), "%s-bfloat-failed",
-			 bch_btree_id_names[bd->id]);
+			 bch_btree_ids[bd->id]);
 
 		bd->failed = debugfs_create_file(name, 0400, c->debug, bd,
 						 &bfloat_failed_debug_ops);

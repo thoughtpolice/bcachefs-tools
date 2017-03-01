@@ -56,6 +56,7 @@ OBJS=bcache.o			\
      cmd_fsck.o			\
      cmd_format.o		\
      cmd_key.o			\
+     cmd_migrate.o		\
      cmd_run.o			\
      crypto.o			\
      libbcache.o		\

@@ -10,6 +10,7 @@
 #include "vstructs.h"
 
 #include <linux/backing-dev.h>
+#include <linux/sort.h>
 
 static inline void __bch_sb_layout_size_assert(void)
 {
@@ -17,7 +18,7 @@ static inline void __bch_sb_layout_size_assert(void)
 }
 
 struct bch_sb_field *bch_sb_field_get(struct bch_sb *sb,
-				      enum bch_sb_field_types type)
+				      enum bch_sb_field_type type)
 {
 	struct bch_sb_field *f;
 
@@ -34,7 +35,7 @@ void bch_free_super(struct bcache_superblock *sb)
 	if (sb->bio)
 		bio_put(sb->bio);
 	if (!IS_ERR_OR_NULL(sb->bdev))
-		blkdev_put(sb->bdev, FMODE_READ|FMODE_WRITE|FMODE_EXCL);
+		blkdev_put(sb->bdev, sb->mode);
 
 	free_pages((unsigned long) sb->sb, sb->page_order);
 	memset(sb, 0, sizeof(*sb));
@@ -74,7 +75,7 @@ static int __bch_super_realloc(struct bcache_superblock *sb, unsigned order)
 	return 0;
 }
 
-int bch_dev_sb_realloc(struct bcache_superblock *sb, unsigned u64s)
+static int bch_sb_realloc(struct bcache_superblock *sb, unsigned u64s)
 {
 	u64 new_bytes = __vstruct_bytes(struct bch_sb, u64s);
 	u64 max_bytes = 512 << sb->sb->layout.sb_max_size_bits;
@@ -140,13 +141,29 @@ static struct bch_sb_field *__bch_sb_field_resize(struct bch_sb *sb,
 	le32_add_cpu(&sb->u64s, u64s - old_u64s);
 
 	return f;
+}
 
+struct bch_sb_field *bch_sb_field_resize(struct bcache_superblock *sb,
+					 enum bch_sb_field_type type,
+					 unsigned u64s)
+{
+	struct bch_sb_field *f = bch_sb_field_get(sb->sb, type);
+	ssize_t old_u64s = f ? le32_to_cpu(f->u64s) : 0;
+	ssize_t d = -old_u64s + u64s;
+
+	if (bch_sb_realloc(sb, le32_to_cpu(sb->sb->u64s) + d))
+		return NULL;
+
+	f = __bch_sb_field_resize(sb->sb, f, u64s);
+	f->type = type;
+	return f;
 }
 
 struct bch_sb_field *bch_fs_sb_field_resize(struct cache_set *c,
-					    struct bch_sb_field *f,
+					    enum bch_sb_field_type type,
 					    unsigned u64s)
 {
+	struct bch_sb_field *f = bch_sb_field_get(c->disk_sb, type);
 	ssize_t old_u64s = f ? le32_to_cpu(f->u64s) : 0;
 	ssize_t d = -old_u64s + u64s;
 	struct cache *ca;
@@ -160,26 +177,15 @@ struct bch_sb_field *bch_fs_sb_field_resize(struct cache_set *c,
 	for_each_cache(ca, c, i) {
 		struct bcache_superblock *sb = &ca->disk_sb;
 
-		if (bch_dev_sb_realloc(sb, le32_to_cpu(sb->sb->u64s) + d)) {
+		if (bch_sb_realloc(sb, le32_to_cpu(sb->sb->u64s) + d)) {
 			percpu_ref_put(&ca->ref);
 			return NULL;
 		}
 	}
 
-	return __bch_sb_field_resize(c->disk_sb, f, u64s);
-}
-
-struct bch_sb_field *bch_dev_sb_field_resize(struct bcache_superblock *sb,
-					     struct bch_sb_field *f,
-					     unsigned u64s)
-{
-	ssize_t old_u64s = f ? le32_to_cpu(f->u64s) : 0;
-	ssize_t d = -old_u64s + u64s;
-
-	if (bch_dev_sb_realloc(sb, le32_to_cpu(sb->sb->u64s) + d))
-		return NULL;
-
-	return __bch_sb_field_resize(sb->sb, f, u64s);
+	f = __bch_sb_field_resize(c->disk_sb, f, u64s);
+	f->type = type;
+	return f;
 }
 
 static const char *validate_sb_layout(struct bch_sb_layout *layout)
@@ -203,9 +209,6 @@ static const char *validate_sb_layout(struct bch_sb_layout *layout)
 
 	prev_offset = le64_to_cpu(layout->sb_offset[0]);
 
-	if (prev_offset != BCH_SB_SECTOR)
-		return "Invalid superblock layout: doesn't have default superblock location";
-
 	for (i = 1; i < layout->nr_superblocks; i++) {
 		offset = le64_to_cpu(layout->sb_offset[i]);
 
@@ -217,16 +220,70 @@ static const char *validate_sb_layout(struct bch_sb_layout *layout)
 	return NULL;
 }
 
+static int u64_cmp(const void *_l, const void *_r)
+{
+	u64 l = *((const u64 *) _l), r = *((const u64 *) _r);
+
+	return l < r ? -1 : l > r ? 1 : 0;
+}
+
+const char *bch_validate_journal_layout(struct bch_sb *sb,
+					struct cache_member_cpu mi)
+{
+	struct bch_sb_field_journal *journal;
+	const char *err;
+	unsigned nr;
+	unsigned i;
+	u64 *b;
+
+	journal = bch_sb_get_journal(sb);
+	if (!journal)
+		return NULL;
+
+	nr = bch_nr_journal_buckets(journal);
+	if (!nr)
+		return NULL;
+
+	b = kmalloc_array(sizeof(u64), nr, GFP_KERNEL);
+	if (!b)
+		return "cannot allocate memory";
+
+	for (i = 0; i < nr; i++)
+		b[i] = le64_to_cpu(journal->buckets[i]);
+
+	sort(b, nr, sizeof(u64), u64_cmp, NULL);
+
+	err = "journal bucket at sector 0";
+	if (!b[0])
+		goto err;
+
+	err = "journal bucket before first bucket";
+	if (b[0] < mi.first_bucket)
+		goto err;
+
+	err = "journal bucket past end of device";
+	if (b[nr - 1] >= mi.nbuckets)
+		goto err;
+
+	err = "duplicate journal buckets";
+	for (i = 0; i + 1 < nr; i++)
+		if (b[i] == b[i + 1])
+			goto err;
+
+	err = NULL;
+err:
+	kfree(b);
+	return err;
+}
+
 const char *bch_validate_cache_super(struct bcache_superblock *disk_sb)
 {
 	struct bch_sb *sb = disk_sb->sb;
 	struct bch_sb_field *f;
 	struct bch_sb_field_members *sb_mi;
-	struct bch_sb_field_journal *journal;
 	struct cache_member_cpu	mi;
 	const char *err;
 	u16 block_size;
-	unsigned i;
 
 	switch (le64_to_cpu(sb->version)) {
 	case BCACHE_SB_VERSION_CDEV_V4:
@@ -324,14 +381,6 @@ const char *bch_validate_cache_super(struct bcache_superblock *disk_sb)
 
 	mi = cache_mi_to_cpu_mi(sb_mi->members + sb->dev_idx);
 
-	for (i = 0; i < sb->layout.nr_superblocks; i++) {
-		u64 offset = le64_to_cpu(sb->layout.sb_offset[i]);
-		u64 max_size = 1 << sb->layout.sb_max_size_bits;
-
-		if (offset + max_size > mi.first_bucket * mi.bucket_size)
-			return "Invalid superblock: first bucket comes before end of super";
-	}
-
 	if (mi.nbuckets > LONG_MAX)
 		return "Too many buckets";
 
@@ -347,16 +396,9 @@ const char *bch_validate_cache_super(struct bcache_superblock *disk_sb)
 	    mi.bucket_size * mi.nbuckets)
 		return "Invalid superblock: device too small";
 
-	/* Validate journal buckets: */
-	journal = bch_sb_get_journal(sb);
-	if (journal) {
-		for (i = 0; i < bch_nr_journal_buckets(journal); i++) {
-			u64 b = le64_to_cpu(journal->buckets[i]);
-
-			if (b <  mi.first_bucket || b >= mi.nbuckets)
-				return "bad journal bucket";
-		}
-	}
+	err = bch_validate_journal_layout(sb, mi);
+	if (err)
+		return err;
 
 	return NULL;
 }
@@ -382,19 +424,19 @@ static bool bch_is_open_cache(struct block_device *bdev)
 
 static bool bch_is_open(struct block_device *bdev)
 {
-	lockdep_assert_held(&bch_register_lock);
+	bool ret;
 
-	return bch_is_open_cache(bdev) || bch_is_open_backing_dev(bdev);
+	mutex_lock(&bch_register_lock);
+	ret = bch_is_open_cache(bdev) || bch_is_open_backing_dev(bdev);
+	mutex_unlock(&bch_register_lock);
+
+	return ret;
 }
 
-static const char *bch_blkdev_open(const char *path, void *holder,
-				   struct bch_opts opts,
-				   struct block_device **ret)
+static const char *bch_blkdev_open(const char *path, fmode_t mode,
+				   void *holder, struct block_device **ret)
 {
 	struct block_device *bdev;
-	fmode_t mode = opts.nochanges > 0
-		? FMODE_READ
-		: FMODE_READ|FMODE_WRITE|FMODE_EXCL;
 	const char *err;
 
 	*ret = NULL;
@@ -548,7 +590,7 @@ int bch_sb_from_cache_set(struct cache_set *c, struct cache *ca)
 	unsigned u64s = le32_to_cpu(src->u64s) + journal_u64s;
 	int ret;
 
-	ret = bch_dev_sb_realloc(&ca->disk_sb, u64s);
+	ret = bch_sb_realloc(&ca->disk_sb, u64s);
 	if (ret)
 		return ret;
 
@@ -567,7 +609,7 @@ static const char *read_one_super(struct bcache_superblock *sb, u64 offset)
 reread:
 	bio_reset(sb->bio);
 	sb->bio->bi_bdev = sb->bdev;
-	sb->bio->bi_iter.bi_sector = BCH_SB_SECTOR;
+	sb->bio->bi_iter.bi_sector = offset;
 	sb->bio->bi_iter.bi_size = PAGE_SIZE << sb->page_order;
 	bio_set_op_attrs(sb->bio, REQ_OP_READ, REQ_SYNC|REQ_META);
 	bch_bio_map(sb->bio, sb->sb);
@@ -610,15 +652,21 @@ const char *bch_read_super(struct bcache_superblock *sb,
 			   struct bch_opts opts,
 			   const char *path)
 {
+	u64 offset = opt_defined(opts.sb) ? opts.sb : BCH_SB_SECTOR;
 	struct bch_sb_layout layout;
 	const char *err;
 	unsigned i;
 
-	lockdep_assert_held(&bch_register_lock);
-
 	memset(sb, 0, sizeof(*sb));
+	sb->mode = FMODE_READ;
 
-	err = bch_blkdev_open(path, &sb, opts, &sb->bdev);
+	if (!(opt_defined(opts.noexcl) && opts.noexcl))
+		sb->mode |= FMODE_EXCL;
+
+	if (!(opt_defined(opts.nochanges) && opts.nochanges))
+		sb->mode |= FMODE_WRITE;
+
+	err = bch_blkdev_open(path, sb->mode, sb, &sb->bdev);
 	if (err)
 		return err;
 
@@ -630,11 +678,16 @@ const char *bch_read_super(struct bcache_superblock *sb,
 	if (bch_fs_init_fault("read_super"))
 		goto err;
 
-	err = read_one_super(sb, BCH_SB_SECTOR);
+	err = read_one_super(sb, offset);
 	if (!err)
 		goto got_super;
 
-	pr_err("error reading default super: %s", err);
+	if (offset != BCH_SB_SECTOR) {
+		pr_err("error reading superblock: %s", err);
+		goto err;
+	}
+
+	pr_err("error reading default superblock: %s", err);
 
 	/*
 	 * Error reading primary superblock - read location of backup
@@ -746,6 +799,9 @@ void bch_write_super(struct cache_set *c)
 	bool wrote;
 
 	lockdep_assert_held(&c->sb_lock);
+
+	if (c->opts.nochanges)
+		return;
 
 	closure_init_stack(cl);
 

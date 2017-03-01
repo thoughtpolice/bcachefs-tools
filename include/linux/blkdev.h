@@ -110,6 +110,7 @@ struct super_block {
  * NOTE! These match bits 12..15 of stat.st_mode
  * (ie "(i_mode >> 12) & 15").
  */
+#ifndef DT_UNKNOWN
 #define DT_UNKNOWN	0
 #define DT_FIFO		1
 #define DT_CHR		2
@@ -119,6 +120,7 @@ struct super_block {
 #define DT_LNK		10
 #define DT_SOCK		12
 #define DT_WHT		14
+#endif
 
 /*
  * This is the "filldir" function type, used by readdir() to let

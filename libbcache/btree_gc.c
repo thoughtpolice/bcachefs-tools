@@ -262,30 +262,72 @@ static void bch_mark_allocator_buckets(struct cache_set *c)
 	}
 }
 
+static void mark_metadata_sectors(struct cache *ca, u64 start, u64 end,
+				  enum bucket_data_type type)
+{
+	u64 b = start >> ca->bucket_bits;
+
+	do {
+		bch_mark_metadata_bucket(ca, ca->buckets + b, type, true);
+		b++;
+	} while (b < end >> ca->bucket_bits);
+}
+
 /*
  * Mark non btree metadata - prios, journal
  */
+static void bch_mark_dev_metadata(struct cache_set *c, struct cache *ca)
+{
+	struct bch_sb_layout *layout = &ca->disk_sb.sb->layout;
+	unsigned i;
+	u64 b;
+
+	/* Mark superblocks: */
+	for (i = 0; i < layout->nr_superblocks; i++) {
+		if (layout->sb_offset[i] == BCH_SB_SECTOR)
+			mark_metadata_sectors(ca, 0, BCH_SB_SECTOR,
+					      BUCKET_SB);
+
+		mark_metadata_sectors(ca,
+				      layout->sb_offset[i],
+				      layout->sb_offset[i] +
+				      (1 << layout->sb_max_size_bits),
+				      BUCKET_SB);
+	}
+
+	spin_lock(&c->journal.lock);
+
+	for (i = 0; i < ca->journal.nr; i++) {
+		b = ca->journal.buckets[i];
+		bch_mark_metadata_bucket(ca, ca->buckets + b,
+					 BUCKET_JOURNAL, true);
+	}
+
+	spin_unlock(&c->journal.lock);
+
+	spin_lock(&ca->prio_buckets_lock);
+
+	for (i = 0; i < prio_buckets(ca) * 2; i++) {
+		b = ca->prio_buckets[i];
+		if (b)
+			bch_mark_metadata_bucket(ca, ca->buckets + b,
+						 BUCKET_PRIOS, true);
+	}
+
+	spin_unlock(&ca->prio_buckets_lock);
+}
+
 static void bch_mark_metadata(struct cache_set *c)
 {
 	struct cache *ca;
-	unsigned i, j;
-	u64 b;
+	unsigned i;
 
-	for_each_cache(ca, c, i) {
-		for (j = 0; j < ca->journal.nr; j++) {
-			b = ca->journal.buckets[j];
-			bch_mark_metadata_bucket(ca, ca->buckets + b, true);
-		}
+	mutex_lock(&c->sb_lock);
 
-		spin_lock(&ca->prio_buckets_lock);
+	for_each_cache(ca, c, i)
+		bch_mark_dev_metadata(c, ca);
 
-		for (j = 0; j < prio_buckets(ca) * 2; j++) {
-			b = ca->prio_buckets[j];
-			bch_mark_metadata_bucket(ca, ca->buckets + b, true);
-		}
-
-		spin_unlock(&ca->prio_buckets_lock);
-	}
+	mutex_unlock(&c->sb_lock);
 }
 
 /* Also see bch_pending_btree_node_free_insert_done() */
@@ -389,7 +431,7 @@ void bch_gc(struct cache_set *c)
 		for_each_bucket(g, ca) {
 			bucket_cmpxchg(g, new, ({
 				new.owned_by_allocator	= 0;
-				new.is_metadata		= 0;
+				new.data_type		= 0;
 				new.cached_sectors	= 0;
 				new.dirty_sectors	= 0;
 			}));
@@ -750,9 +792,6 @@ void bch_coalesce(struct cache_set *c)
 	u64 start_time;
 	enum btree_id id;
 
-	if (btree_gc_coalesce_disabled(c))
-		return;
-
 	if (test_bit(BCH_FS_GC_FAILURE, &c->flags))
 		return;
 
@@ -811,7 +850,8 @@ static int bch_gc_thread(void *arg)
 		last_kick = atomic_read(&c->kick_gc);
 
 		bch_gc(c);
-		bch_coalesce(c);
+		if (!btree_gc_coalesce_disabled(c))
+			bch_coalesce(c);
 
 		debug_check_no_locks_held();
 	}
@@ -823,18 +863,24 @@ void bch_gc_thread_stop(struct cache_set *c)
 {
 	set_bit(BCH_FS_GC_STOPPING, &c->flags);
 
-	if (!IS_ERR_OR_NULL(c->gc_thread))
+	if (c->gc_thread)
 		kthread_stop(c->gc_thread);
+
+	c->gc_thread = NULL;
+	clear_bit(BCH_FS_GC_STOPPING, &c->flags);
 }
 
 int bch_gc_thread_start(struct cache_set *c)
 {
-	clear_bit(BCH_FS_GC_STOPPING, &c->flags);
+	struct task_struct *p;
 
-	c->gc_thread = kthread_create(bch_gc_thread, c, "bcache_gc");
-	if (IS_ERR(c->gc_thread))
-		return PTR_ERR(c->gc_thread);
+	BUG_ON(c->gc_thread);
 
+	p = kthread_create(bch_gc_thread, c, "bcache_gc");
+	if (IS_ERR(p))
+		return PTR_ERR(p);
+
+	c->gc_thread = p;
 	wake_up_process(c->gc_thread);
 	return 0;
 }
@@ -883,12 +929,13 @@ int bch_initial_gc(struct cache_set *c, struct list_head *journal)
 {
 	enum btree_id id;
 
-	if (journal) {
-		for (id = 0; id < BTREE_ID_NR; id++)
-			bch_initial_gc_btree(c, id);
+	bch_mark_metadata(c);
 
+	for (id = 0; id < BTREE_ID_NR; id++)
+		bch_initial_gc_btree(c, id);
+
+	if (journal)
 		bch_journal_mark(c, journal);
-	}
 
 	/*
 	 * Skip past versions that might have possibly been used (as nonces),
@@ -896,8 +943,6 @@ int bch_initial_gc(struct cache_set *c, struct list_head *journal)
 	 */
 	if (c->sb.encryption_type)
 		atomic64_add(1 << 16, &c->key_version);
-
-	bch_mark_metadata(c);
 
 	gc_pos_set(c, gc_phase(GC_PHASE_DONE));
 	set_bit(BCH_FS_INITIAL_GC_DONE, &c->flags);

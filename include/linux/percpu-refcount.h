@@ -180,4 +180,9 @@ static inline bool percpu_ref_is_zero(struct percpu_ref *ref)
 	return !atomic_long_read(&ref->count);
 }
 
+static inline bool percpu_ref_is_dying(struct percpu_ref *ref)
+{
+	return percpu_ref_is_zero(ref);
+}
+
 #endif /* __TOOLS_LINUX_PERCPU_REFCOUNT_H */

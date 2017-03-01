@@ -25,9 +25,6 @@ int cmd_stop(int argc, char *argv[])
 		die("Please supply a filesystem");
 
 	struct bcache_handle fs = bcache_fs_open(argv[1]);
-
-	if (ioctl(fs.ioctl_fd, BCH_IOCTL_STOP))
-		die("BCH_IOCTL_STOP error: %s", strerror(errno));
-
+	xioctl(fs.ioctl_fd, BCH_IOCTL_STOP);
 	return 0;
 }

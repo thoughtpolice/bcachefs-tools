@@ -34,10 +34,8 @@ static int open_for_format(const char *dev, bool force)
 	blkid_probe pr;
 	const char *fs_type = NULL, *fs_label = NULL;
 	size_t fs_type_len, fs_label_len;
-	int fd;
 
-	if ((fd = open(dev, O_RDWR|O_EXCL)) == -1)
-		die("Can't open dev %s: %s\n", dev, strerror(errno));
+	int fd = xopen(dev, O_RDWR|O_EXCL);
 
 	if (force)
 		return fd;
@@ -70,8 +68,41 @@ static int open_for_format(const char *dev, bool force)
 	return fd;
 }
 
+#define OPTS									\
+t("bcache format - create a new bcache filesystem on one or more devices")	\
+t("Usage: bcache format [OPTION]... <devices>")					\
+t("")										\
+x('b',	block_size,		"size",			NULL)			\
+x(0,	btree_node_size,	"size",			"Default 256k")		\
+x(0,	metadata_checksum_type,	"(none|crc32c|crc64)",	NULL)			\
+x(0,	data_checksum_type,	"(none|crc32c|crc64)",	NULL)			\
+x(0,	compression_type,	"(none|lz4|gzip)",	NULL)			\
+x(0,	encrypted,		NULL,			"Enable whole filesystem encryption (chacha20/poly1305)")\
+x(0,	no_passphrase,		NULL,			"Don't encrypt master encryption key")\
+x('e',	error_action,		"(continue|readonly|panic)", NULL)		\
+x(0,	max_journal_entry_size,	"size",			NULL)			\
+x('L',	label,			"label",		NULL)			\
+x('U',	uuid,			"uuid",			NULL)			\
+x('f',	force,			NULL,			NULL)			\
+t("")										\
+t("Device specific options:")							\
+x(0,	fs_size,		"size",			"Size of filesystem on device")\
+x(0,	bucket_size,		"size",			"Bucket size")		\
+x('t',	tier,			"#",			"Higher tier indicates slower devices")\
+x(0,	discard,		NULL,			NULL)			\
+t("Device specific options must come before corresponding devices, e.g.")	\
+t("  bcache format --tier 0 /dev/sdb --tier 1 /dev/sdc")			\
+t("")										\
+x('h',	help,			NULL,			"display this help and exit")
+
 static void usage(void)
 {
+#define t(text)				puts(text "\n")
+#define x(shortopt, longopt, arg, help) do {				\
+	OPTS
+#undef x
+#undef t
+
 	puts("bcache format - create a new bcache filesystem on one or more devices\n"
 	     "Usage: bcache format [OPTION]... <devices>\n"
 	     "\n"
@@ -81,7 +112,8 @@ static void usage(void)
 	     "      --metadata_checksum_type=(none|crc32c|crc64)\n"
 	     "      --data_checksum_type=(none|crc32c|crc64)\n"
 	     "      --compression_type=(none|lz4|gzip)\n"
-	     "      --encrypted\n"
+	     "      --encrypted             Enable whole filesystem encryption (chacha20/poly1305)\n"
+	     "      --no_passphrase         Don't encrypt master encryption key\n"
 	     "      --error_action=(continue|readonly|panic)\n"
 	     "                              Action to take on filesystem error\n"
 	     "      --max_journal_entry_size=size\n"
@@ -103,37 +135,26 @@ static void usage(void)
 	     "Report bugs to <linux-bcache@vger.kernel.org>");
 }
 
-#define OPTS								\
-	OPT('b',	block_size,		required_argument)	\
-	OPT(0,		btree_node_size,	required_argument)	\
-	OPT(0,		metadata_checksum_type,	required_argument)	\
-	OPT(0,		data_checksum_type,	required_argument)	\
-	OPT(0,		compression_type,	required_argument)	\
-	OPT(0,		encrypted,		no_argument)		\
-	OPT('e',	error_action,		required_argument)	\
-	OPT(0,		max_journal_entry_size,	required_argument)	\
-	OPT('L',	label,			required_argument)	\
-	OPT('U',	uuid,			required_argument)	\
-	OPT('f',	force,			no_argument)		\
-	OPT(0,		fs_size,		required_argument)	\
-	OPT(0,		bucket_size,		required_argument)	\
-	OPT('t',	tier,			required_argument)	\
-	OPT(0,		discard,		no_argument)		\
-	OPT('h',	help,			no_argument)
-
 enum {
 	Opt_no_opt = 1,
-#define OPT(shortopt, longopt, has_arg)	Opt_##longopt,
+#define t(text)
+#define x(shortopt, longopt, arg, help)	Opt_##longopt,
 	OPTS
-#undef OPT
+#undef x
+#undef t
 };
 
 static const struct option format_opts[] = {
-#define OPT(shortopt, longopt, has_arg)	{				\
-		#longopt,  has_arg, NULL, Opt_##longopt			\
-	},
+#define t(text)
+#define x(shortopt, longopt, arg, help)	{				\
+	.name		= #longopt,					\
+	.has_arg	= arg ? required_argument : no_argument,	\
+	.flag		= NULL,						\
+	.val		= Opt_##longopt,				\
+},
 	OPTS
-#undef OPT
+#undef x
+#undef t
 	{ NULL }
 };
 
@@ -161,29 +182,12 @@ static unsigned hatoi_validate(const char *s, const char *msg)
 int cmd_format(int argc, char *argv[])
 {
 	darray(struct dev_opts) devices;
-	struct dev_opts *dev;
-	unsigned block_size = 0;
-	unsigned btree_node_size = 0;
-	unsigned meta_csum_type = BCH_CSUM_CRC32C;
-	unsigned data_csum_type = BCH_CSUM_CRC32C;
-	unsigned compression_type = BCH_COMPRESSION_NONE;
-	bool encrypted = false;
-	unsigned on_error_action = BCH_ON_ERROR_RO;
-	char *label = NULL;
-	uuid_le uuid;
-	bool force = false;
-
-	/* Device specific options: */
-	u64 filesystem_size = 0;
-	unsigned bucket_size = 0;
-	unsigned tier = 0;
-	bool discard = false;
-	unsigned max_journal_entry_size = 0;
-	char *passphrase = NULL;
+	struct format_opts opts = format_opts_default();
+	struct dev_opts dev_opts = { 0 }, *dev;
+	bool force = false, no_passphrase = false;
 	int opt;
 
 	darray_init(devices);
-	uuid_clear(uuid.b);
 
 	while ((opt = getopt_long(argc, argv,
 				  "-b:e:L:U:ft:h",
@@ -192,45 +196,52 @@ int cmd_format(int argc, char *argv[])
 		switch (opt) {
 		case Opt_block_size:
 		case 'b':
-			block_size = hatoi_validate(optarg,
-						"block size");
+			opts.block_size =
+				hatoi_validate(optarg, "block size");
 			break;
 		case Opt_btree_node_size:
-			btree_node_size = hatoi_validate(optarg,
-						"btree node size");
+			opts.btree_node_size =
+				hatoi_validate(optarg, "btree node size");
 			break;
 		case Opt_metadata_checksum_type:
-			meta_csum_type = read_string_list_or_die(optarg,
+			opts.meta_csum_type =
+				read_string_list_or_die(optarg,
 						bch_csum_types, "checksum type");
 			break;
 		case Opt_data_checksum_type:
-			data_csum_type = read_string_list_or_die(optarg,
+			opts.data_csum_type =
+				read_string_list_or_die(optarg,
 						bch_csum_types, "checksum type");
 			break;
 		case Opt_compression_type:
-			compression_type = read_string_list_or_die(optarg,
+			opts.compression_type =
+				read_string_list_or_die(optarg,
 						bch_compression_types,
 						"compression type");
 			break;
 		case Opt_encrypted:
-			encrypted = true;
+			opts.encrypted = true;
+			break;
+		case Opt_no_passphrase:
+			no_passphrase = true;
 			break;
 		case Opt_error_action:
 		case 'e':
-			on_error_action = read_string_list_or_die(optarg,
+			opts.on_error_action =
+				read_string_list_or_die(optarg,
 						bch_error_actions, "error action");
 			break;
 		case Opt_max_journal_entry_size:
-			max_journal_entry_size = hatoi_validate(optarg,
-						"journal entry size");
+			opts.max_journal_entry_size =
+				hatoi_validate(optarg, "journal entry size");
 			break;
 		case Opt_label:
 		case 'L':
-			label = strdup(optarg);
+			opts.label = strdup(optarg);
 			break;
 		case Opt_uuid:
 		case 'U':
-			if (uuid_parse(optarg, uuid.b))
+			if (uuid_parse(optarg, opts.uuid.b))
 				die("Bad uuid");
 			break;
 		case Opt_force:
@@ -238,31 +249,28 @@ int cmd_format(int argc, char *argv[])
 			force = true;
 			break;
 		case Opt_fs_size:
-			if (bch_strtoull_h(optarg, &filesystem_size))
+			if (bch_strtoull_h(optarg, &dev_opts.size))
 				die("invalid filesystem size");
 
-			filesystem_size >>= 9;
+			dev_opts.size >>= 9;
 			break;
 		case Opt_bucket_size:
-			bucket_size = hatoi_validate(optarg, "bucket size");
+			dev_opts.bucket_size =
+				hatoi_validate(optarg, "bucket size");
 			break;
 		case Opt_tier:
 		case 't':
-			if (kstrtouint(optarg, 10, &tier) ||
-			    tier >= BCH_TIER_MAX)
+			if (kstrtouint(optarg, 10, &dev_opts.tier) ||
+			    dev_opts.tier >= BCH_TIER_MAX)
 				die("invalid tier");
 			break;
 		case Opt_discard:
-			discard = true;
+			dev_opts.discard = true;
 			break;
 		case Opt_no_opt:
-			darray_append(devices, (struct dev_opts) {
-				.path			= strdup(optarg),
-				.size			= filesystem_size,
-				.bucket_size		= bucket_size,
-				.tier			= tier,
-				.discard		= discard,
-			});
+			dev_opts.path = strdup(optarg);
+			darray_append(devices, dev_opts);
+			dev_opts.size = 0;
 			break;
 		case Opt_help:
 		case 'h':
@@ -274,18 +282,16 @@ int cmd_format(int argc, char *argv[])
 	if (!darray_size(devices))
 		die("Please supply a device");
 
-	if (uuid_is_null(uuid.b))
-		uuid_generate(uuid.b);
-
-	if (encrypted) {
-		passphrase = read_passphrase("Enter passphrase: ");
+	if (opts.encrypted && !no_passphrase) {
+		opts.passphrase = read_passphrase("Enter passphrase: ");
 
 		if (isatty(STDIN_FILENO)) {
 			char *pass2 =
 				read_passphrase("Enter same passphrase again: ");
 
-			if (strcmp(passphrase, pass2)) {
-				memzero_explicit(passphrase, strlen(passphrase));
+			if (strcmp(opts.passphrase, pass2)) {
+				memzero_explicit(opts.passphrase,
+						 strlen(opts.passphrase));
 				memzero_explicit(pass2, strlen(pass2));
 				die("Passphrases do not match");
 			}
@@ -298,23 +304,14 @@ int cmd_format(int argc, char *argv[])
 	darray_foreach(dev, devices)
 		dev->fd = open_for_format(dev->path, force);
 
-	bcache_format(devices.item, darray_size(devices),
-		      block_size,
-		      btree_node_size,
-		      meta_csum_type,
-		      data_csum_type,
-		      compression_type,
-		      passphrase,
-		      1,
-		      1,
-		      on_error_action,
-		      max_journal_entry_size,
-		      label,
-		      uuid);
+	struct bch_sb *sb =
+		bcache_format(opts, devices.item, darray_size(devices));
+	bcache_super_print(sb, HUMAN_READABLE);
+	free(sb);
 
-	if (passphrase) {
-		memzero_explicit(passphrase, strlen(passphrase));
-		free(passphrase);
+	if (opts.passphrase) {
+		memzero_explicit(opts.passphrase, strlen(opts.passphrase));
+		free(opts.passphrase);
 	}
 
 	return 0;

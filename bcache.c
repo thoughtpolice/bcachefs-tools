@@ -50,7 +50,12 @@ static void usage(void)
 	     "\n"
 	     "Debug:\n"
 	     "  bcache dump    Dump filesystem metadata to a qcow2 image\n"
-	     "  bcache list    List filesystem metadata in textual form\n");
+	     "  bcache list    List filesystem metadata in textual form\n"
+	     "\n"
+	     "Migrate:\n"
+	     "  bcache migrate Migrate an existing filesystem to bcachefs, in place\n"
+	     "  bcache migrate_superblock\n"
+	     "                 Add default superblock, after bcache migrate\n");
 }
 
 int main(int argc, char *argv[])
@@ -103,6 +108,11 @@ int main(int argc, char *argv[])
 		return cmd_dump(argc, argv);
 	if (!strcmp(cmd, "list"))
 		return cmd_list(argc, argv);
+
+	if (!strcmp(cmd, "migrate"))
+		return cmd_migrate(argc, argv);
+	if (!strcmp(cmd, "migrate_superblock"))
+		return cmd_migrate_superblock(argc, argv);
 
 	usage();
 	return 0;

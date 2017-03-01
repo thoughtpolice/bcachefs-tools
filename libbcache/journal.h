@@ -111,7 +111,6 @@
 #include <linux/hash.h>
 
 #include "journal_types.h"
-//#include "super-io.h"
 
 /*
  * Only used for holding the journal entries we read in btree_journal_read()
@@ -136,6 +135,7 @@ void bch_journal_pin_add_if_older(struct journal *,
 				  struct journal_entry_pin *,
 				  struct journal_entry_pin *,
 				  journal_pin_flush_fn);
+void bch_journal_flush_pins(struct journal *);
 
 struct closure;
 struct cache_set;
@@ -330,11 +330,6 @@ static inline int bch_journal_error(struct journal *j)
 		? -EIO : 0;
 }
 
-static inline bool is_journal_device(struct cache *ca)
-{
-	return ca->mi.state == BCH_MEMBER_STATE_ACTIVE && ca->mi.tier == 0;
-}
-
 static inline bool journal_flushes_device(struct cache *ca)
 {
 	return true;
@@ -356,9 +351,6 @@ static inline void bch_journal_set_replay_done(struct journal *j)
 	spin_unlock(&j->lock);
 }
 
-void bch_journal_free(struct journal *);
-int bch_journal_alloc(struct journal *, unsigned);
-
 ssize_t bch_journal_print_debug(struct journal *, char *);
 
 int bch_dev_journal_alloc(struct cache *);
@@ -372,7 +364,10 @@ static inline unsigned bch_nr_journal_buckets(struct bch_sb_field_journal *j)
 
 int bch_journal_move(struct cache *);
 
-void bch_journal_free_cache(struct cache *);
-int bch_journal_init_cache(struct cache *);
+void bch_fs_journal_stop(struct journal *);
+void bch_dev_journal_exit(struct cache *);
+int bch_dev_journal_init(struct cache *);
+void bch_fs_journal_exit(struct journal *);
+int bch_fs_journal_init(struct journal *, unsigned);
 
 #endif /* _BCACHE_JOURNAL_H */

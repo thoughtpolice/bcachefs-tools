@@ -20,8 +20,14 @@ int submit_bio_wait(struct bio *bio)
 	ssize_t ret;
 	unsigned i;
 
-	if (bio->bi_opf & REQ_PREFLUSH)
-		fdatasync(bio->bi_bdev->bd_fd);
+	if (bio->bi_opf & REQ_PREFLUSH) {
+		ret = fdatasync(bio->bi_bdev->bd_fd);
+		if (ret) {
+			fprintf(stderr, "fsync error: %s\n",
+				strerror(errno));
+			return -EIO;
+		}
+	}
 
 	i = 0;
 	bio_for_each_segment(bv, bio, iter)
@@ -49,10 +55,22 @@ int submit_bio_wait(struct bio *bio)
 		BUG();
 	}
 
-	if (bio->bi_opf & REQ_FUA)
-		fdatasync(bio->bi_bdev->bd_fd);
+	if (ret != bio->bi_iter.bi_size) {
+		fprintf(stderr, "IO error: %li (%s)\n",
+			ret, strerror(errno));
+		return -EIO;
+	}
 
-	return ret == bio->bi_iter.bi_size ? 0 : -EIO;
+	if (bio->bi_opf & REQ_FUA) {
+		ret = fdatasync(bio->bi_bdev->bd_fd);
+		if (ret) {
+			fprintf(stderr, "fsync error: %s\n",
+				strerror(errno));
+			return -EIO;
+		}
+	}
+
+	return 0;
 }
 
 void generic_make_request(struct bio *bio)

@@ -545,8 +545,7 @@ static int journal_entry_validate(struct cache_set *c,
 		return BCH_FSCK_UNKNOWN_VERSION;
 	}
 
-	if (mustfix_fsck_err_on(bytes > bucket_sectors_left << 9 ||
-			bytes > c->journal.entry_size_max, c,
+	if (mustfix_fsck_err_on(bytes > bucket_sectors_left << 9, c,
 			"journal entry too big (%zu bytes), sector %lluu",
 			bytes, sector)) {
 		/* XXX: note we might have missing journal entries */
@@ -1406,13 +1405,7 @@ void bch_journal_start(struct cache_set *c)
 {
 	struct journal *j = &c->journal;
 	struct journal_seq_blacklist *bl;
-	struct cache *ca;
 	u64 new_seq = 0;
-	unsigned i;
-
-	for_each_cache(ca, c, i)
-		if (is_journal_device(ca))
-			bch_dev_group_add(&c->journal.devs, ca);
 
 	list_for_each_entry(bl, &j->seq_blacklist, list)
 		new_seq = max(new_seq, bl->seq);
@@ -1534,48 +1527,111 @@ err:
 	return ret;
 }
 
-static int bch_set_nr_journal_buckets(struct cache *ca, unsigned nr)
+static int bch_set_nr_journal_buckets(struct cache_set *c, struct cache *ca,
+				      unsigned nr, bool write_super)
 {
+	struct journal *j = &c->journal;
 	struct journal_device *ja = &ca->journal;
-	struct bch_sb_field_journal *journal_buckets =
-		bch_sb_get_journal(ca->disk_sb.sb);
-	struct bch_sb_field *f;
-	u64 *p;
+	struct bch_sb_field_journal *journal_buckets;
+	struct disk_reservation disk_res = { 0, 0 };
+	struct closure cl;
+	u64 *new_bucket_seq = NULL, *new_buckets = NULL;
+	int ret = 0;
 
-	p = krealloc(ja->bucket_seq, nr * sizeof(u64),
-		     GFP_KERNEL|__GFP_ZERO);
-	if (!p)
-		return -ENOMEM;
+	closure_init_stack(&cl);
 
-	ja->bucket_seq = p;
+	mutex_lock(&c->sb_lock);
 
-	p = krealloc(ja->buckets, nr * sizeof(u64),
-		     GFP_KERNEL|__GFP_ZERO);
-	if (!p)
-		return -ENOMEM;
+	/* don't handle reducing nr of buckets yet: */
+	if (nr <= ja->nr)
+		goto err;
 
-	ja->buckets = p;
+	/*
+	 * note: journal buckets aren't really counted as _sectors_ used yet, so
+	 * we don't need the disk reservation to avoid the BUG_ON() in buckets.c
+	 * when space used goes up without a reservation - but we do need the
+	 * reservation to ensure we'll actually be able to allocate:
+	 */
 
-	f = bch_dev_sb_field_resize(&ca->disk_sb, &journal_buckets->field, nr +
-				    sizeof(*journal_buckets) / sizeof(u64));
-	if (!f)
-		return -ENOMEM;
-	f->type = BCH_SB_FIELD_journal;
+	ret = ENOSPC;
+	if (bch_disk_reservation_get(c, &disk_res,
+			(nr - ja->nr) << ca->bucket_bits, 0))
+		goto err;
 
-	ja->nr = nr;
-	return 0;
+	ret = -ENOMEM;
+	new_buckets	= kzalloc(nr * sizeof(u64), GFP_KERNEL);
+	new_bucket_seq	= kzalloc(nr * sizeof(u64), GFP_KERNEL);
+	if (!new_buckets || !new_bucket_seq)
+		goto err;
+
+	journal_buckets = bch_sb_resize_journal(&ca->disk_sb,
+				nr + sizeof(*journal_buckets) / sizeof(u64));
+	if (!journal_buckets)
+		goto err;
+
+	spin_lock(&j->lock);
+	memcpy(new_buckets,	ja->buckets,	ja->nr * sizeof(u64));
+	memcpy(new_bucket_seq,	ja->bucket_seq,	ja->nr * sizeof(u64));
+	swap(new_buckets,	ja->buckets);
+	swap(new_bucket_seq,	ja->bucket_seq);
+
+	while (ja->nr < nr) {
+		/* must happen under journal lock, to avoid racing with gc: */
+		u64 b = bch_bucket_alloc(ca, RESERVE_NONE);
+		if (!b) {
+			if (!closure_wait(&c->freelist_wait, &cl)) {
+				spin_unlock(&j->lock);
+				closure_sync(&cl);
+				spin_lock(&j->lock);
+			}
+			continue;
+		}
+
+		bch_mark_metadata_bucket(ca, &ca->buckets[b],
+					 BUCKET_JOURNAL, false);
+		bch_mark_alloc_bucket(ca, &ca->buckets[b], false);
+
+		memmove(ja->buckets + ja->last_idx + 1,
+			ja->buckets + ja->last_idx,
+			(ja->nr - ja->last_idx) * sizeof(u64));
+		memmove(ja->bucket_seq + ja->last_idx + 1,
+			ja->bucket_seq + ja->last_idx,
+			(ja->nr - ja->last_idx) * sizeof(u64));
+		memmove(journal_buckets->buckets + ja->last_idx + 1,
+			journal_buckets->buckets + ja->last_idx,
+			(ja->nr - ja->last_idx) * sizeof(u64));
+
+		ja->buckets[ja->last_idx] = b;
+		journal_buckets->buckets[ja->last_idx] = cpu_to_le64(b);
+
+		if (ja->last_idx < ja->nr) {
+			if (ja->cur_idx >= ja->last_idx)
+				ja->cur_idx++;
+			ja->last_idx++;
+		}
+		ja->nr++;
+
+	}
+	spin_unlock(&j->lock);
+
+	BUG_ON(bch_validate_journal_layout(ca->disk_sb.sb, ca->mi));
+
+	if (write_super)
+		bch_write_super(c);
+
+	ret = 0;
+err:
+	mutex_unlock(&c->sb_lock);
+
+	kfree(new_bucket_seq);
+	kfree(new_buckets);
+	bch_disk_reservation_put(c, &disk_res);
+
+	return ret;
 }
 
 int bch_dev_journal_alloc(struct cache *ca)
 {
-	struct journal_device *ja = &ca->journal;
-	struct bch_sb_field_journal *journal_buckets;
-	int ret;
-	unsigned i;
-
-	if (ca->mi.tier != 0)
-		return 0;
-
 	if (dynamic_fault("bcache:add:journal_alloc"))
 		return -ENOMEM;
 
@@ -1583,26 +1639,12 @@ int bch_dev_journal_alloc(struct cache *ca)
 	 * clamp journal size to 1024 buckets or 512MB (in sectors), whichever
 	 * is smaller:
 	 */
-	ret = bch_set_nr_journal_buckets(ca,
+	return bch_set_nr_journal_buckets(ca->set, ca,
 			clamp_t(unsigned, ca->mi.nbuckets >> 8,
 				BCH_JOURNAL_BUCKETS_MIN,
 				min(1 << 10,
-				    (1 << 20) / ca->mi.bucket_size)));
-	if (ret)
-		return ret;
-
-	journal_buckets = bch_sb_get_journal(ca->disk_sb.sb);
-
-	for (i = 0; i < ja->nr; i++) {
-		u64 bucket = ca->mi.first_bucket + i;
-
-		ja->buckets[i] = bucket;
-		journal_buckets->buckets[i] = cpu_to_le64(bucket);
-
-		bch_mark_metadata_bucket(ca, &ca->buckets[bucket], true);
-	}
-
-	return 0;
+				    (1 << 20) / ca->mi.bucket_size)),
+			false);
 }
 
 /* Journalling */
@@ -1726,13 +1768,11 @@ void bch_journal_pin_add_if_older(struct journal *j,
 	     fifo_entry_idx(&j->pin, pin->pin_list))) {
 		if (journal_pin_active(pin))
 			__journal_pin_drop(j, pin);
-		__journal_pin_add(j, src_pin->pin_list,
-				  pin, NULL);
+		__journal_pin_add(j, src_pin->pin_list, pin, flush_fn);
 	}
 
 	spin_unlock_irq(&j->pin_lock);
 }
-
 
 static struct journal_entry_pin *
 journal_get_next_pin(struct journal *j, u64 seq_to_flush)
@@ -1764,6 +1804,29 @@ journal_get_next_pin(struct journal *j, u64 seq_to_flush)
 	spin_unlock_irq(&j->pin_lock);
 
 	return ret;
+}
+
+static bool journal_has_pins(struct journal *j)
+{
+	bool ret;
+
+	spin_lock(&j->lock);
+	journal_reclaim_fast(j);
+	ret = fifo_used(&j->pin) > 1 ||
+		atomic_read(&fifo_peek_front(&j->pin).count) > 1;
+	spin_unlock(&j->lock);
+
+	return ret;
+}
+
+void bch_journal_flush_pins(struct journal *j)
+{
+	struct journal_entry_pin *pin;
+
+	while ((pin = journal_get_next_pin(j, U64_MAX)))
+		pin->flush(j, pin);
+
+	wait_event(j->wait, !journal_has_pins(j) || bch_journal_error(j));
 }
 
 static bool should_discard_bucket(struct journal *j, struct journal_device *ja)
@@ -1895,8 +1958,10 @@ static int journal_write_alloc(struct journal *j, unsigned sectors)
 	struct cache_set *c = container_of(j, struct cache_set, journal);
 	struct bkey_s_extent e = bkey_i_to_s_extent(&j->key);
 	struct bch_extent_ptr *ptr;
+	struct journal_device *ja;
 	struct cache *ca;
-	unsigned iter, replicas, replicas_want =
+	bool swapped;
+	unsigned i, replicas, replicas_want =
 		READ_ONCE(c->opts.metadata_replicas);
 
 	spin_lock(&j->lock);
@@ -1921,12 +1986,27 @@ static int journal_write_alloc(struct journal *j, unsigned sectors)
 
 	replicas = bch_extent_nr_ptrs(e.c);
 
+	spin_lock(&j->devs.lock);
+
+	/* Sort by tier: */
+	do {
+		swapped = false;
+
+		for (i = 0; i + 1 < j->devs.nr; i++)
+			if (j->devs.d[i + 0].dev->mi.tier >
+			    j->devs.d[i + 1].dev->mi.tier) {
+				swap(j->devs.d[i], j->devs.d[i + 1]);
+				swapped = true;
+			}
+	} while (swapped);
+
 	/*
-	 * Determine location of the next journal write:
-	 * XXX: sort caches by free journal space
+	 * Pick devices for next journal write:
+	 * XXX: sort devices by free journal space?
 	 */
-	group_for_each_cache_rcu(ca, &j->devs, iter) {
-		struct journal_device *ja = &ca->journal;
+	for (i = 0; i < j->devs.nr; i++) {
+		ca = j->devs.d[i].dev;
+		ja = &ca->journal;
 
 		if (replicas >= replicas_want)
 			break;
@@ -1954,7 +2034,7 @@ static int journal_write_alloc(struct journal *j, unsigned sectors)
 
 		trace_bcache_journal_next_bucket(ca, ja->cur_idx, ja->last_idx);
 	}
-
+	spin_unlock(&j->devs.lock);
 	rcu_read_unlock();
 
 	j->prev_buf_sectors = 0;
@@ -2468,50 +2548,6 @@ int bch_journal_flush(struct journal *j)
 	return bch_journal_flush_seq(j, seq);
 }
 
-void bch_journal_free(struct journal *j)
-{
-	unsigned order = get_order(j->entry_size_max);
-
-	free_pages((unsigned long) j->buf[1].data, order);
-	free_pages((unsigned long) j->buf[0].data, order);
-	free_fifo(&j->pin);
-}
-
-int bch_journal_alloc(struct journal *j, unsigned entry_size_max)
-{
-	static struct lock_class_key res_key;
-	unsigned order = get_order(entry_size_max);
-
-	spin_lock_init(&j->lock);
-	spin_lock_init(&j->pin_lock);
-	init_waitqueue_head(&j->wait);
-	INIT_DELAYED_WORK(&j->write_work, journal_write_work);
-	INIT_DELAYED_WORK(&j->reclaim_work, journal_reclaim_work);
-	mutex_init(&j->blacklist_lock);
-	INIT_LIST_HEAD(&j->seq_blacklist);
-	spin_lock_init(&j->devs.lock);
-	mutex_init(&j->reclaim_lock);
-
-	lockdep_init_map(&j->res_map, "journal res", &res_key, 0);
-
-	j->entry_size_max	= entry_size_max;
-	j->write_delay_ms	= 100;
-	j->reclaim_delay_ms	= 100;
-
-	bkey_extent_init(&j->key);
-
-	atomic64_set(&j->reservations.counter,
-		((union journal_res_state)
-		 { .cur_entry_offset = JOURNAL_ENTRY_CLOSED_VAL }).v);
-
-	if (!(init_fifo(&j->pin, JOURNAL_PIN, GFP_KERNEL)) ||
-	    !(j->buf[0].data = (void *) __get_free_pages(GFP_KERNEL, order)) ||
-	    !(j->buf[1].data = (void *) __get_free_pages(GFP_KERNEL, order)))
-		return -ENOMEM;
-
-	return 0;
-}
-
 ssize_t bch_journal_print_debug(struct journal *j, char *buf)
 {
 	union journal_res_state *s = &j->reservations;
@@ -2643,13 +2679,31 @@ int bch_journal_move(struct cache *ca)
 	return ret;
 }
 
-void bch_journal_free_cache(struct cache *ca)
+void bch_fs_journal_stop(struct journal *j)
+{
+	if (!test_bit(JOURNAL_STARTED, &j->flags))
+		return;
+
+	/*
+	 * Empty out the journal by first flushing everything pinning existing
+	 * journal entries, then force a brand new empty journal entry to be
+	 * written:
+	 */
+	bch_journal_flush_pins(j);
+	bch_journal_flush_async(j, NULL);
+	bch_journal_meta(j);
+
+	cancel_delayed_work_sync(&j->write_work);
+	cancel_delayed_work_sync(&j->reclaim_work);
+}
+
+void bch_dev_journal_exit(struct cache *ca)
 {
 	kfree(ca->journal.buckets);
 	kfree(ca->journal.bucket_seq);
 }
 
-int bch_journal_init_cache(struct cache *ca)
+int bch_dev_journal_init(struct cache *ca)
 {
 	struct journal_device *ja = &ca->journal;
 	struct bch_sb_field_journal *journal_buckets =
@@ -2676,6 +2730,50 @@ int bch_journal_init_cache(struct cache *ca)
 
 	for (i = 0; i < ja->nr; i++)
 		ja->buckets[i] = le64_to_cpu(journal_buckets->buckets[i]);
+
+	return 0;
+}
+
+void bch_fs_journal_exit(struct journal *j)
+{
+	unsigned order = get_order(j->entry_size_max);
+
+	free_pages((unsigned long) j->buf[1].data, order);
+	free_pages((unsigned long) j->buf[0].data, order);
+	free_fifo(&j->pin);
+}
+
+int bch_fs_journal_init(struct journal *j, unsigned entry_size_max)
+{
+	static struct lock_class_key res_key;
+	unsigned order = get_order(entry_size_max);
+
+	spin_lock_init(&j->lock);
+	spin_lock_init(&j->pin_lock);
+	init_waitqueue_head(&j->wait);
+	INIT_DELAYED_WORK(&j->write_work, journal_write_work);
+	INIT_DELAYED_WORK(&j->reclaim_work, journal_reclaim_work);
+	mutex_init(&j->blacklist_lock);
+	INIT_LIST_HEAD(&j->seq_blacklist);
+	spin_lock_init(&j->devs.lock);
+	mutex_init(&j->reclaim_lock);
+
+	lockdep_init_map(&j->res_map, "journal res", &res_key, 0);
+
+	j->entry_size_max	= entry_size_max;
+	j->write_delay_ms	= 100;
+	j->reclaim_delay_ms	= 100;
+
+	bkey_extent_init(&j->key);
+
+	atomic64_set(&j->reservations.counter,
+		((union journal_res_state)
+		 { .cur_entry_offset = JOURNAL_ENTRY_CLOSED_VAL }).v);
+
+	if (!(init_fifo(&j->pin, JOURNAL_PIN, GFP_KERNEL)) ||
+	    !(j->buf[0].data = (void *) __get_free_pages(GFP_KERNEL, order)) ||
+	    !(j->buf[1].data = (void *) __get_free_pages(GFP_KERNEL, order)))
+		return -ENOMEM;
 
 	return 0;
 }

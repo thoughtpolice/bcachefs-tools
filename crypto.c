@@ -10,8 +10,10 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <keyutils.h>
 #include <linux/random.h>
 #include <libscrypt.h>
+#include <uuid/uuid.h>
 
 #include "checksum.h"
 #include "crypto.h"
@@ -75,29 +77,71 @@ void derive_passphrase(struct bch_sb_field_crypt *crypt,
 	}
 }
 
+void add_bcache_key(struct bch_sb *sb, const char *passphrase)
+{
+	struct bch_sb_field_crypt *crypt = bch_sb_get_crypt(sb);
+	if (!crypt)
+		die("filesystem is not encrypted");
+
+	struct bch_encrypted_key sb_key = crypt->key;
+	if (!bch_key_is_encrypted(&sb_key))
+		die("filesystem does not have encryption key");
+
+	struct bch_key passphrase_key;
+	derive_passphrase(crypt, &passphrase_key, passphrase);
+
+	/* Check if the user supplied the correct passphrase: */
+	if (bch_chacha_encrypt_key(&passphrase_key, __bch_sb_key_nonce(sb),
+				   &sb_key, sizeof(sb_key)))
+		die("error encrypting key");
+
+	if (bch_key_is_encrypted(&sb_key))
+		die("incorrect passphrase");
+
+	char uuid[40];
+	uuid_unparse_lower(sb->user_uuid.b, uuid);
+
+	char *description = mprintf("bcache:%s", uuid);
+
+	if (add_key("logon", description,
+		    &passphrase_key, sizeof(passphrase_key),
+		    KEY_SPEC_USER_KEYRING) < 0 ||
+	    add_key("user", description,
+		    &passphrase_key, sizeof(passphrase_key),
+		    KEY_SPEC_USER_KEYRING) < 0)
+		die("add_key error: %s", strerror(errno));
+
+	memzero_explicit(description, strlen(description));
+	free(description);
+	memzero_explicit(&passphrase_key, sizeof(passphrase_key));
+	memzero_explicit(&sb_key, sizeof(sb_key));
+}
+
 void bch_sb_crypt_init(struct bch_sb *sb,
 		       struct bch_sb_field_crypt *crypt,
 		       const char *passphrase)
 {
-	struct bch_key passphrase_key;
-
-	SET_BCH_CRYPT_KDF_TYPE(crypt, BCH_KDF_SCRYPT);
-	SET_BCH_KDF_SCRYPT_N(crypt, ilog2(SCRYPT_N));
-	SET_BCH_KDF_SCRYPT_R(crypt, ilog2(SCRYPT_r));
-	SET_BCH_KDF_SCRYPT_P(crypt, ilog2(SCRYPT_p));
-
-	derive_passphrase(crypt, &passphrase_key, passphrase);
-
 	crypt->key.magic = BCH_KEY_MAGIC;
 	get_random_bytes(&crypt->key.key, sizeof(crypt->key.key));
 
-	assert(!bch_key_is_encrypted(&crypt->key));
+	if (passphrase) {
+		struct bch_key passphrase_key;
 
-	if (bch_chacha_encrypt_key(&passphrase_key, __bch_sb_key_nonce(sb),
-				   &crypt->key, sizeof(crypt->key)))
-		die("error encrypting key");
+		SET_BCH_CRYPT_KDF_TYPE(crypt, BCH_KDF_SCRYPT);
+		SET_BCH_KDF_SCRYPT_N(crypt, ilog2(SCRYPT_N));
+		SET_BCH_KDF_SCRYPT_R(crypt, ilog2(SCRYPT_r));
+		SET_BCH_KDF_SCRYPT_P(crypt, ilog2(SCRYPT_p));
 
-	assert(bch_key_is_encrypted(&crypt->key));
+		derive_passphrase(crypt, &passphrase_key, passphrase);
 
-	memzero_explicit(&passphrase_key, sizeof(passphrase_key));
+		assert(!bch_key_is_encrypted(&crypt->key));
+
+		if (bch_chacha_encrypt_key(&passphrase_key, __bch_sb_key_nonce(sb),
+					   &crypt->key, sizeof(crypt->key)))
+			die("error encrypting key");
+
+		assert(bch_key_is_encrypted(&crypt->key));
+
+		memzero_explicit(&passphrase_key, sizeof(passphrase_key));
+	}
 }
