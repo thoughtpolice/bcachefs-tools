@@ -21,8 +21,7 @@ static void usage(void)
 
 int cmd_fsck(int argc, char *argv[])
 {
-	DECLARE_COMPLETION_ONSTACK(shutdown);
-	struct cache_set_opts opts = cache_set_opts_empty();
+	struct bch_opts opts = bch_opts_empty();
 	struct cache_set *c = NULL;
 	const char *err;
 	int opt;
@@ -53,16 +52,10 @@ int cmd_fsck(int argc, char *argv[])
 	if (optind >= argc)
 		die("Please supply device(s) to check");
 
-	err = bch_register_cache_set(argv + optind, argc - optind, opts, &c);
+	err = bch_fs_open(argv + optind, argc - optind, opts, &c);
 	if (err)
 		die("error opening %s: %s", argv[optind], err);
 
-	c->stop_completion = &shutdown;
-	bch_cache_set_stop(c);
-	closure_put(&c->cl);
-
-	/* Killable? */
-	wait_for_completion(&shutdown);
-
+	bch_fs_stop_sync(c);
 	return 0;
 }

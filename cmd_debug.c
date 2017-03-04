@@ -84,8 +84,7 @@ static void dump_one_device(struct cache_set *c, struct cache *ca, int fd)
 
 int cmd_dump(int argc, char *argv[])
 {
-	DECLARE_COMPLETION_ONSTACK(shutdown);
-	struct cache_set_opts opts = cache_set_opts_empty();
+	struct bch_opts opts = bch_opts_empty();
 	struct cache_set *c = NULL;
 	const char *err;
 	char *out = NULL, *buf;
@@ -120,7 +119,7 @@ int cmd_dump(int argc, char *argv[])
 	buf = alloca(strlen(out) + 10);
 	strcpy(buf, out);
 
-	err = bch_register_cache_set(argv + optind, argc - optind, opts, &c);
+	err = bch_fs_open(argv + optind, argc - optind, opts, &c);
 	if (err)
 		die("error opening %s: %s", argv[optind], err);
 
@@ -154,10 +153,7 @@ int cmd_dump(int argc, char *argv[])
 
 	up_read(&c->gc_lock);
 
-	c->stop_completion = &shutdown;
-	bch_cache_set_stop(c);
-	closure_put(&c->cl);
-	wait_for_completion(&shutdown);
+	bch_fs_stop_sync(c);
 	return 0;
 }
 
@@ -227,8 +223,7 @@ static void list_keys_usage(void)
 
 int cmd_list(int argc, char *argv[])
 {
-	DECLARE_COMPLETION_ONSTACK(shutdown);
-	struct cache_set_opts opts = cache_set_opts_empty();
+	struct bch_opts opts = bch_opts_empty();
 	struct cache_set *c = NULL;
 	enum btree_id btree_id = BTREE_ID_EXTENTS;
 	struct bpos start = POS_MIN, end = POS_MAX;
@@ -265,7 +260,7 @@ int cmd_list(int argc, char *argv[])
 	if (optind >= argc)
 		die("Please supply device(s) to check");
 
-	err = bch_register_cache_set(argv + optind, argc - optind, opts, &c);
+	err = bch_fs_open(argv + optind, argc - optind, opts, &c);
 	if (err)
 		die("error opening %s: %s", argv[optind], err);
 
@@ -280,9 +275,6 @@ int cmd_list(int argc, char *argv[])
 		die("Invalid mode");
 	}
 
-	c->stop_completion = &shutdown;
-	bch_cache_set_stop(c);
-	closure_put(&c->cl);
-	wait_for_completion(&shutdown);
+	bch_fs_stop_sync(c);
 	return 0;
 }

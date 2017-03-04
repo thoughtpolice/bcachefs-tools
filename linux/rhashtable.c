@@ -25,7 +25,6 @@
 #include <linux/random.h>
 #include <linux/rhashtable.h>
 #include <linux/err.h>
-#include <linux/export.h>
 
 #define HASH_DEFAULT_SIZE	64UL
 #define HASH_MIN_SIZE		4U
@@ -38,36 +37,11 @@ static u32 head_hashfn(struct rhashtable *ht,
 	return rht_head_hashfn(ht, tbl, he, ht->p);
 }
 
-#ifdef CONFIG_PROVE_LOCKING
-#define ASSERT_RHT_MUTEX(HT) BUG_ON(!lockdep_rht_mutex_is_held(HT))
-
-int lockdep_rht_mutex_is_held(struct rhashtable *ht)
-{
-	return (debug_locks) ? lockdep_is_held(&ht->mutex) : 1;
-}
-EXPORT_SYMBOL_GPL(lockdep_rht_mutex_is_held);
-
-int lockdep_rht_bucket_is_held(const struct bucket_table *tbl, u32 hash)
-{
-	spinlock_t *lock = rht_bucket_lock(tbl, hash);
-
-	return (debug_locks) ? lockdep_is_held(lock) : 1;
-}
-EXPORT_SYMBOL_GPL(lockdep_rht_bucket_is_held);
-#else
-#define ASSERT_RHT_MUTEX(HT)
-#endif
-
-
 static int alloc_bucket_locks(struct rhashtable *ht, struct bucket_table *tbl,
 			      gfp_t gfp)
 {
 	unsigned int i, size;
-#if defined(CONFIG_PROVE_LOCKING)
-	unsigned int nr_pcpus = 2;
-#else
 	unsigned int nr_pcpus = num_possible_cpus();
-#endif
 
 	nr_pcpus = min_t(unsigned int, nr_pcpus, 64UL);
 	size = roundup_pow_of_two(nr_pcpus * ht->p.locks_mul);
@@ -77,11 +51,6 @@ static int alloc_bucket_locks(struct rhashtable *ht, struct bucket_table *tbl,
 
 	if (sizeof(spinlock_t) != 0) {
 		tbl->locks = NULL;
-#ifdef CONFIG_NUMA
-		if (size * sizeof(spinlock_t) > PAGE_SIZE &&
-		    gfp == GFP_KERNEL)
-			tbl->locks = vmalloc(size * sizeof(spinlock_t));
-#endif
 		if (gfp != GFP_KERNEL)
 			gfp |= __GFP_NOWARN | __GFP_NORETRY;
 
@@ -270,27 +239,10 @@ static int rhashtable_rehash_table(struct rhashtable *ht)
 	return rht_dereference(new_tbl->future_tbl, ht) ? -EAGAIN : 0;
 }
 
-/**
- * rhashtable_expand - Expand hash table while allowing concurrent lookups
- * @ht:		the hash table to expand
- *
- * A secondary bucket array is allocated and the hash entries are migrated.
- *
- * This function may only be called in a context where it is safe to call
- * synchronize_rcu(), e.g. not within a rcu_read_lock() section.
- *
- * The caller must ensure that no concurrent resizing occurs by holding
- * ht->mutex.
- *
- * It is valid to have concurrent insertions and deletions protected by per
- * bucket locks or concurrent RCU protected lookups and traversals.
- */
 static int rhashtable_expand(struct rhashtable *ht)
 {
 	struct bucket_table *new_tbl, *old_tbl = rht_dereference(ht->tbl, ht);
 	int err;
-
-	ASSERT_RHT_MUTEX(ht);
 
 	old_tbl = rhashtable_last_table(ht, old_tbl);
 
@@ -305,30 +257,12 @@ static int rhashtable_expand(struct rhashtable *ht)
 	return err;
 }
 
-/**
- * rhashtable_shrink - Shrink hash table while allowing concurrent lookups
- * @ht:		the hash table to shrink
- *
- * This function shrinks the hash table to fit, i.e., the smallest
- * size would not cause it to expand right away automatically.
- *
- * The caller must ensure that no concurrent resizing occurs by holding
- * ht->mutex.
- *
- * The caller must ensure that no concurrent table mutations take place.
- * It is however valid to have concurrent lookups if they are RCU protected.
- *
- * It is valid to have concurrent insertions and deletions protected by per
- * bucket locks or concurrent RCU protected lookups and traversals.
- */
 static int rhashtable_shrink(struct rhashtable *ht)
 {
 	struct bucket_table *new_tbl, *old_tbl = rht_dereference(ht->tbl, ht);
 	unsigned int nelems = atomic_read(&ht->nelems);
 	unsigned int size = 0;
 	int err;
-
-	ASSERT_RHT_MUTEX(ht);
 
 	if (nelems)
 		size = roundup_pow_of_two(nelems * 3 / 2);
@@ -438,7 +372,6 @@ fail:
 
 	return err;
 }
-EXPORT_SYMBOL_GPL(rhashtable_insert_rehash);
 
 struct bucket_table *rhashtable_insert_slow(struct rhashtable *ht,
 					    const void *key,
@@ -486,191 +419,6 @@ exit:
 	else
 		return ERR_PTR(err);
 }
-EXPORT_SYMBOL_GPL(rhashtable_insert_slow);
-
-/**
- * rhashtable_walk_init - Initialise an iterator
- * @ht:		Table to walk over
- * @iter:	Hash table Iterator
- * @gfp:	GFP flags for allocations
- *
- * This function prepares a hash table walk.
- *
- * Note that if you restart a walk after rhashtable_walk_stop you
- * may see the same object twice.  Also, you may miss objects if
- * there are removals in between rhashtable_walk_stop and the next
- * call to rhashtable_walk_start.
- *
- * For a completely stable walk you should construct your own data
- * structure outside the hash table.
- *
- * This function may sleep so you must not call it from interrupt
- * context or with spin locks held.
- *
- * You must call rhashtable_walk_exit if this function returns
- * successfully.
- */
-int rhashtable_walk_init(struct rhashtable *ht, struct rhashtable_iter *iter,
-			 gfp_t gfp)
-{
-	iter->ht = ht;
-	iter->p = NULL;
-	iter->slot = 0;
-	iter->skip = 0;
-
-	iter->walker = kmalloc(sizeof(*iter->walker), gfp);
-	if (!iter->walker)
-		return -ENOMEM;
-
-	spin_lock(&ht->lock);
-	iter->walker->tbl =
-		rcu_dereference_protected(ht->tbl, lockdep_is_held(&ht->lock));
-	list_add(&iter->walker->list, &iter->walker->tbl->walkers);
-	spin_unlock(&ht->lock);
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(rhashtable_walk_init);
-
-/**
- * rhashtable_walk_exit - Free an iterator
- * @iter:	Hash table Iterator
- *
- * This function frees resources allocated by rhashtable_walk_init.
- */
-void rhashtable_walk_exit(struct rhashtable_iter *iter)
-{
-	spin_lock(&iter->ht->lock);
-	if (iter->walker->tbl)
-		list_del(&iter->walker->list);
-	spin_unlock(&iter->ht->lock);
-	kfree(iter->walker);
-}
-EXPORT_SYMBOL_GPL(rhashtable_walk_exit);
-
-/**
- * rhashtable_walk_start - Start a hash table walk
- * @iter:	Hash table iterator
- *
- * Start a hash table walk.  Note that we take the RCU lock in all
- * cases including when we return an error.  So you must always call
- * rhashtable_walk_stop to clean up.
- *
- * Returns zero if successful.
- *
- * Returns -EAGAIN if resize event occured.  Note that the iterator
- * will rewind back to the beginning and you may use it immediately
- * by calling rhashtable_walk_next.
- */
-int rhashtable_walk_start(struct rhashtable_iter *iter)
-	__acquires(RCU)
-{
-	struct rhashtable *ht = iter->ht;
-
-	rcu_read_lock();
-
-	spin_lock(&ht->lock);
-	if (iter->walker->tbl)
-		list_del(&iter->walker->list);
-	spin_unlock(&ht->lock);
-
-	if (!iter->walker->tbl) {
-		iter->walker->tbl = rht_dereference_rcu(ht->tbl, ht);
-		return -EAGAIN;
-	}
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(rhashtable_walk_start);
-
-/**
- * rhashtable_walk_next - Return the next object and advance the iterator
- * @iter:	Hash table iterator
- *
- * Note that you must call rhashtable_walk_stop when you are finished
- * with the walk.
- *
- * Returns the next object or NULL when the end of the table is reached.
- *
- * Returns -EAGAIN if resize event occured.  Note that the iterator
- * will rewind back to the beginning and you may continue to use it.
- */
-void *rhashtable_walk_next(struct rhashtable_iter *iter)
-{
-	struct bucket_table *tbl = iter->walker->tbl;
-	struct rhashtable *ht = iter->ht;
-	struct rhash_head *p = iter->p;
-
-	if (p) {
-		p = rht_dereference_bucket_rcu(p->next, tbl, iter->slot);
-		goto next;
-	}
-
-	for (; iter->slot < tbl->size; iter->slot++) {
-		int skip = iter->skip;
-
-		rht_for_each_rcu(p, tbl, iter->slot) {
-			if (!skip)
-				break;
-			skip--;
-		}
-
-next:
-		if (!rht_is_a_nulls(p)) {
-			iter->skip++;
-			iter->p = p;
-			return rht_obj(ht, p);
-		}
-
-		iter->skip = 0;
-	}
-
-	iter->p = NULL;
-
-	/* Ensure we see any new tables. */
-	smp_rmb();
-
-	iter->walker->tbl = rht_dereference_rcu(tbl->future_tbl, ht);
-	if (iter->walker->tbl) {
-		iter->slot = 0;
-		iter->skip = 0;
-		return ERR_PTR(-EAGAIN);
-	}
-
-	return NULL;
-}
-EXPORT_SYMBOL_GPL(rhashtable_walk_next);
-
-/**
- * rhashtable_walk_stop - Finish a hash table walk
- * @iter:	Hash table iterator
- *
- * Finish a hash table walk.
- */
-void rhashtable_walk_stop(struct rhashtable_iter *iter)
-	__releases(RCU)
-{
-	struct rhashtable *ht;
-	struct bucket_table *tbl = iter->walker->tbl;
-
-	if (!tbl)
-		goto out;
-
-	ht = iter->ht;
-
-	spin_lock(&ht->lock);
-	if (tbl->rehash < tbl->size)
-		list_add(&iter->walker->list, &tbl->walkers);
-	else
-		iter->walker->tbl = NULL;
-	spin_unlock(&ht->lock);
-
-	iter->p = NULL;
-
-out:
-	rcu_read_unlock();
-}
-EXPORT_SYMBOL_GPL(rhashtable_walk_stop);
 
 static size_t rounded_hashtable_size(const struct rhashtable_params *params)
 {
@@ -683,49 +431,6 @@ static u32 rhashtable_jhash2(const void *key, u32 length, u32 seed)
 	return jhash2(key, length, seed);
 }
 
-/**
- * rhashtable_init - initialize a new hash table
- * @ht:		hash table to be initialized
- * @params:	configuration parameters
- *
- * Initializes a new hash table based on the provided configuration
- * parameters. A table can be configured either with a variable or
- * fixed length key:
- *
- * Configuration Example 1: Fixed length keys
- * struct test_obj {
- *	int			key;
- *	void *			my_member;
- *	struct rhash_head	node;
- * };
- *
- * struct rhashtable_params params = {
- *	.head_offset = offsetof(struct test_obj, node),
- *	.key_offset = offsetof(struct test_obj, key),
- *	.key_len = sizeof(int),
- *	.hashfn = jhash,
- *	.nulls_base = (1U << RHT_BASE_SHIFT),
- * };
- *
- * Configuration Example 2: Variable length keys
- * struct test_obj {
- *	[...]
- *	struct rhash_head	node;
- * };
- *
- * u32 my_hash_fn(const void *data, u32 len, u32 seed)
- * {
- *	struct test_obj *obj = data;
- *
- *	return [... hash ...];
- * }
- *
- * struct rhashtable_params params = {
- *	.head_offset = offsetof(struct test_obj, node),
- *	.hashfn = jhash,
- *	.obj_hashfn = my_hash_fn,
- * };
- */
 int rhashtable_init(struct rhashtable *ht,
 		    const struct rhashtable_params *params)
 {
@@ -805,56 +510,15 @@ int rhashtable_init(struct rhashtable *ht,
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(rhashtable_init);
 
-/**
- * rhashtable_free_and_destroy - free elements and destroy hash table
- * @ht:		the hash table to destroy
- * @free_fn:	callback to release resources of element
- * @arg:	pointer passed to free_fn
- *
- * Stops an eventual async resize. If defined, invokes free_fn for each
- * element to releasal resources. Please note that RCU protected
- * readers may still be accessing the elements. Releasing of resources
- * must occur in a compatible manner. Then frees the bucket array.
- *
- * This function will eventually sleep to wait for an async resize
- * to complete. The caller is responsible that no further write operations
- * occurs in parallel.
- */
-void rhashtable_free_and_destroy(struct rhashtable *ht,
-				 void (*free_fn)(void *ptr, void *arg),
-				 void *arg)
+void rhashtable_destroy(struct rhashtable *ht)
 {
 	struct bucket_table *tbl;
-	unsigned int i;
 
 	cancel_work_sync(&ht->run_work);
 
 	mutex_lock(&ht->mutex);
 	tbl = rht_dereference(ht->tbl, ht);
-	if (free_fn) {
-		for (i = 0; i < tbl->size; i++) {
-			struct rhash_head *pos, *next;
-
-			for (pos = rht_dereference(tbl->buckets[i], ht),
-			     next = !rht_is_a_nulls(pos) ?
-					rht_dereference(pos->next, ht) : NULL;
-			     !rht_is_a_nulls(pos);
-			     pos = next,
-			     next = !rht_is_a_nulls(pos) ?
-					rht_dereference(pos->next, ht) : NULL)
-				free_fn(rht_obj(ht, pos), arg);
-		}
-	}
-
 	bucket_table_free(tbl);
 	mutex_unlock(&ht->mutex);
 }
-EXPORT_SYMBOL_GPL(rhashtable_free_and_destroy);
-
-void rhashtable_destroy(struct rhashtable *ht)
-{
-	return rhashtable_free_and_destroy(ht, NULL, NULL);
-}
-EXPORT_SYMBOL_GPL(rhashtable_destroy);

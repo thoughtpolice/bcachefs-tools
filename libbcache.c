@@ -369,7 +369,7 @@ void bcache_super_print(struct bch_sb *sb, int units)
 		       last_mount ? ctime(&last_mount) : "(never)",
 
 		       BCH_MEMBER_STATE(m) < BCH_MEMBER_STATE_NR
-		       ? bch_cache_state[BCH_MEMBER_STATE(m)]
+		       ? bch_dev_state[BCH_MEMBER_STATE(m)]
 		       : "unknown",
 
 		       BCH_MEMBER_TIER(m),

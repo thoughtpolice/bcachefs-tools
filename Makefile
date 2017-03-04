@@ -10,6 +10,12 @@ CFLAGS+=-std=gnu99 -O2 -g -MMD -Wall				\
 	-D_GNU_SOURCE						\
 	-D_LGPL_SOURCE						\
 	-DRCU_MEMBARRIER					\
+	-DNO_BCACHE_ACCOUNTING					\
+	-DNO_BCACHE_BLOCKDEV					\
+	-DNO_BCACHE_CHARDEV					\
+	-DNO_BCACHE_FS						\
+	-DNO_BCACHE_NOTIFY					\
+	-DNO_BCACHE_WRITEBACK					\
 	$(EXTRA_CFLAGS)
 LDFLAGS+=-O2 -g
 
@@ -20,7 +26,7 @@ else
 	LDFLAGS+=-flto
 endif
 
-PKGCONFIG_LIBS="blkid uuid liburcu libsodium"
+PKGCONFIG_LIBS="blkid uuid liburcu libsodium zlib"
 CFLAGS+=`pkg-config --cflags	${PKGCONFIG_LIBS}`
 LDLIBS+=`pkg-config --libs	${PKGCONFIG_LIBS}` 		\
 	-lm -lpthread -lrt -lscrypt -lkeyutils

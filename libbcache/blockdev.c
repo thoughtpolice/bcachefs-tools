@@ -17,7 +17,7 @@
 static int bch_blockdev_major;
 static DEFINE_IDA(bch_blockdev_minor);
 static LIST_HEAD(uncached_devices);
-struct kmem_cache *bch_search_cache;
+static struct kmem_cache *bch_search_cache;
 
 static void write_bdev_super_endio(struct bio *bio)
 {
@@ -67,7 +67,7 @@ bool bch_is_open_backing_dev(struct block_device *bdev)
 	struct cache_set *c, *tc;
 	struct cached_dev *dc, *t;
 
-	list_for_each_entry_safe(c, tc, &bch_cache_sets, list)
+	list_for_each_entry_safe(c, tc, &bch_fs_list, list)
 		list_for_each_entry_safe(dc, t, &c->cached_devs, list)
 			if (dc->disk_sb.bdev == bdev)
 				return true;
@@ -387,10 +387,10 @@ int bch_cached_dev_attach(struct cached_dev *dc, struct cache_set *c)
 		return -EINVAL;
 	}
 
-	if (!test_bit(CACHE_SET_RUNNING, &c->flags))
+	if (!test_bit(BCH_FS_RUNNING, &c->flags))
 		return 0;
 
-	if (test_bit(CACHE_SET_STOPPING, &c->flags)) {
+	if (test_bit(BCH_FS_STOPPING, &c->flags)) {
 		pr_err("Can't attach %s: shutting down", buf);
 		return -EINVAL;
 	}
@@ -652,7 +652,7 @@ const char *bch_backing_dev_register(struct bcache_superblock *sb)
 		bdevname(dc->disk_sb.bdev, name));
 
 	list_add(&dc->list, &uncached_devices);
-	list_for_each_entry(c, &bch_cache_sets, list)
+	list_for_each_entry(c, &bch_fs_list, list)
 		bch_cached_dev_attach(dc, c);
 
 	if (BDEV_STATE(dc->disk_sb.sb) == BDEV_STATE_NONE ||
@@ -742,7 +742,7 @@ int bch_blockdev_volumes_start(struct cache_set *c)
 	struct bkey_s_c_inode_blockdev inode;
 	int ret = 0;
 
-	if (test_bit(CACHE_SET_STOPPING, &c->flags))
+	if (test_bit(BCH_FS_STOPPING, &c->flags))
 		return -EINVAL;
 
 	for_each_btree_key(&iter, c, BTREE_ID_INODES, POS_MIN, k) {
@@ -799,7 +799,7 @@ void bch_blockdevs_stop(struct cache_set *c)
 		d = radix_tree_deref_slot(slot);
 
 		if (CACHED_DEV(&d->inode.v) &&
-		    test_bit(CACHE_SET_UNREGISTERING, &c->flags)) {
+		    test_bit(BCH_FS_DETACHING, &c->flags)) {
 			dc = container_of(d, struct cached_dev, disk);
 			bch_cached_dev_detach(dc);
 		} else {
@@ -809,6 +809,16 @@ void bch_blockdevs_stop(struct cache_set *c)
 
 	rcu_read_unlock();
 	mutex_unlock(&bch_register_lock);
+}
+
+void bch_fs_blockdev_exit(struct cache_set *c)
+{
+	mempool_exit(&c->search);
+}
+
+int bch_fs_blockdev_init(struct cache_set *c)
+{
+	return mempool_init_slab_pool(&c->search, 1, bch_search_cache);
 }
 
 void bch_blockdev_exit(void)
