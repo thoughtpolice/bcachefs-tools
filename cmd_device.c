@@ -177,20 +177,90 @@ int cmd_device_show(int argc, char *argv[])
 	return 0;
 }
 
+static void device_add_usage(void)
+{
+	puts("bcache device_add - add a device to an existing filesystem\n"
+	     "Usage: bcache device_add [OPTION]... filesystem device\n"
+	     "\n"
+	     "Options:\n"
+	     "      --fs_size=size          Size of filesystem on device\n"
+	     "      --bucket=size           Bucket size\n"
+	     "      --discard               Enable discards\n"
+	     "  -t, --tier=#                Higher tier (e.g. 1) indicates slower devices\n"
+	     "  -f, --force                 Use device even if it appears to already be formatted\n"
+	     "  -h, --help                  Display this help and exit\n"
+	     "\n"
+	     "Report bugs to <linux-bcache@vger.kernel.org>");
+}
+
+static const struct option device_add_opts[] = {
+	{ "fs_size",		required_argument,	NULL, 'S' },
+	{ "bucket",		required_argument,	NULL, 'B' },
+	{ "discard",		no_argument,		NULL, 'D' },
+	{ "tier",		required_argument,	NULL, 't' },
+	{ "force",		no_argument,		NULL, 'f' },
+	{ NULL }
+};
+
 int cmd_device_add(int argc, char *argv[])
 {
-	if (argc < 3)
-		die("Please supply a filesystem and at least one device to add");
+	struct format_opts format_opts = format_opts_default();
+	struct dev_opts dev_opts = { 0 };
+	bool force = false;
+	int opt;
 
-	struct bcache_handle fs = bcache_fs_open(argv[1]);
+	while ((opt = getopt_long(argc, argv, "t:fh",
+				  device_add_opts, NULL)) != -1)
+		switch (opt) {
+		case 'S':
+			if (bch_strtoull_h(optarg, &dev_opts.size))
+				die("invalid filesystem size");
 
-	for (unsigned i = 2; i < argc; i++) {
-		struct bch_ioctl_disk_add ia = {
-			.dev = (__u64) argv[i],
-		};
+			dev_opts.size >>= 9;
+			break;
+		case 'B':
+			dev_opts.bucket_size =
+				hatoi_validate(optarg, "bucket size");
+			break;
+		case 'D':
+			dev_opts.discard = true;
+			break;
+		case 't':
+			if (kstrtouint(optarg, 10, &dev_opts.tier) ||
+			    dev_opts.tier >= BCH_TIER_MAX)
+				die("invalid tier");
+			break;
+		case 'f':
+			force = true;
+			break;
+		case 'h':
+			device_add_usage();
+			exit(EXIT_SUCCESS);
+		}
 
-		xioctl(fs.ioctl_fd, BCH_IOCTL_DISK_ADD, &ia);
-	}
+	if (argc - optind != 2)
+		die("Please supply a filesystem and a device to add");
+
+	struct bcache_handle fs = bcache_fs_open(argv[optind]);
+
+	dev_opts.path = argv[optind + 1];
+	dev_opts.fd = open_for_format(dev_opts.path, force);
+
+	format_opts.block_size	=
+		read_file_u64(fs.sysfs_fd, "block_size_bytes") >> 9;
+	format_opts.btree_node_size =
+		read_file_u64(fs.sysfs_fd, "btree_node_size_bytes") >> 9;
+
+	struct bch_sb *sb = bcache_format(format_opts, &dev_opts, 1);
+	free(sb);
+	fsync(dev_opts.fd);
+	close(dev_opts.fd);
+
+	struct bch_ioctl_disk_add ia = {
+		.dev = (__u64) dev_opts.path,
+	};
+
+	xioctl(fs.ioctl_fd, BCH_IOCTL_DISK_ADD, &ia);
 
 	return 0;
 }

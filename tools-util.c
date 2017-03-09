@@ -13,6 +13,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <blkid.h>
 #include <uuid/uuid.h>
 
 #include "ccan/crc/crc.h"
@@ -60,11 +61,13 @@ struct units_buf __pr_units(u64 v, enum units units)
 char *read_file_str(int dirfd, const char *path)
 {
 	int fd = xopenat(dirfd, path, O_RDONLY);
-	size_t len = xfstat(fd).st_size;
+	ssize_t len = xfstat(fd).st_size;
 
-	char *buf = malloc(len + 1);
+	char *buf = xmalloc(len + 1);
 
-	xpread(fd, buf, len, 0);
+	len = read(fd, buf, len);
+	if (len < 0)
+		die("read error: %s", strerror(errno));
 
 	buf[len] = '\0';
 	if (len && buf[len - 1] == '\n')
@@ -78,10 +81,11 @@ char *read_file_str(int dirfd, const char *path)
 u64 read_file_u64(int dirfd, const char *path)
 {
 	char *buf = read_file_str(dirfd, path);
-	u64 ret = strtoll(buf, NULL, 10);
-
+	u64 v;
+	if (kstrtou64(buf, 10, &v))
+		die("read_file_u64: error parsing %s (got %s)", path, buf);
 	free(buf);
-	return ret;
+	return v;
 }
 
 /* String list options: */
@@ -120,6 +124,46 @@ unsigned get_blocksize(const char *path, int fd)
 	unsigned ret;
 	xioctl(fd, BLKPBSZGET, &ret);
 	return ret >> 9;
+}
+
+/* Open a block device, do magic blkid stuff to probe for existing filesystems: */
+int open_for_format(const char *dev, bool force)
+{
+	blkid_probe pr;
+	const char *fs_type = NULL, *fs_label = NULL;
+	size_t fs_type_len, fs_label_len;
+
+	int fd = xopen(dev, O_RDWR|O_EXCL);
+
+	if (force)
+		return fd;
+
+	if (!(pr = blkid_new_probe()))
+		die("blkid error 1");
+	if (blkid_probe_set_device(pr, fd, 0, 0))
+		die("blkid error 2");
+	if (blkid_probe_enable_partitions(pr, true))
+		die("blkid error 3");
+	if (blkid_do_fullprobe(pr) < 0)
+		die("blkid error 4");
+
+	blkid_probe_lookup_value(pr, "TYPE", &fs_type, &fs_type_len);
+	blkid_probe_lookup_value(pr, "LABEL", &fs_label, &fs_label_len);
+
+	if (fs_type) {
+		if (fs_label)
+			printf("%s contains a %s filesystem labelled '%s'\n",
+			       dev, fs_type, fs_label);
+		else
+			printf("%s contains a %s filesystem\n",
+			       dev, fs_type);
+		fputs("Proceed anyway?", stdout);
+		if (!ask_yn())
+			exit(EXIT_FAILURE);
+	}
+
+	blkid_free_probe(pr);
+	return fd;
 }
 
 /* Global control device: */
@@ -269,4 +313,25 @@ const char *strcmp_prefix(const char *a, const char *a_prefix)
 		a_prefix++;
 	}
 	return *a_prefix ? NULL : a;
+}
+
+unsigned hatoi_validate(const char *s, const char *msg)
+{
+	u64 v;
+
+	if (bch_strtoull_h(s, &v))
+		die("bad %s %s", msg, s);
+
+	if (v & (v - 1))
+		die("%s must be a power of two", msg);
+
+	v /= 512;
+
+	if (v > USHRT_MAX)
+		die("%s too large\n", msg);
+
+	if (!v)
+		die("%s too small\n", msg);
+
+	return v;
 }

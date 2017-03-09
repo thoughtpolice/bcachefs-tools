@@ -121,6 +121,7 @@ ssize_t read_string_list_or_die(const char *, const char * const[],
 
 u64 get_size(const char *, int);
 unsigned get_blocksize(const char *, int);
+int open_for_format(const char *, bool);
 
 int bcachectl_open(void);
 
@@ -202,5 +203,7 @@ struct fiemap_extent fiemap_iter_next(struct fiemap_iter *);
 	     (extent = fiemap_iter_next(&iter)).fe_length;)
 
 const char *strcmp_prefix(const char *, const char *);
+
+unsigned hatoi_validate(const char *, const char *);
 
 #endif /* _TOOLS_UTIL_H */

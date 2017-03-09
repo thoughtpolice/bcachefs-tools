@@ -97,8 +97,14 @@ struct bch_sb *bcache_format(struct format_opts opts,
 				die("cannot format %s, too small (%llu sectors, min %llu)",
 				    i->path, i->size, min_size(opts.block_size));
 
+			/* Bucket size must be >= block size: */
+			i->bucket_size = opts.block_size;
+
+			/* Bucket size must be >= btree node size: */
+			i->bucket_size = max(i->bucket_size, opts.btree_node_size);
+
 			/* Want a bucket size of at least 128k, if possible: */
-			i->bucket_size = max(opts.block_size, 256U);
+			i->bucket_size = max(i->bucket_size, 256U);
 
 			if (i->size >= min_size(i->bucket_size)) {
 				unsigned scale = max(1,
@@ -119,6 +125,9 @@ struct bch_sb *bcache_format(struct format_opts opts,
 
 		if (i->bucket_size < opts.block_size)
 			die("Bucket size cannot be smaller than block size");
+
+		if (i->bucket_size < opts.btree_node_size)
+			die("Bucket size cannot be smaller than btree node size");
 
 		if (i->nbuckets < BCH_MIN_NR_NBUCKETS)
 			die("Not enough buckets: %llu, need %u (bucket size %u)",

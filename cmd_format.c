@@ -17,7 +17,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <blkid.h>
 #include <uuid/uuid.h>
 
 #include "ccan/darray/darray.h"
@@ -27,46 +26,6 @@
 #include "crypto.h"
 #include "opts.h"
 #include "util.h"
-
-/* Open a block device, do magic blkid stuff: */
-static int open_for_format(const char *dev, bool force)
-{
-	blkid_probe pr;
-	const char *fs_type = NULL, *fs_label = NULL;
-	size_t fs_type_len, fs_label_len;
-
-	int fd = xopen(dev, O_RDWR|O_EXCL);
-
-	if (force)
-		return fd;
-
-	if (!(pr = blkid_new_probe()))
-		die("blkid error 1");
-	if (blkid_probe_set_device(pr, fd, 0, 0))
-		die("blkid error 2");
-	if (blkid_probe_enable_partitions(pr, true))
-		die("blkid error 3");
-	if (blkid_do_fullprobe(pr) < 0)
-		die("blkid error 4");
-
-	blkid_probe_lookup_value(pr, "TYPE", &fs_type, &fs_type_len);
-	blkid_probe_lookup_value(pr, "LABEL", &fs_label, &fs_label_len);
-
-	if (fs_type) {
-		if (fs_label)
-			printf("%s contains a %s filesystem labelled '%s'\n",
-			       dev, fs_type, fs_label);
-		else
-			printf("%s contains a %s filesystem\n",
-			       dev, fs_type);
-		fputs("Proceed anyway?", stdout);
-		if (!ask_yn())
-			exit(EXIT_FAILURE);
-	}
-
-	blkid_free_probe(pr);
-	return fd;
-}
 
 #define OPTS									\
 t("bcache format - create a new bcache filesystem on one or more devices")	\
@@ -127,11 +86,11 @@ static void usage(void)
 	     "\n"
 	     "Device specific options:\n"
 	     "      --fs_size=size          Size of filesystem on device\n"
-	     "      --bucket=size           bucket size\n"
+	     "      --bucket=size           Bucket size\n"
 	     "      --discard               Enable discards\n"
-	     "  -t, --tier=#                tier of subsequent devices\n"
+	     "  -t, --tier=#                Higher tier (e.g. 1) indicates slower devices\n"
 	     "\n"
-	     "  -h, --help                  display this help and exit\n"
+	     "  -h, --help                  Display this help and exit\n"
 	     "\n"
 	     "Device specific options must come before corresponding devices, e.g.\n"
 	     "  bcache format --tier 0 /dev/sdb --tier 1 /dev/sdc\n"
@@ -161,27 +120,6 @@ static const struct option format_opts[] = {
 #undef t
 	{ NULL }
 };
-
-static unsigned hatoi_validate(const char *s, const char *msg)
-{
-	u64 v;
-
-	if (bch_strtoull_h(s, &v))
-		die("bad %s %s", msg, s);
-
-	if (v & (v - 1))
-		die("%s must be a power of two", msg);
-
-	v /= 512;
-
-	if (v > USHRT_MAX)
-		die("%s too large\n", msg);
-
-	if (!v)
-		die("%s too small\n", msg);
-
-	return v;
-}
 
 int cmd_format(int argc, char *argv[])
 {
