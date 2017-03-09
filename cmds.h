@@ -22,6 +22,7 @@ int cmd_fs_set(int argc, char *argv[]);
 
 int cmd_device_show(int argc, char *argv[]);
 int cmd_device_add(int argc, char *argv[]);
+int cmd_device_fail(int argc, char *argv[]);
 int cmd_device_remove(int argc, char *argv[]);
 
 int cmd_fsck(int argc, char *argv[]);

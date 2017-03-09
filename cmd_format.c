@@ -77,6 +77,8 @@ x(0,	btree_node_size,	"size",			"Default 256k")		\
 x(0,	metadata_checksum_type,	"(none|crc32c|crc64)",	NULL)			\
 x(0,	data_checksum_type,	"(none|crc32c|crc64)",	NULL)			\
 x(0,	compression_type,	"(none|lz4|gzip)",	NULL)			\
+x(0,	data_replicas,		"#",			NULL)			\
+x(0,	metadata_replicas,	"#",			NULL)			\
 x(0,	encrypted,		NULL,			"Enable whole filesystem encryption (chacha20/poly1305)")\
 x(0,	no_passphrase,		NULL,			"Don't encrypt master encryption key")\
 x('e',	error_action,		"(continue|readonly|panic)", NULL)		\
@@ -112,6 +114,8 @@ static void usage(void)
 	     "      --metadata_checksum_type=(none|crc32c|crc64)\n"
 	     "      --data_checksum_type=(none|crc32c|crc64)\n"
 	     "      --compression_type=(none|lz4|gzip)\n"
+	     "      --data_replicas=#       Number of data replicas\n"
+	     "      --metadata_replicas=#   Number of metadata replicas\n"
 	     "      --encrypted             Enable whole filesystem encryption (chacha20/poly1305)\n"
 	     "      --no_passphrase         Don't encrypt master encryption key\n"
 	     "      --error_action=(continue|readonly|panic)\n"
@@ -136,9 +140,9 @@ static void usage(void)
 }
 
 enum {
-	Opt_no_opt = 1,
+	O_no_opt = 1,
 #define t(text)
-#define x(shortopt, longopt, arg, help)	Opt_##longopt,
+#define x(shortopt, longopt, arg, help)	O_##longopt,
 	OPTS
 #undef x
 #undef t
@@ -150,7 +154,7 @@ static const struct option format_opts[] = {
 	.name		= #longopt,					\
 	.has_arg	= arg ? required_argument : no_argument,	\
 	.flag		= NULL,						\
-	.val		= Opt_##longopt,				\
+	.val		= O_##longopt,					\
 },
 	OPTS
 #undef x
@@ -194,85 +198,95 @@ int cmd_format(int argc, char *argv[])
 				  format_opts,
 				  NULL)) != -1)
 		switch (opt) {
-		case Opt_block_size:
+		case O_block_size:
 		case 'b':
 			opts.block_size =
 				hatoi_validate(optarg, "block size");
 			break;
-		case Opt_btree_node_size:
+		case O_btree_node_size:
 			opts.btree_node_size =
 				hatoi_validate(optarg, "btree node size");
 			break;
-		case Opt_metadata_checksum_type:
+		case O_metadata_checksum_type:
 			opts.meta_csum_type =
 				read_string_list_or_die(optarg,
 						bch_csum_types, "checksum type");
 			break;
-		case Opt_data_checksum_type:
+		case O_data_checksum_type:
 			opts.data_csum_type =
 				read_string_list_or_die(optarg,
 						bch_csum_types, "checksum type");
 			break;
-		case Opt_compression_type:
+		case O_compression_type:
 			opts.compression_type =
 				read_string_list_or_die(optarg,
 						bch_compression_types,
 						"compression type");
 			break;
-		case Opt_encrypted:
+		case O_data_replicas:
+			if (kstrtouint(optarg, 10, &opts.data_replicas) ||
+			    dev_opts.tier >= BCH_REPLICAS_MAX)
+				die("invalid replicas");
+			break;
+		case O_metadata_replicas:
+			if (kstrtouint(optarg, 10, &opts.meta_replicas) ||
+			    dev_opts.tier >= BCH_REPLICAS_MAX)
+				die("invalid replicas");
+			break;
+		case O_encrypted:
 			opts.encrypted = true;
 			break;
-		case Opt_no_passphrase:
+		case O_no_passphrase:
 			no_passphrase = true;
 			break;
-		case Opt_error_action:
+		case O_error_action:
 		case 'e':
 			opts.on_error_action =
 				read_string_list_or_die(optarg,
 						bch_error_actions, "error action");
 			break;
-		case Opt_max_journal_entry_size:
+		case O_max_journal_entry_size:
 			opts.max_journal_entry_size =
 				hatoi_validate(optarg, "journal entry size");
 			break;
-		case Opt_label:
+		case O_label:
 		case 'L':
 			opts.label = strdup(optarg);
 			break;
-		case Opt_uuid:
+		case O_uuid:
 		case 'U':
 			if (uuid_parse(optarg, opts.uuid.b))
 				die("Bad uuid");
 			break;
-		case Opt_force:
+		case O_force:
 		case 'f':
 			force = true;
 			break;
-		case Opt_fs_size:
+		case O_fs_size:
 			if (bch_strtoull_h(optarg, &dev_opts.size))
 				die("invalid filesystem size");
 
 			dev_opts.size >>= 9;
 			break;
-		case Opt_bucket_size:
+		case O_bucket_size:
 			dev_opts.bucket_size =
 				hatoi_validate(optarg, "bucket size");
 			break;
-		case Opt_tier:
+		case O_tier:
 		case 't':
 			if (kstrtouint(optarg, 10, &dev_opts.tier) ||
 			    dev_opts.tier >= BCH_TIER_MAX)
 				die("invalid tier");
 			break;
-		case Opt_discard:
+		case O_discard:
 			dev_opts.discard = true;
 			break;
-		case Opt_no_opt:
+		case O_no_opt:
 			dev_opts.path = strdup(optarg);
 			darray_append(devices, dev_opts);
 			dev_opts.size = 0;
 			break;
-		case Opt_help:
+		case O_help:
 		case 'h':
 			usage();
 			exit(EXIT_SUCCESS);

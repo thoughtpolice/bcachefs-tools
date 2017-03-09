@@ -43,6 +43,7 @@ static void usage(void)
 	     "Commands for managing a specific device in a filesystem:\n"
 	     "  device_show    Show information about a formatted device\n"
 	     "  device_add     Add a device to an existing (running) filesystem\n"
+	     "  device_fail    Mark a device as failed\n"
 	     "  device_remove  Remove a device from an existing (running) filesystem\n"
 	     "\n"
 	     "Repair:\n"
@@ -95,6 +96,8 @@ int main(int argc, char *argv[])
 		return cmd_device_show(argc, argv);
 	if (!strcmp(cmd, "device_add"))
 		return cmd_device_add(argc, argv);
+	if (!strcmp(cmd, "device_fail"))
+		return cmd_device_fail(argc, argv);
 	if (!strcmp(cmd, "device_remove"))
 		return cmd_device_remove(argc, argv);
 

@@ -622,6 +622,9 @@ bch_btree_pick_ptr(struct cache_set *c, const struct btree *b)
 				PTR_BUCKET_NR(ca, ptr)))
 			continue;
 
+		if (ca->mi.state == BCH_MEMBER_STATE_FAILED)
+			continue;
+
 		if (pick.ca && pick.ca->mi.tier < ca->mi.tier)
 			continue;
 
@@ -938,7 +941,7 @@ struct extent_insert_state {
 	struct btree_insert		*trans;
 	struct btree_insert_entry	*insert;
 	struct bpos			committed;
-	struct bucket_stats_cache_set	stats;
+	struct bch_fs_usage	stats;
 
 	/* for deleting: */
 	struct bkey_i			whiteout;
@@ -2200,6 +2203,9 @@ void bch_extent_pick_ptr_avoiding(struct cache_set *c, struct bkey_s_c k,
 
 		extent_for_each_online_device_crc(c, e, crc, ptr, ca) {
 			if (ptr_stale(ca, ptr))
+				continue;
+
+			if (ca->mi.state == BCH_MEMBER_STATE_FAILED)
 				continue;
 
 			if (ret->ca &&

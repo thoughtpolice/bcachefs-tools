@@ -347,18 +347,10 @@ struct cache_member_rcu {
 	struct cache_member_cpu	m[];
 };
 
-/* cache->flags: */
-enum {
-	BCH_DEV_REMOVING,
-	BCH_DEV_FORCE_REMOVE,
-};
-
 struct cache {
 	struct percpu_ref	ref;
 	struct rcu_head		free_rcu;
 	struct work_struct	free_work;
-	struct work_struct	remove_work;
-	unsigned long		flags;
 
 	struct cache_set	*set;
 
@@ -424,8 +416,8 @@ struct cache {
 	 * second contains a saved copy of the stats from the beginning
 	 * of GC.
 	 */
-	struct bucket_stats_cache __percpu *bucket_stats_percpu;
-	struct bucket_stats_cache	bucket_stats_cached;
+	struct bch_dev_usage __percpu *bucket_stats_percpu;
+	struct bch_dev_usage	bucket_stats_cached;
 
 	atomic_long_t		saturated_count;
 	size_t			inc_gen_needs_gc;
@@ -659,8 +651,8 @@ struct cache_set {
 
 	atomic64_t		sectors_available;
 
-	struct bucket_stats_cache_set __percpu *bucket_stats_percpu;
-	struct bucket_stats_cache_set	bucket_stats_cached;
+	struct bch_fs_usage __percpu *bucket_stats_percpu;
+	struct bch_fs_usage	bucket_stats_cached;
 	struct lglock		bucket_stats_lock;
 
 	struct mutex		bucket_lock;

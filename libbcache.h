@@ -32,6 +32,9 @@ struct format_opts {
 	unsigned	meta_replicas;
 	unsigned	data_replicas;
 
+	unsigned	meta_replicas_required;
+	unsigned	data_replicas_required;
+
 	unsigned	meta_csum_type;
 	unsigned	data_csum_type;
 	unsigned	compression_type;
@@ -48,6 +51,8 @@ static inline struct format_opts format_opts_default()
 		.data_csum_type		= BCH_CSUM_CRC32C,
 		.meta_replicas		= 1,
 		.data_replicas		= 1,
+		.meta_replicas_required	= 1,
+		.data_replicas_required	= 1,
 	};
 }
 

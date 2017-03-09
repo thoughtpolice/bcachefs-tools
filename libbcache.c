@@ -171,8 +171,10 @@ struct bch_sb *bcache_format(struct format_opts opts,
 	SET_BCH_SB_GC_RESERVE(sb,		8);
 	SET_BCH_SB_META_REPLICAS_WANT(sb,	opts.meta_replicas);
 	SET_BCH_SB_META_REPLICAS_HAVE(sb,	opts.meta_replicas);
+	SET_BCH_SB_META_REPLICAS_REQ(sb,	opts.meta_replicas_required);
 	SET_BCH_SB_DATA_REPLICAS_WANT(sb,	opts.data_replicas);
 	SET_BCH_SB_DATA_REPLICAS_HAVE(sb,	opts.data_replicas);
+	SET_BCH_SB_DATA_REPLICAS_REQ(sb,	opts.data_replicas_required);
 	SET_BCH_SB_ERROR_ACTION(sb,		opts.on_error_action);
 	SET_BCH_SB_STR_HASH_TYPE(sb,		BCH_STR_HASH_SIPHASH);
 	SET_BCH_SB_JOURNAL_ENTRY_SIZE(sb,	ilog2(opts.max_journal_entry_size));
