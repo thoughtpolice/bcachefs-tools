@@ -12,7 +12,6 @@
 #include "journal_types.h"
 #include "six.h"
 
-struct cache_set;
 struct open_bucket;
 struct btree_interior_update;
 

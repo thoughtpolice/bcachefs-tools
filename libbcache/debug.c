@@ -37,7 +37,7 @@ static void btree_verify_endio(struct bio *bio)
 	closure_put(cl);
 }
 
-void __bch_btree_verify(struct cache_set *c, struct btree *b)
+void __bch_btree_verify(struct bch_fs *c, struct btree *b)
 {
 	struct btree *v = c->verify_data;
 	struct btree_node *n_ondisk, *n_sorted, *n_inmemory;
@@ -88,7 +88,7 @@ void __bch_btree_verify(struct cache_set *c, struct btree *b)
 	bch_btree_node_read_done(c, v, pick.ca, &pick.ptr);
 	n_sorted = c->verify_data->data;
 
-	percpu_ref_put(&pick.ca->ref);
+	percpu_ref_put(&pick.ca->io_ref);
 
 	sorted = &n_sorted->keys;
 	inmemory = &n_inmemory->keys;
@@ -186,11 +186,11 @@ out_put:
 
 #ifdef CONFIG_DEBUG_FS
 
-/* XXX: cache set refcounting */
+/* XXX: bch_fs refcounting */
 
 struct dump_iter {
 	struct bpos		from;
-	struct cache_set	*c;
+	struct bch_fs	*c;
 	enum btree_id		id;
 
 	char			buf[PAGE_SIZE];
@@ -231,7 +231,7 @@ static int bch_dump_open(struct inode *inode, struct file *file)
 
 	file->private_data = i;
 	i->from = POS_MIN;
-	i->c	= container_of(bd, struct cache_set, btree_debug[bd->id]);
+	i->c	= container_of(bd, struct bch_fs, btree_debug[bd->id]);
 	i->id	= bd->id;
 
 	return 0;
@@ -409,13 +409,13 @@ static const struct file_operations bfloat_failed_debug_ops = {
 	.read		= bch_read_bfloat_failed,
 };
 
-void bch_fs_debug_exit(struct cache_set *c)
+void bch_fs_debug_exit(struct bch_fs *c)
 {
 	if (!IS_ERR_OR_NULL(c->debug))
 		debugfs_remove_recursive(c->debug);
 }
 
-void bch_fs_debug_init(struct cache_set *c)
+void bch_fs_debug_init(struct bch_fs *c)
 {
 	struct btree_debug *bd;
 	char name[100];

@@ -313,12 +313,12 @@ do {									\
 #define BTREE_NODE_RESERVE		(BTREE_RESERVE_MAX * 2)
 
 struct btree;
-struct cache;
 struct crypto_blkcipher;
 struct crypto_ahash;
 
 enum gc_phase {
-	GC_PHASE_PENDING_DELETE		= BTREE_ID_NR + 1,
+	GC_PHASE_SB_METADATA		= BTREE_ID_NR + 1,
+	GC_PHASE_PENDING_DELETE,
 	GC_PHASE_DONE
 };
 
@@ -328,7 +328,7 @@ struct gc_pos {
 	unsigned		level;
 };
 
-struct cache_member_cpu {
+struct bch_member_cpu {
 	u64			nbuckets;	/* device size */
 	u16			first_bucket;   /* index of first bucket used */
 	u16			bucket_size;	/* sectors */
@@ -341,32 +341,27 @@ struct cache_member_cpu {
 	u8			valid;
 };
 
-struct cache_member_rcu {
-	struct rcu_head		rcu;
-	unsigned		nr_devices;
-	struct cache_member_cpu	m[];
-};
-
-struct cache {
+struct bch_dev {
+	struct kobject		kobj;
 	struct percpu_ref	ref;
-	struct rcu_head		free_rcu;
-	struct work_struct	free_work;
+	struct percpu_ref	io_ref;
+	struct completion	stop_complete;
+	struct completion	offline_complete;
 
-	struct cache_set	*set;
-
-	struct cache_group	self;
+	struct bch_fs		*fs;
 
 	u8			dev_idx;
 	/*
 	 * Cached version of this device's member info from superblock
 	 * Committed by bch_write_super() -> bch_fs_mi_update()
 	 */
-	struct cache_member_cpu	mi;
+	struct bch_member_cpu	mi;
 	uuid_le			uuid;
+	char			name[BDEVNAME_SIZE];
 
 	struct bcache_superblock disk_sb;
 
-	struct kobject		kobj;
+	struct dev_group	self;
 
 	/* biosets used in cloned bios for replicas and moving_gc */
 	struct bio_set		replica_set;
@@ -416,8 +411,8 @@ struct cache {
 	 * second contains a saved copy of the stats from the beginning
 	 * of GC.
 	 */
-	struct bch_dev_usage __percpu *bucket_stats_percpu;
-	struct bch_dev_usage	bucket_stats_cached;
+	struct bch_dev_usage __percpu *usage_percpu;
+	struct bch_dev_usage	usage_cached;
 
 	atomic_long_t		saturated_count;
 	size_t			inc_gen_needs_gc;
@@ -481,7 +476,7 @@ struct bch_tier {
 	struct task_struct	*migrate;
 	struct bch_pd_controller pd;
 
-	struct cache_group	devs;
+	struct dev_group	devs;
 };
 
 enum bch_fs_state {
@@ -491,7 +486,7 @@ enum bch_fs_state {
 	BCH_FS_RW,
 };
 
-struct cache_set {
+struct bch_fs {
 	struct closure		cl;
 
 	struct list_head	list;
@@ -514,15 +509,9 @@ struct cache_set {
 	struct percpu_ref	writes;
 	struct work_struct	read_only_work;
 
-	struct cache __rcu	*cache[BCH_SB_MEMBERS_MAX];
+	struct bch_dev __rcu	*devs[BCH_SB_MEMBERS_MAX];
 
 	struct bch_opts		opts;
-
-	/*
-	 * Cached copy in native endianness:
-	 * Set by bch_fs_mi_update():
-	 */
-	struct cache_member_rcu __rcu *members;
 
 	/* Updated by bch_sb_update():*/
 	struct {
@@ -635,7 +624,7 @@ struct cache_set {
 	 * These contain all r/w devices - i.e. devices we can currently
 	 * allocate from:
 	 */
-	struct cache_group	cache_all;
+	struct dev_group	all_devs;
 	struct bch_tier		tiers[BCH_TIER_MAX];
 	/* NULL if we only have devices in one tier: */
 	struct bch_tier		*fastest_tier;
@@ -651,14 +640,13 @@ struct cache_set {
 
 	atomic64_t		sectors_available;
 
-	struct bch_fs_usage __percpu *bucket_stats_percpu;
-	struct bch_fs_usage	bucket_stats_cached;
-	struct lglock		bucket_stats_lock;
+	struct bch_fs_usage __percpu *usage_percpu;
+	struct bch_fs_usage	usage_cached;
+	struct lglock		usage_lock;
 
 	struct mutex		bucket_lock;
 
 	struct closure_waitlist	freelist_wait;
-
 
 	/*
 	 * When we invalidate buckets, we use both the priority and the amount
@@ -822,22 +810,22 @@ struct cache_set {
 #undef BCH_TIME_STAT
 };
 
-static inline bool bch_fs_running(struct cache_set *c)
+static inline bool bch_fs_running(struct bch_fs *c)
 {
 	return c->state == BCH_FS_RO || c->state == BCH_FS_RW;
 }
 
-static inline unsigned bucket_pages(const struct cache *ca)
+static inline unsigned bucket_pages(const struct bch_dev *ca)
 {
 	return ca->mi.bucket_size / PAGE_SECTORS;
 }
 
-static inline unsigned bucket_bytes(const struct cache *ca)
+static inline unsigned bucket_bytes(const struct bch_dev *ca)
 {
 	return ca->mi.bucket_size << 9;
 }
 
-static inline unsigned block_bytes(const struct cache_set *c)
+static inline unsigned block_bytes(const struct bch_fs *c)
 {
 	return c->sb.block_size << 9;
 }

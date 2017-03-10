@@ -50,7 +50,7 @@ const char * const bch_cache_modes[] = {
 };
 
 const char * const bch_dev_state[] = {
-	"active",
+	"readwrite",
 	"readonly",
 	"failed",
 	"spare",
@@ -171,8 +171,7 @@ int parse_one_opt(enum bch_opt_id id, const char *val, u64 *res)
 int bch_parse_mount_opts(struct bch_opts *opts, char *options)
 {
 	char *opt, *name, *val;
-	enum bch_opt_id id;
-	int ret;
+	int ret, id;
 	u64 v;
 
 	while ((opt = strsep(&options, ",")) != NULL) {

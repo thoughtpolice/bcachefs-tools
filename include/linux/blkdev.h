@@ -3,6 +3,7 @@
 
 #include <linux/backing-dev.h>
 #include <linux/blk_types.h>
+#include <linux/kobject.h>
 
 typedef u64 sector_t;
 typedef unsigned fmode_t;
@@ -65,11 +66,18 @@ struct request_queue {
 struct gendisk {
 };
 
+struct hd_struct {
+	struct kobject		kobj;
+};
+
+#define part_to_dev(part)	(part)
+
 struct block_device {
 	char			name[BDEVNAME_SIZE];
 	struct inode		*bd_inode;
 	struct request_queue	queue;
 	void			*bd_holder;
+	struct hd_struct	*bd_part;
 	struct gendisk		*bd_disk;
 	struct gendisk		__bd_disk;
 	int			bd_fd;

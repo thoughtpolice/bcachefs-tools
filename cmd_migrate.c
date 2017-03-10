@@ -90,9 +90,9 @@ found:
 	return ret;
 }
 
-static void mark_unreserved_space(struct cache_set *c, ranges extents)
+static void mark_unreserved_space(struct bch_fs *c, ranges extents)
 {
-	struct cache *ca = c->cache[0];
+	struct bch_dev *ca = c->devs[0];
 	struct hole_iter iter;
 	struct range i;
 
@@ -111,7 +111,7 @@ static void mark_unreserved_space(struct cache_set *c, ranges extents)
 	}
 }
 
-static void update_inode(struct cache_set *c,
+static void update_inode(struct bch_fs *c,
 			 struct bch_inode_unpacked *inode)
 {
 	struct bkey_inode_buf packed;
@@ -123,7 +123,7 @@ static void update_inode(struct cache_set *c,
 		die("error creating file: %s", strerror(-ret));
 }
 
-static void create_dirent(struct cache_set *c,
+static void create_dirent(struct bch_fs *c,
 			  struct bch_inode_unpacked *parent,
 			  const char *name, u64 inum, mode_t mode)
 {
@@ -140,7 +140,7 @@ static void create_dirent(struct cache_set *c,
 		parent->i_nlink++;
 }
 
-static void create_link(struct cache_set *c,
+static void create_link(struct bch_fs *c,
 			struct bch_inode_unpacked *parent,
 			const char *name, u64 inum, mode_t mode)
 {
@@ -155,7 +155,7 @@ static void create_link(struct cache_set *c,
 	create_dirent(c, parent, name, inum, mode);
 }
 
-static struct bch_inode_unpacked create_file(struct cache_set *c,
+static struct bch_inode_unpacked create_file(struct bch_fs *c,
 					     struct bch_inode_unpacked *parent,
 					     const char *name,
 					     uid_t uid, gid_t gid,
@@ -207,7 +207,7 @@ static const struct xattr_handler *xattr_resolve_name(const char **name)
 	return ERR_PTR(-EOPNOTSUPP);
 }
 
-static void copy_times(struct cache_set *c, struct bch_inode_unpacked *dst,
+static void copy_times(struct bch_fs *c, struct bch_inode_unpacked *dst,
 		       struct stat *src)
 {
 	dst->i_atime = timespec_to_bch_time(c, src->st_atim);
@@ -215,7 +215,7 @@ static void copy_times(struct cache_set *c, struct bch_inode_unpacked *dst,
 	dst->i_ctime = timespec_to_bch_time(c, src->st_ctim);
 }
 
-static void copy_xattrs(struct cache_set *c, struct bch_inode_unpacked *dst,
+static void copy_xattrs(struct bch_fs *c, struct bch_inode_unpacked *dst,
 			char *src)
 {
 	struct bch_hash_info hash_info = bch_hash_info_init(dst);
@@ -245,7 +245,7 @@ static void copy_xattrs(struct cache_set *c, struct bch_inode_unpacked *dst,
 	}
 }
 
-static void write_data(struct cache_set *c,
+static void write_data(struct bch_fs *c,
 		       struct bch_inode_unpacked *dst_inode,
 		       u64 dst_offset, void *buf, size_t len)
 {
@@ -280,7 +280,7 @@ static void write_data(struct cache_set *c,
 
 static char buf[1 << 20] __aligned(PAGE_SIZE);
 
-static void copy_data(struct cache_set *c,
+static void copy_data(struct bch_fs *c,
 		      struct bch_inode_unpacked *dst_inode,
 		      int src_fd, u64 start, u64 end)
 {
@@ -293,10 +293,10 @@ static void copy_data(struct cache_set *c,
 	}
 }
 
-static void link_data(struct cache_set *c, struct bch_inode_unpacked *dst,
+static void link_data(struct bch_fs *c, struct bch_inode_unpacked *dst,
 		      u64 logical, u64 physical, u64 length)
 {
-	struct cache *ca = c->cache[0];
+	struct bch_dev *ca = c->devs[0];
 
 	BUG_ON(logical	& (block_bytes(c) - 1));
 	BUG_ON(physical & (block_bytes(c) - 1));
@@ -350,7 +350,7 @@ static void link_data(struct cache_set *c, struct bch_inode_unpacked *dst,
 	}
 }
 
-static void copy_link(struct cache_set *c, struct bch_inode_unpacked *dst,
+static void copy_link(struct bch_fs *c, struct bch_inode_unpacked *dst,
 		      char *src)
 {
 	ssize_t ret = readlink(src, buf, sizeof(buf));
@@ -360,7 +360,7 @@ static void copy_link(struct cache_set *c, struct bch_inode_unpacked *dst,
 	write_data(c, dst, 0, buf, round_up(ret, block_bytes(c)));
 }
 
-static void copy_file(struct cache_set *c, struct bch_inode_unpacked *dst,
+static void copy_file(struct bch_fs *c, struct bch_inode_unpacked *dst,
 		      int src, char *src_path, ranges *extents)
 {
 	struct fiemap_iter iter;
@@ -406,7 +406,7 @@ struct copy_fs_state {
 };
 
 static void copy_dir(struct copy_fs_state *s,
-		     struct cache_set *c,
+		     struct bch_fs *c,
 		     struct bch_inode_unpacked *dst,
 		     int src_fd, const char *src_path)
 {
@@ -539,11 +539,11 @@ static ranges reserve_new_fs_space(const char *file_path, unsigned block_size,
 	return extents;
 }
 
-static void reserve_old_fs_space(struct cache_set *c,
+static void reserve_old_fs_space(struct bch_fs *c,
 				 struct bch_inode_unpacked *root_inode,
 				 ranges *extents)
 {
-	struct cache *ca = c->cache[0];
+	struct bch_dev *ca = c->devs[0];
 	struct bch_inode_unpacked dst;
 	struct hole_iter iter;
 	struct range i;
@@ -560,7 +560,7 @@ static void reserve_old_fs_space(struct cache_set *c,
 	update_inode(c, &dst);
 }
 
-static void copy_fs(struct cache_set *c, int src_fd, const char *src_path,
+static void copy_fs(struct bch_fs *c, int src_fd, const char *src_path,
 		    u64 bcachefs_inum, ranges *extents)
 {
 	syncfs(src_fd);
@@ -734,7 +734,7 @@ int cmd_migrate(int argc, char *argv[])
 	       dev.path, sb_offset);
 
 	struct bch_opts opts = bch_opts_empty();
-	struct cache_set *c = NULL;
+	struct bch_fs *c = NULL;
 	char *path[1] = { dev.path };
 	const char *err;
 

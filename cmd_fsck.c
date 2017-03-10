@@ -22,7 +22,7 @@ static void usage(void)
 int cmd_fsck(int argc, char *argv[])
 {
 	struct bch_opts opts = bch_opts_empty();
-	struct cache_set *c = NULL;
+	struct bch_fs *c = NULL;
 	const char *err;
 	int opt;
 

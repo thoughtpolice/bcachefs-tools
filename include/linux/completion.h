@@ -29,6 +29,11 @@ static inline void init_completion(struct completion *x)
 	init_waitqueue_head(&x->wait);
 }
 
+static inline void reinit_completion(struct completion *x)
+{
+	x->done = 0;
+}
+
 void complete(struct completion *);
 void wait_for_completion(struct completion *);
 

@@ -5,87 +5,122 @@
 
 #include <linux/bcache-ioctl.h>
 
-static inline size_t sector_to_bucket(const struct cache *ca, sector_t s)
+static inline size_t sector_to_bucket(const struct bch_dev *ca, sector_t s)
 {
 	return s >> ca->bucket_bits;
 }
 
-static inline sector_t bucket_to_sector(const struct cache *ca, size_t b)
+static inline sector_t bucket_to_sector(const struct bch_dev *ca, size_t b)
 {
 	return ((sector_t) b) << ca->bucket_bits;
 }
 
-static inline sector_t bucket_remainder(const struct cache *ca, sector_t s)
+static inline sector_t bucket_remainder(const struct bch_dev *ca, sector_t s)
 {
 	return s & (ca->mi.bucket_size - 1);
 }
 
-static inline struct cache *bch_next_cache_rcu(struct cache_set *c,
-					       unsigned *iter)
+static inline struct bch_dev *__bch_next_dev(struct bch_fs *c, unsigned *iter)
 {
-	struct cache *ret = NULL;
+	struct bch_dev *ca = NULL;
 
 	while (*iter < c->sb.nr_devices &&
-	       !(ret = rcu_dereference(c->cache[*iter])))
+	       !(ca = rcu_dereference_check(c->devs[*iter],
+					    lockdep_is_held(&c->state_lock))))
 		(*iter)++;
 
-	return ret;
+	return ca;
 }
 
-#define for_each_cache_rcu(ca, c, iter)					\
-	for ((iter) = 0; ((ca) = bch_next_cache_rcu((c), &(iter))); (iter)++)
+#define __for_each_member_device(ca, c, iter)				\
+	for ((iter) = 0; ((ca) = __bch_next_dev((c), &(iter))); (iter)++)
 
-static inline struct cache *bch_get_next_cache(struct cache_set *c,
-					       unsigned *iter)
+#define for_each_member_device_rcu(ca, c, iter)				\
+	__for_each_member_device(ca, c, iter)
+
+static inline struct bch_dev *bch_get_next_dev(struct bch_fs *c, unsigned *iter)
 {
-	struct cache *ret;
+	struct bch_dev *ca;
 
 	rcu_read_lock();
-	if ((ret = bch_next_cache_rcu(c, iter)))
-		percpu_ref_get(&ret->ref);
+	if ((ca = __bch_next_dev(c, iter)))
+		percpu_ref_get(&ca->ref);
 	rcu_read_unlock();
 
-	return ret;
+	return ca;
 }
 
 /*
- * If you break early, you must drop your ref on the current cache
+ * If you break early, you must drop your ref on the current device
  */
-#define for_each_cache(ca, c, iter)					\
+#define for_each_member_device(ca, c, iter)				\
 	for ((iter) = 0;						\
-	     (ca = bch_get_next_cache(c, &(iter)));			\
+	     (ca = bch_get_next_dev(c, &(iter)));			\
 	     percpu_ref_put(&ca->ref), (iter)++)
+
+static inline struct bch_dev *bch_get_next_online_dev(struct bch_fs *c,
+						      unsigned *iter,
+						      int state_mask)
+{
+	struct bch_dev *ca;
+
+	rcu_read_lock();
+	while ((ca = __bch_next_dev(c, iter)) &&
+	       (!((1 << ca->mi.state) & state_mask) ||
+		!percpu_ref_tryget(&ca->io_ref)))
+		(*iter)++;
+	rcu_read_unlock();
+
+	return ca;
+}
+
+#define __for_each_online_member(ca, c, iter, state_mask)		\
+	for ((iter) = 0;						\
+	     (ca = bch_get_next_online_dev(c, &(iter), state_mask));	\
+	     percpu_ref_put(&ca->io_ref), (iter)++)
+
+#define for_each_online_member(ca, c, iter)				\
+	__for_each_online_member(ca, c, iter, ~0)
+
+#define for_each_rw_member(ca, c, iter)					\
+	__for_each_online_member(ca, c, iter, 1 << BCH_MEMBER_STATE_RW)
+
+#define for_each_readable_member(ca, c, iter)				\
+	__for_each_online_member(ca, c, iter,				\
+		(1 << BCH_MEMBER_STATE_RW)|(1 << BCH_MEMBER_STATE_RO))
+
+struct bch_fs *bch_bdev_to_fs(struct block_device *);
+struct bch_fs *bch_uuid_to_fs(uuid_le);
+int bch_congested(struct bch_fs *, int);
 
 void bch_dev_release(struct kobject *);
 
-bool bch_dev_state_allowed(struct cache_set *, struct cache *,
+bool bch_dev_state_allowed(struct bch_fs *, struct bch_dev *,
 			   enum bch_member_state, int);
-int __bch_dev_set_state(struct cache_set *, struct cache *,
+int __bch_dev_set_state(struct bch_fs *, struct bch_dev *,
 			enum bch_member_state, int);
-int bch_dev_set_state(struct cache_set *, struct cache *,
+int bch_dev_set_state(struct bch_fs *, struct bch_dev *,
 		      enum bch_member_state, int);
 
-int bch_dev_fail(struct cache *, int);
-int bch_dev_remove(struct cache_set *, struct cache *, int);
-int bch_dev_add(struct cache_set *, const char *);
+int bch_dev_fail(struct bch_dev *, int);
+int bch_dev_remove(struct bch_fs *, struct bch_dev *, int);
+int bch_dev_add(struct bch_fs *, const char *);
 
-void bch_fs_detach(struct cache_set *);
+void bch_fs_detach(struct bch_fs *);
 
-bool bch_fs_emergency_read_only(struct cache_set *);
-void bch_fs_read_only(struct cache_set *);
-const char *bch_fs_read_write(struct cache_set *);
+bool bch_fs_emergency_read_only(struct bch_fs *);
+void bch_fs_read_only(struct bch_fs *);
+const char *bch_fs_read_write(struct bch_fs *);
 
 void bch_fs_release(struct kobject *);
-void bch_fs_stop_async(struct cache_set *);
-void bch_fs_stop(struct cache_set *);
+void bch_fs_stop_async(struct bch_fs *);
+void bch_fs_stop(struct bch_fs *);
 
-const char *bch_fs_start(struct cache_set *);
+const char *bch_fs_start(struct bch_fs *);
 const char *bch_fs_open(char * const *, unsigned, struct bch_opts,
-			struct cache_set **);
+			struct bch_fs **);
 const char *bch_fs_open_incremental(const char *path);
 
-extern struct mutex bch_register_lock;
-extern struct list_head bch_fs_list;
 extern struct workqueue_struct *bcache_io_wq;
 extern struct crypto_shash *bch_sha256;
 

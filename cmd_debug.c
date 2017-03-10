@@ -27,7 +27,7 @@ static void dump_usage(void)
 	     "Report bugs to <linux-bcache@vger.kernel.org>");
 }
 
-static void dump_one_device(struct cache_set *c, struct cache *ca, int fd)
+static void dump_one_device(struct bch_fs *c, struct bch_dev *ca, int fd)
 {
 	struct bch_sb *sb = ca->disk_sb.sb;
 	ranges data;
@@ -85,7 +85,7 @@ static void dump_one_device(struct cache_set *c, struct cache *ca, int fd)
 int cmd_dump(int argc, char *argv[])
 {
 	struct bch_opts opts = bch_opts_empty();
-	struct cache_set *c = NULL;
+	struct bch_fs *c = NULL;
 	const char *err;
 	char *out = NULL;
 	unsigned i, nr_devices = 0;
@@ -123,7 +123,7 @@ int cmd_dump(int argc, char *argv[])
 	down_read(&c->gc_lock);
 
 	for (i = 0; i < c->sb.nr_devices; i++)
-		if (c->cache[i])
+		if (c->devs[i])
 			nr_devices++;
 
 	BUG_ON(!nr_devices);
@@ -134,7 +134,7 @@ int cmd_dump(int argc, char *argv[])
 		if (!force)
 			mode |= O_EXCL;
 
-		if (!c->cache[i])
+		if (!c->devs[i])
 			continue;
 
 		char *path = nr_devices > 1
@@ -143,7 +143,7 @@ int cmd_dump(int argc, char *argv[])
 		fd = xopen(path, mode, 0600);
 		free(path);
 
-		dump_one_device(c, c->cache[i], fd);
+		dump_one_device(c, c->devs[i], fd);
 		close(fd);
 	}
 
@@ -153,7 +153,7 @@ int cmd_dump(int argc, char *argv[])
 	return 0;
 }
 
-static void list_keys(struct cache_set *c, enum btree_id btree_id,
+static void list_keys(struct bch_fs *c, enum btree_id btree_id,
 		      struct bpos start, struct bpos end, int mode)
 {
 	struct btree_iter iter;
@@ -171,7 +171,7 @@ static void list_keys(struct cache_set *c, enum btree_id btree_id,
 	bch_btree_iter_unlock(&iter);
 }
 
-static void list_btree_formats(struct cache_set *c, enum btree_id btree_id,
+static void list_btree_formats(struct bch_fs *c, enum btree_id btree_id,
 			       struct bpos start, struct bpos end, int mode)
 {
 	struct btree_iter iter;
@@ -226,7 +226,7 @@ static const char * const list_modes[] = {
 int cmd_list(int argc, char *argv[])
 {
 	struct bch_opts opts = bch_opts_empty();
-	struct cache_set *c = NULL;
+	struct bch_fs *c = NULL;
 	enum btree_id btree_id = BTREE_ID_EXTENTS;
 	struct bpos start = POS_MIN, end = POS_MAX;
 	const char *err;

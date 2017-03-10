@@ -7,6 +7,9 @@ struct mutex {
 	pthread_mutex_t lock;
 };
 
+#define DEFINE_MUTEX(mutexname) \
+	struct mutex mutexname = { .lock = PTHREAD_MUTEX_INITIALIZER }
+
 #define mutex_init(l)		pthread_mutex_init(&(l)->lock, NULL)
 #define mutex_lock(l)		pthread_mutex_lock(&(l)->lock)
 #define mutex_trylock(l)	(!pthread_mutex_trylock(&(l)->lock))
