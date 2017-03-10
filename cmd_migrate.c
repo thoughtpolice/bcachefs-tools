@@ -219,25 +219,18 @@ static void copy_xattrs(struct cache_set *c, struct bch_inode_unpacked *dst,
 			char *src)
 {
 	struct bch_hash_info hash_info = bch_hash_info_init(dst);
-	ssize_t size = llistxattr(src, NULL, 0);
-	if (size < 0)
+
+	char attrs[XATTR_LIST_MAX];
+	ssize_t attrs_size = llistxattr(src, attrs, sizeof(attrs));
+	if (attrs_size < 0)
 		die("listxattr error: %s", strerror(errno));
 
-	if (!size)
-		return;
-
-	char *buf = malloc(size);
-	size = llistxattr(src, buf, size);
-	if (size < 0)
-		die("listxattr error: %s", strerror(errno));
-
-	for (const char *next, *attr = buf;
-	     attr <= buf + size;
+	for (const char *next, *attr = attrs;
+	     attr < attrs + attrs_size;
 	     attr = next) {
 		next = attr + strlen(attr) + 1;
 
-		/* max possible xattr val: */
-		static char val[64 << 10];
+		char val[XATTR_SIZE_MAX];
 		ssize_t val_size = lgetxattr(src, attr, val, sizeof(val));
 
 		if (val_size < 0)
@@ -250,8 +243,6 @@ static void copy_xattrs(struct cache_set *c, struct bch_inode_unpacked *dst,
 		if (ret < 0)
 			die("error creating xattr: %s", strerror(-ret));
 	}
-
-	free(buf);
 }
 
 static void write_data(struct cache_set *c,
