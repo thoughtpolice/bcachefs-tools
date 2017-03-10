@@ -502,9 +502,12 @@ next:
 }
 
 static ranges reserve_new_fs_space(const char *file_path, unsigned block_size,
-				   u64 size, u64 *bcachefs_inum, dev_t dev)
+				   u64 size, u64 *bcachefs_inum, dev_t dev,
+				   bool force)
 {
-	int fd = open(file_path, O_RDWR|O_CREAT|O_EXCL, 0600);
+	int fd = force
+		? open(file_path, O_RDWR|O_CREAT, 0600)
+		: open(file_path, O_RDWR|O_CREAT|O_EXCL, 0600);
 	if (fd < 0)
 		die("Error creating %s for bcachefs metadata: %s",
 		    file_path, strerror(errno));
@@ -625,6 +628,7 @@ static void migrate_usage(void)
 	     "  -f fs                  Root of filesystem to migrate(s)\n"
 	     "      --encrypted        Enable whole filesystem encryption (chacha20/poly1305)\n"
 	     "      --no_passphrase    Don't encrypt master encryption key\n"
+	     "  -F                     Force, even if metadata file already exists\n"
 	     "  -h                     Display this help and exit\n"
 	     "Report bugs to <linux-bcache@vger.kernel.org>");
 }
@@ -640,10 +644,10 @@ int cmd_migrate(int argc, char *argv[])
 	struct format_opts format_opts = format_opts_default();
 	char *fs_path = NULL;
 	unsigned block_size;
-	bool no_passphrase = false;
+	bool no_passphrase = false, force = false;
 	int opt;
 
-	while ((opt = getopt_long(argc, argv, "f:h",
+	while ((opt = getopt_long(argc, argv, "f:Fh",
 				  migrate_opts, NULL)) != -1)
 		switch (opt) {
 		case 'f':
@@ -654,6 +658,9 @@ int cmd_migrate(int argc, char *argv[])
 			break;
 		case 'p':
 			no_passphrase = true;
+			break;
+		case 'F':
+			force = true;
 			break;
 		case 'h':
 			migrate_usage();
@@ -688,7 +695,7 @@ int cmd_migrate(int argc, char *argv[])
 
 	ranges extents = reserve_new_fs_space(file_path,
 				block_size, get_size(dev.path, dev.fd) / 5,
-				&bcachefs_inum, stat.st_dev);
+				&bcachefs_inum, stat.st_dev, force);
 
 	find_superblock_space(extents, &dev);
 
