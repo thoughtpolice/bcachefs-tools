@@ -10,6 +10,7 @@
 #include "tools-util.h"
 
 int cmd_format(int argc, char *argv[]);
+int cmd_show_super(int argc, char *argv[]);
 
 int cmd_unlock(int argc, char *argv[]);
 int cmd_assemble(int argc, char *argv[]);
@@ -20,10 +21,12 @@ int cmd_stop(int argc, char *argv[]);
 int cmd_fs_show(int argc, char *argv[]);
 int cmd_fs_set(int argc, char *argv[]);
 
-int cmd_device_show(int argc, char *argv[]);
 int cmd_device_add(int argc, char *argv[]);
-int cmd_device_fail(int argc, char *argv[]);
 int cmd_device_remove(int argc, char *argv[]);
+int cmd_device_online(int argc, char *argv[]);
+int cmd_device_offline(int argc, char *argv[]);
+int cmd_device_evacuate(int argc, char *argv[]);
+int cmd_device_set_state(int argc, char *argv[]);
 
 int cmd_fsck(int argc, char *argv[]);
 

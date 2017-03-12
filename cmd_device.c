@@ -15,6 +15,7 @@
 #include "cmds.h"
 #include "libbcache.h"
 #include "linux/bcache-ioctl.h"
+#include "opts.h"
 #include "tools-util.h"
 
 /* This code belongs under show_fs */
@@ -164,23 +165,17 @@ int cmd_device_show(int argc, char *argv[])
 }
 #endif
 
-int cmd_device_show(int argc, char *argv[])
+static void disk_ioctl(const char *fs, const char *dev, int cmd, int flags)
 {
-	struct bch_sb *sb;
+	struct bch_ioctl_disk i = { .flags = flags, .dev = (__u64) dev, };
 
-	if (argc != 2)
-		die("please supply a single device");
-
-	sb = bcache_super_read(argv[1]);
-	bcache_super_print(sb, HUMAN_READABLE);
-
-	return 0;
+	xioctl(bcache_fs_open(fs).ioctl_fd, cmd, &i);
 }
 
 static void device_add_usage(void)
 {
-	puts("bcache device_add - add a device to an existing filesystem\n"
-	     "Usage: bcache device_add [OPTION]... filesystem device\n"
+	puts("bcache device add - add a device to an existing filesystem\n"
+	     "Usage: bcache device add [OPTION]... filesystem device\n"
 	     "\n"
 	     "Options:\n"
 	     "      --fs_size=size          Size of filesystem on device\n"
@@ -193,24 +188,23 @@ static void device_add_usage(void)
 	     "Report bugs to <linux-bcache@vger.kernel.org>");
 }
 
-static const struct option device_add_opts[] = {
-	{ "fs_size",		required_argument,	NULL, 'S' },
-	{ "bucket",		required_argument,	NULL, 'B' },
-	{ "discard",		no_argument,		NULL, 'D' },
-	{ "tier",		required_argument,	NULL, 't' },
-	{ "force",		no_argument,		NULL, 'f' },
-	{ NULL }
-};
-
 int cmd_device_add(int argc, char *argv[])
 {
+	static const struct option longopts[] = {
+		{ "fs_size",		required_argument,	NULL, 'S' },
+		{ "bucket",		required_argument,	NULL, 'B' },
+		{ "discard",		no_argument,		NULL, 'D' },
+		{ "tier",		required_argument,	NULL, 't' },
+		{ "force",		no_argument,		NULL, 'f' },
+		{ NULL }
+	};
 	struct format_opts format_opts = format_opts_default();
 	struct dev_opts dev_opts = { 0 };
 	bool force = false;
 	int opt;
 
 	while ((opt = getopt_long(argc, argv, "t:fh",
-				  device_add_opts, NULL)) != -1)
+				  longopts, NULL)) != -1)
 		switch (opt) {
 		case 'S':
 			if (bch_strtoull_h(optarg, &dev_opts.size))
@@ -256,78 +250,16 @@ int cmd_device_add(int argc, char *argv[])
 	fsync(dev_opts.fd);
 	close(dev_opts.fd);
 
-	struct bch_ioctl_disk_add ia = {
-		.dev = (__u64) dev_opts.path,
-	};
+	struct bch_ioctl_disk i = { .dev = (__u64) dev_opts.path, };
 
-	xioctl(fs.ioctl_fd, BCH_IOCTL_DISK_ADD, &ia);
-
-	return 0;
-}
-
-static void device_fail_usage(void)
-{
-	puts("bcache device_fail - mark a device as failed\n"
-	     "Usage: bcache device_fail filesystem [devices]\n"
-	     "\n"
-	     "Options:\n"
-	     "  -f, --force		    Force removal, even if some data\n"
-	     "                              couldn't be migrated\n"
-	     "      --force-metadata	    Force removal, even if some metadata\n"
-	     "                              couldn't be migrated\n"
-	     "  -h, --help                  display this help and exit\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
-	exit(EXIT_SUCCESS);
-}
-
-int cmd_device_fail(int argc, char *argv[])
-{
-	static const struct option longopts[] = {
-		{ "force-degraded",		0, NULL, 'f' },
-		//{ "force-data-lost",		0, NULL, 'F' },
-		//{ "force-metadata-lost",	0, NULL, 'F' },
-		{ "help",			0, NULL, 'h' },
-		{ NULL }
-	};
-	int opt, force_degraded = 0, force_data = 0, force_metadata = 0;
-
-	while ((opt = getopt_long(argc, argv, "fh", longopts, NULL)) != -1)
-		switch (opt) {
-		case 'f':
-			force_degraded = 1;
-			break;
-		case 'h':
-			device_fail_usage();
-		}
-
-	if (argc - optind < 2)
-		die("Please supply a filesystem and at least one device to fail");
-
-	struct bcache_handle fs = bcache_fs_open(argv[optind]);
-
-	for (unsigned i = optind + 1; i < argc; i++) {
-		struct bch_ioctl_disk_set_state ir = {
-			.dev		= (__u64) argv[i],
-			.new_state	= BCH_MEMBER_STATE_FAILED,
-		};
-
-		if (force_degraded)
-			ir.flags |= BCH_FORCE_IF_DEGRADED;
-		if (force_data)
-			ir.flags |= BCH_FORCE_IF_DATA_LOST;
-		if (force_metadata)
-			ir.flags |= BCH_FORCE_IF_METADATA_LOST;
-
-		xioctl(fs.ioctl_fd, BCH_IOCTL_DISK_SET_STATE, &ir);
-	}
-
+	xioctl(fs.ioctl_fd, BCH_IOCTL_DISK_ADD, &i);
 	return 0;
 }
 
 static void device_remove_usage(void)
 {
-	puts("bcache device_remove - remove one or more devices from a filesystem\n"
-	     "Usage: bcache device_remove filesystem [devices]\n"
+	puts("bcache device_remove - remove a device from a filesystem\n"
+	     "Usage: bcache device remove filesystem device\n"
 	     "\n"
 	     "Options:\n"
 	     "  -f, --force		    Force removal, even if some data\n"
@@ -347,37 +279,167 @@ int cmd_device_remove(int argc, char *argv[])
 		{ "help",		0, NULL, 'h' },
 		{ NULL }
 	};
-	int opt, force_data = 0, force_metadata = 0;
+	int opt, flags = 0;
 
 	while ((opt = getopt_long(argc, argv, "fh", longopts, NULL)) != -1)
 		switch (opt) {
 		case 'f':
-			force_data = 1;
+			flags |= BCH_FORCE_IF_DATA_LOST;
 			break;
 		case 'F':
-			force_metadata = 1;
+			flags |= BCH_FORCE_IF_METADATA_LOST;
 			break;
 		case 'h':
 			device_remove_usage();
 		}
 
-	if (argc - optind < 2)
+	if (argc - optind != 2)
 		die("Please supply a filesystem and at least one device to remove");
+
+	disk_ioctl(argv[optind], argv[optind + 1],
+		   BCH_IOCTL_DISK_REMOVE, flags);
+	return 0;
+}
+
+static void device_online_usage(void)
+{
+	puts("bcache device online - readd a device to a running filesystem\n"
+	     "Usage: bcache device online [OPTION]... filesystem device\n"
+	     "\n"
+	     "Options:\n"
+	     "  -h, --help                  Display this help and exit\n"
+	     "\n"
+	     "Report bugs to <linux-bcache@vger.kernel.org>");
+}
+
+int cmd_device_online(int argc, char *argv[])
+{
+	int opt;
+
+	while ((opt = getopt(argc, argv, "h")) != -1)
+		switch (opt) {
+		case 'h':
+			device_online_usage();
+			exit(EXIT_SUCCESS);
+		}
+
+	if (argc - optind != 2)
+		die("Please supply a filesystem and a device");
+
+	disk_ioctl(argv[optind], argv[optind + 1], BCH_IOCTL_DISK_ONLINE, 0);
+	return 0;
+}
+
+static void device_offline_usage(void)
+{
+	puts("bcache device offline - take a device offline, without removing it\n"
+	     "Usage: bcache device offline [OPTION]... filesystem device\n"
+	     "\n"
+	     "Options:\n"
+	     "  -f, --force		    Force, if data redundancy will be degraded\n"
+	     "  -h, --help                  Display this help and exit\n"
+	     "\n"
+	     "Report bugs to <linux-bcache@vger.kernel.org>");
+}
+
+int cmd_device_offline(int argc, char *argv[])
+{
+	static const struct option longopts[] = {
+		{ "force",		0, NULL, 'f' },
+		{ NULL }
+	};
+	int opt, flags = 0;
+
+	while ((opt = getopt_long(argc, argv, "fh",
+				  longopts, NULL)) != -1)
+		switch (opt) {
+		case 'f':
+			flags |= BCH_FORCE_IF_DEGRADED;
+			break;
+		case 'h':
+			device_offline_usage();
+			exit(EXIT_SUCCESS);
+		}
+
+	if (argc - optind != 2)
+		die("Please supply a filesystem and a device");
+
+	disk_ioctl(argv[optind], argv[optind + 1],
+		   BCH_IOCTL_DISK_OFFLINE, flags);
+	return 0;
+}
+
+static void device_evacuate_usage(void)
+{
+	puts("bcache device evacuate - move data off of a given device\n"
+	     "Usage: bcache device evacuate [OPTION]... filesystem device\n"
+	     "\n"
+	     "Options:\n"
+	     "  -h, --help                  Display this help and exit\n"
+	     "\n"
+	     "Report bugs to <linux-bcache@vger.kernel.org>");
+}
+
+int cmd_device_evacuate(int argc, char *argv[])
+{
+	int opt;
+
+	while ((opt = getopt(argc, argv, "h")) != -1)
+		switch (opt) {
+		case 'h':
+			device_evacuate_usage();
+			exit(EXIT_SUCCESS);
+		}
+
+	if (argc - optind != 2)
+		die("Please supply a filesystem and a device");
+
+	disk_ioctl(argv[optind], argv[optind + 1], BCH_IOCTL_DISK_EVACUATE, 0);
+	return 0;
+}
+
+static void device_set_state_usage(void)
+{
+	puts("bcache device set-state\n"
+	     "Usage: bcache device set-state filesystem device new-state\n"
+	     "\n"
+	     "Options:\n"
+	     "  -f, --force		    Force, if data redundancy will be degraded\n"
+	     "  -h, --help                  display this help and exit\n"
+	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	exit(EXIT_SUCCESS);
+}
+
+int cmd_device_set_state(int argc, char *argv[])
+{
+	static const struct option longopts[] = {
+		{ "force",			0, NULL, 'f' },
+		{ "help",			0, NULL, 'h' },
+		{ NULL }
+	};
+	int opt, flags = 0;
+
+	while ((opt = getopt_long(argc, argv, "fh", longopts, NULL)) != -1)
+		switch (opt) {
+		case 'f':
+			flags |= BCH_FORCE_IF_DEGRADED;
+			break;
+		case 'h':
+			device_set_state_usage();
+		}
+
+	if (argc - optind != 3)
+		die("Please supply a filesystem, device and state");
 
 	struct bcache_handle fs = bcache_fs_open(argv[optind]);
 
-	for (unsigned i = optind + 1; i < argc; i++) {
-		struct bch_ioctl_disk_remove ir = {
-			.dev = (__u64) argv[i],
-		};
+	struct bch_ioctl_disk_set_state i = {
+		.flags		= flags,
+		.dev		= (__u64) argv[optind + 1],
+		.new_state	= read_string_list_or_die(argv[optind + 2],
+						bch_dev_state, "device state"),
+	};
 
-		if (force_data)
-			ir.flags |= BCH_FORCE_IF_DATA_LOST;
-		if (force_metadata)
-			ir.flags |= BCH_FORCE_IF_METADATA_LOST;
-
-		xioctl(fs.ioctl_fd, BCH_IOCTL_DISK_REMOVE, &ir);
-	}
-
+	xioctl(fs.ioctl_fd, BCH_IOCTL_DISK_SET_STATE, &i);
 	return 0;
 }

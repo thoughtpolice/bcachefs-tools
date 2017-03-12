@@ -268,3 +268,15 @@ int cmd_format(int argc, char *argv[])
 
 	return 0;
 }
+
+int cmd_show_super(int argc, char *argv[])
+{
+	struct bch_sb *sb;
+
+	if (argc != 2)
+		die("please supply a single device");
+
+	sb = bcache_super_read(argv[1]);
+	bcache_super_print(sb, HUMAN_READABLE);
+	return 0;
+}
