@@ -54,7 +54,8 @@ x(0,	discard,		NULL,			NULL)			\
 t("Device specific options must come before corresponding devices, e.g.")	\
 t("  bcache format --tier 0 /dev/sdb --tier 1 /dev/sdc")			\
 t("")										\
-x('h',	help,			NULL,			"display this help and exit")
+x('q',	quiet,			NULL,			"Only print errors")	\
+x('h',	help,			NULL,			"Display this help and exit")
 
 static void usage(void)
 {
@@ -90,6 +91,7 @@ static void usage(void)
 	     "      --discard               Enable discards\n"
 	     "  -t, --tier=#                Higher tier (e.g. 1) indicates slower devices\n"
 	     "\n"
+	     "  -q, --quiet                 Only print errors\n"
 	     "  -h, --help                  Display this help and exit\n"
 	     "\n"
 	     "Device specific options must come before corresponding devices, e.g.\n"
@@ -126,13 +128,13 @@ int cmd_format(int argc, char *argv[])
 	darray(struct dev_opts) devices;
 	struct format_opts opts = format_opts_default();
 	struct dev_opts dev_opts = { 0 }, *dev;
-	bool force = false, no_passphrase = false;
+	bool force = false, no_passphrase = false, quiet = false;
 	int opt;
 
 	darray_init(devices);
 
 	while ((opt = getopt_long(argc, argv,
-				  "-b:e:L:U:ft:h",
+				  "-b:e:L:U:ft:qh",
 				  format_opts,
 				  NULL)) != -1)
 		switch (opt) {
@@ -224,6 +226,10 @@ int cmd_format(int argc, char *argv[])
 			darray_append(devices, dev_opts);
 			dev_opts.size = 0;
 			break;
+		case O_quiet:
+		case 'q':
+			quiet = true;
+			break;
 		case O_help:
 		case 'h':
 			usage();
@@ -258,7 +264,9 @@ int cmd_format(int argc, char *argv[])
 
 	struct bch_sb *sb =
 		bcache_format(opts, devices.item, darray_size(devices));
-	bcache_super_print(sb, HUMAN_READABLE);
+
+	if (!quiet)
+		bcache_super_print(sb, HUMAN_READABLE);
 	free(sb);
 
 	if (opts.passphrase) {
