@@ -19,12 +19,6 @@ enum {
 
 /* @flags for percpu_ref_init() */
 enum {
-	/*
-	 * Start w/ ref == 1 in atomic mode.  Can be switched to percpu
-	 * operation using percpu_ref_switch_to_percpu().  If initialized
-	 * with this flag, the ref will stay in atomic mode until
-	 * percpu_ref_switch_to_percpu() is invoked on it.
-	 */
 	PERCPU_REF_INIT_ATOMIC	= 1 << 0,
 
 	/*
@@ -56,13 +50,6 @@ static inline int __must_check percpu_ref_init(struct percpu_ref *ref,
 	ref->release = release;
 	return 0;
 }
-
-static inline void percpu_ref_switch_to_atomic(struct percpu_ref *ref,
-				 percpu_ref_func_t *confirm_switch) {}
-
-static inline void percpu_ref_switch_to_percpu(struct percpu_ref *ref) {}
-
-static inline void percpu_ref_reinit(struct percpu_ref *ref) {}
 
 /**
  * percpu_ref_get_many - increment a percpu refcount
@@ -153,6 +140,11 @@ static inline void percpu_ref_put_many(struct percpu_ref *ref, unsigned long nr)
 static inline void percpu_ref_put(struct percpu_ref *ref)
 {
 	percpu_ref_put_many(ref, 1);
+}
+
+static inline void percpu_ref_reinit(struct percpu_ref *ref)
+{
+	percpu_ref_get(ref);
 }
 
 /**
