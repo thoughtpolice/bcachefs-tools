@@ -500,7 +500,7 @@ retry:
 				s->read_dirty_data = true;
 
 			bch_read_extent(c, &s->rbio, k, &pick,
-					BCH_READ_FORCE_BOUNCE|
+					BCH_READ_ACCOUNT_TIMES|
 					BCH_READ_RETRY_IF_STALE|
 					(!s->bypass ? BCH_READ_PROMOTE : 0)|
 					(is_last ? BCH_READ_IS_LAST : 0));

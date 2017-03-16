@@ -462,7 +462,7 @@ static void bch_mark_pointer(struct bch_fs *c,
 		 * the allocator invalidating a bucket after we've already
 		 * checked the gen
 		 */
-		if (gen_after(old.gen, ptr->gen)) {
+		if (gen_after(new.gen, ptr->gen)) {
 			EBUG_ON(type != S_CACHED &&
 				test_bit(JOURNAL_REPLAY_DONE, &c->journal.flags));
 			return;
@@ -470,7 +470,7 @@ static void bch_mark_pointer(struct bch_fs *c,
 
 		EBUG_ON(type != S_CACHED &&
 			!may_make_unavailable &&
-			is_available_bucket(old) &&
+			is_available_bucket(new) &&
 			test_bit(JOURNAL_REPLAY_DONE, &c->journal.flags));
 
 		if (type != S_CACHED &&

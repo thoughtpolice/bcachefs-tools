@@ -1453,57 +1453,26 @@ int bch_dev_set_state(struct bch_fs *c, struct bch_dev *ca,
 	return ret;
 }
 
-#if 0
-int bch_dev_migrate_from(struct bch_fs *c, struct bch_dev *ca)
-{
-	/* First, go RO before we try to migrate data off: */
-	ret = bch_dev_set_state(c, ca, BCH_MEMBER_STATE_RO, flags);
-	if (ret)
-		return ret;
-
-	bch_notify_dev_removing(ca);
-
-	/* Migrate data, metadata off device: */
-
-	ret = bch_move_data_off_device(ca);
-	if (ret && !(flags & BCH_FORCE_IF_DATA_LOST)) {
-		bch_err(c, "Remove of %s failed, unable to migrate data off",
-			name);
-		return ret;
-	}
-
-	if (ret)
-		ret = bch_flag_data_bad(ca);
-	if (ret) {
-		bch_err(c, "Remove of %s failed, unable to migrate data off",
-			name);
-		return ret;
-	}
-
-	ret = bch_move_metadata_off_device(ca);
-	if (ret)
-		return ret;
-}
-#endif
-
 /* Device add/removal: */
 
-static int __bch_dev_remove(struct bch_fs *c, struct bch_dev *ca, int flags)
+int bch_dev_remove(struct bch_fs *c, struct bch_dev *ca, int flags)
 {
 	struct bch_sb_field_members *mi;
 	unsigned dev_idx = ca->dev_idx;
-	int ret;
+	int ret = -EINVAL;
+
+	mutex_lock(&c->state_lock);
+
+	percpu_ref_put(&ca->ref); /* XXX */
 
 	if (ca->mi.state == BCH_MEMBER_STATE_RW) {
 		bch_err(ca, "Cannot remove RW device");
-		bch_notify_dev_remove_failed(ca);
-		return -EINVAL;
+		goto err;
 	}
 
 	if (!bch_dev_state_allowed(c, ca, BCH_MEMBER_STATE_FAILED, flags)) {
 		bch_err(ca, "Cannot remove without losing data");
-		bch_notify_dev_remove_failed(ca);
-		return -EINVAL;
+		goto err;
 	}
 
 	/*
@@ -1514,20 +1483,18 @@ static int __bch_dev_remove(struct bch_fs *c, struct bch_dev *ca, int flags)
 	ret = bch_flag_data_bad(ca);
 	if (ret) {
 		bch_err(ca, "Remove failed");
-		return ret;
+		goto err;
 	}
 
 	if (ca->mi.has_data || ca->mi.has_metadata) {
-		bch_err(ca, "Can't remove, still has data");
-		return ret;
+		bch_err(ca, "Remove failed, still has data");
+		goto err;
 	}
 
 	/*
 	 * Ok, really doing the remove:
 	 * Drop device's prio pointer before removing it from superblock:
 	 */
-	bch_notify_dev_removed(ca);
-
 	spin_lock(&c->journal.lock);
 	c->journal.prio_buckets[dev_idx] = 0;
 	spin_unlock(&c->journal.lock);
@@ -1549,19 +1516,10 @@ static int __bch_dev_remove(struct bch_fs *c, struct bch_dev *ca, int flags)
 	bch_write_super(c);
 
 	mutex_unlock(&c->sb_lock);
-
-	return 0;
-}
-
-int bch_dev_remove(struct bch_fs *c, struct bch_dev *ca, int flags)
-{
-	int ret;
-
-	mutex_lock(&c->state_lock);
-	percpu_ref_put(&ca->ref);
-	ret = __bch_dev_remove(c, ca, flags);
 	mutex_unlock(&c->state_lock);
-
+	return 0;
+err:
+	mutex_unlock(&c->state_lock);
 	return ret;
 }
 
@@ -1680,6 +1638,8 @@ err:
 int bch_dev_online(struct bch_fs *c, const char *path)
 {
 	struct bcache_superblock sb = { 0 };
+	struct bch_dev *ca;
+	unsigned dev_idx;
 	const char *err;
 
 	mutex_lock(&c->state_lock);
@@ -1688,16 +1648,26 @@ int bch_dev_online(struct bch_fs *c, const char *path)
 	if (err)
 		goto err;
 
+	dev_idx = sb.sb->dev_idx;
+
 	err = bch_dev_in_fs(c->disk_sb, sb.sb);
 	if (err)
 		goto err;
 
 	mutex_lock(&c->sb_lock);
 	if (__bch_dev_online(c, &sb)) {
+		err = "__bch_dev_online() error";
 		mutex_unlock(&c->sb_lock);
 		goto err;
 	}
 	mutex_unlock(&c->sb_lock);
+
+	ca = c->devs[dev_idx];
+	if (ca->mi.state == BCH_MEMBER_STATE_RW) {
+		err = __bch_dev_read_write(c, ca);
+		if (err)
+			goto err;
+	}
 
 	mutex_unlock(&c->state_lock);
 	return 0;
@@ -1725,7 +1695,7 @@ int bch_dev_offline(struct bch_fs *c, struct bch_dev *ca, int flags)
 	return 0;
 }
 
-int bch_dev_migrate(struct bch_fs *c, struct bch_dev *ca)
+int bch_dev_evacuate(struct bch_fs *c, struct bch_dev *ca)
 {
 	int ret;
 

@@ -933,13 +933,13 @@ int bch_initial_gc(struct bch_fs *c, struct list_head *journal)
 {
 	enum btree_id id;
 
-	bch_mark_metadata(c);
-
 	for (id = 0; id < BTREE_ID_NR; id++)
 		bch_initial_gc_btree(c, id);
 
 	if (journal)
 		bch_journal_mark(c, journal);
+
+	bch_mark_metadata(c);
 
 	/*
 	 * Skip past versions that might have possibly been used (as nonces),

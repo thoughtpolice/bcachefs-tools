@@ -201,7 +201,6 @@ static long bch_ioctl_disk_remove(struct bch_fs *c,
 {
 	struct bch_ioctl_disk arg;
 	struct bch_dev *ca;
-	int ret;
 
 	if (copy_from_user(&arg, user_arg, sizeof(arg)))
 		return -EFAULT;
@@ -210,10 +209,7 @@ static long bch_ioctl_disk_remove(struct bch_fs *c,
 	if (IS_ERR(ca))
 		return PTR_ERR(ca);
 
-	ret = bch_dev_remove(c, ca, arg.flags);
-
-	percpu_ref_put(&ca->ref);
-	return ret;
+	return bch_dev_remove(c, ca, arg.flags);
 }
 
 static long bch_ioctl_disk_online(struct bch_fs *c,
@@ -294,7 +290,7 @@ static long bch_ioctl_disk_evacuate(struct bch_fs *c,
 	if (IS_ERR(ca))
 		return PTR_ERR(ca);
 
-	ret = bch_dev_migrate(c, ca);
+	ret = bch_dev_evacuate(c, ca);
 
 	percpu_ref_put(&ca->ref);
 	return ret;
@@ -384,12 +380,11 @@ void bch_chardev_exit(void)
 {
 	if (!IS_ERR_OR_NULL(bch_chardev_class))
 		device_destroy(bch_chardev_class,
-			       MKDEV(bch_chardev_major, 0));
+			       MKDEV(bch_chardev_major, 255));
 	if (!IS_ERR_OR_NULL(bch_chardev_class))
 		class_destroy(bch_chardev_class);
 	if (bch_chardev_major > 0)
 		unregister_chrdev(bch_chardev_major, "bcache");
-
 }
 
 int __init bch_chardev_init(void)

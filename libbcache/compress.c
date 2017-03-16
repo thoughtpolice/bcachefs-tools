@@ -8,6 +8,7 @@
 #include <linux/zlib.h>
 
 enum bounced {
+	BOUNCED_CONTIG,
 	BOUNCED_MAPPED,
 	BOUNCED_KMALLOCED,
 	BOUNCED_VMALLOCED,
@@ -54,6 +55,14 @@ static void *__bio_map_or_bounce(struct bch_fs *c,
 
 	BUG_ON(bvec_iter_sectors(start) > BCH_ENCODED_EXTENT_MAX);
 
+#ifndef CONFIG_HIGHMEM
+	*bounced = BOUNCED_CONTIG;
+
+	__bio_for_each_contig_segment(bv, bio, iter, start) {
+		if (bv.bv_len == start.bi_size)
+			return page_address(bv.bv_page) + bv.bv_offset;
+	}
+#endif
 	*bounced = BOUNCED_MAPPED;
 
 	__bio_for_each_segment(bv, bio, iter, start) {
@@ -443,7 +452,6 @@ void bch_fs_compress_exit(struct bch_fs *c)
 	mempool_exit(&c->lz4_workspace_pool);
 	mempool_exit(&c->compression_bounce[WRITE]);
 	mempool_exit(&c->compression_bounce[READ]);
-	free_percpu(c->bio_decompress_worker);
 }
 
 #define COMPRESSION_WORKSPACE_SIZE					\
@@ -453,22 +461,7 @@ void bch_fs_compress_exit(struct bch_fs *c)
 int bch_fs_compress_init(struct bch_fs *c)
 {
 	unsigned order = get_order(BCH_ENCODED_EXTENT_MAX << 9);
-	int ret, cpu;
-
-	if (!c->bio_decompress_worker) {
-		c->bio_decompress_worker = alloc_percpu(*c->bio_decompress_worker);
-		if (!c->bio_decompress_worker)
-			return -ENOMEM;
-
-		for_each_possible_cpu(cpu) {
-			struct bio_decompress_worker *d =
-				per_cpu_ptr(c->bio_decompress_worker, cpu);
-
-			d->c = c;
-			INIT_WORK(&d->work, bch_bio_decompress_work);
-			init_llist_head(&d->bio_list);
-		}
-	}
+	int ret;
 
 	if (!bch_sb_test_feature(c->disk_sb, BCH_FEATURE_LZ4) &&
 	    !bch_sb_test_feature(c->disk_sb, BCH_FEATURE_GZIP))

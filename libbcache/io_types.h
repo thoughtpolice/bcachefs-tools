@@ -29,6 +29,19 @@ struct bch_read_bio {
 	 */
 	struct bvec_iter	parent_iter;
 
+	unsigned		submit_time_us;
+	u16			flags;
+	u8			bounce:1,
+				split:1;
+
+	struct bch_fs		*c;
+	struct bch_dev		*ca;
+	struct bch_extent_ptr	ptr;
+	struct bch_extent_crc128 crc;
+	struct bversion		version;
+
+	struct cache_promote_op *promote;
+
 	/*
 	 * If we have to retry the read (IO error, checksum failure, read stale
 	 * data (raced with allocator), we retry the portion of the parent bio
@@ -38,20 +51,7 @@ struct bch_read_bio {
 	 */
 	u64			inode;
 
-	unsigned		submit_time_us;
-	u16			flags;
-	u8			bounce:1,
-				split:1;
-
-	struct bversion		version;
-	struct bch_extent_crc128 crc;
-	struct bch_extent_ptr	ptr;
-	struct bch_dev		*ca;
-
-	struct cache_promote_op *promote;
-
-	/* bio_decompress_worker list */
-	struct llist_node	list;
+	struct work_struct	work;
 
 	struct bio		bio;
 };
@@ -63,7 +63,7 @@ bch_rbio_parent(struct bch_read_bio *rbio)
 }
 
 struct bch_write_bio {
-	struct bch_fs	*c;
+	struct bch_fs		*c;
 	struct bch_dev		*ca;
 	union {
 		struct bio	*orig;
@@ -140,12 +140,6 @@ struct bch_write_op {
 
 	struct keylist		insert_keys;
 	u64			inline_keys[BKEY_EXTENT_U64s_MAX * 2];
-};
-
-struct bio_decompress_worker {
-	struct bch_fs		*c;
-	struct work_struct		work;
-	struct llist_head		bio_list;
 };
 
 #endif /* _BCACHE_IO_TYPES_H */

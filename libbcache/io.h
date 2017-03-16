@@ -69,6 +69,8 @@ enum bch_read_flags {
 	BCH_READ_PROMOTE		= 1 << 2,
 	BCH_READ_IS_LAST		= 1 << 3,
 	BCH_READ_MAY_REUSE_BIO		= 1 << 4,
+	BCH_READ_ACCOUNT_TIMES		= 1 << 5,
+	BCH_READ_USER_MAPPED		= 1 << 6,
 };
 
 void bch_read(struct bch_fs *, struct bch_read_bio *, u64);
@@ -84,7 +86,5 @@ int bch_discard(struct bch_fs *, struct bpos, struct bpos,
 
 void bch_read_retry_work(struct work_struct *);
 void bch_wake_delayed_writes(unsigned long data);
-
-void bch_bio_decompress_work(struct work_struct *);
 
 #endif /* _BCACHE_IO_H */

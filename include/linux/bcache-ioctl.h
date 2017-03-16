@@ -78,6 +78,14 @@ struct bch_ioctl_disk_set_state {
 #define BCH_REWRITE_RECOMPRESS		(1 << 0)
 #define BCH_REWRITE_DECREASE_REPLICAS	(1 << 1)
 
+enum bch_data_ops {
+	BCH_DATA_SCRUB,
+};
+
+struct bch_data_op {
+	__u8			type;
+};
+
 struct bch_ioctl_data {
 	__u32			flags;
 	__u32			pad;

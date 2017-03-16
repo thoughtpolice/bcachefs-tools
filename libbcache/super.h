@@ -107,7 +107,7 @@ int bch_dev_remove(struct bch_fs *, struct bch_dev *, int);
 int bch_dev_add(struct bch_fs *, const char *);
 int bch_dev_online(struct bch_fs *, const char *);
 int bch_dev_offline(struct bch_fs *, struct bch_dev *, int);
-int bch_dev_migrate(struct bch_fs *, struct bch_dev *);
+int bch_dev_evacuate(struct bch_fs *, struct bch_dev *);
 
 void bch_fs_detach(struct bch_fs *);
 
