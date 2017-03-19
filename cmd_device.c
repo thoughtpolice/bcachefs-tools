@@ -12,9 +12,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "bcachefs_ioctl.h"
 #include "cmds.h"
-#include "libbcache.h"
-#include "linux/bcache-ioctl.h"
+#include "libbcachefs.h"
 #include "opts.h"
 #include "tools-util.h"
 
@@ -174,8 +174,8 @@ static void disk_ioctl(const char *fs, const char *dev, int cmd, int flags)
 
 static void device_add_usage(void)
 {
-	puts("bcache device add - add a device to an existing filesystem\n"
-	     "Usage: bcache device add [OPTION]... filesystem device\n"
+	puts("bcachefs device add - add a device to an existing filesystem\n"
+	     "Usage: bcachefs device add [OPTION]... filesystem device\n"
 	     "\n"
 	     "Options:\n"
 	     "      --fs_size=size          Size of filesystem on device\n"
@@ -207,7 +207,7 @@ int cmd_device_add(int argc, char *argv[])
 				  longopts, NULL)) != -1)
 		switch (opt) {
 		case 'S':
-			if (bch_strtoull_h(optarg, &dev_opts.size))
+			if (bch2_strtoull_h(optarg, &dev_opts.size))
 				die("invalid filesystem size");
 
 			dev_opts.size >>= 9;
@@ -258,8 +258,8 @@ int cmd_device_add(int argc, char *argv[])
 
 static void device_remove_usage(void)
 {
-	puts("bcache device_remove - remove a device from a filesystem\n"
-	     "Usage: bcache device remove filesystem device\n"
+	puts("bcachefs device_remove - remove a device from a filesystem\n"
+	     "Usage: bcachefs device remove filesystem device\n"
 	     "\n"
 	     "Options:\n"
 	     "  -f, --force		    Force removal, even if some data\n"
@@ -303,8 +303,8 @@ int cmd_device_remove(int argc, char *argv[])
 
 static void device_online_usage(void)
 {
-	puts("bcache device online - readd a device to a running filesystem\n"
-	     "Usage: bcache device online [OPTION]... filesystem device\n"
+	puts("bcachefs device online - readd a device to a running filesystem\n"
+	     "Usage: bcachefs device online [OPTION]... filesystem device\n"
 	     "\n"
 	     "Options:\n"
 	     "  -h, --help                  Display this help and exit\n"
@@ -332,8 +332,8 @@ int cmd_device_online(int argc, char *argv[])
 
 static void device_offline_usage(void)
 {
-	puts("bcache device offline - take a device offline, without removing it\n"
-	     "Usage: bcache device offline [OPTION]... filesystem device\n"
+	puts("bcachefs device offline - take a device offline, without removing it\n"
+	     "Usage: bcachefs device offline [OPTION]... filesystem device\n"
 	     "\n"
 	     "Options:\n"
 	     "  -f, --force		    Force, if data redundancy will be degraded\n"
@@ -371,8 +371,8 @@ int cmd_device_offline(int argc, char *argv[])
 
 static void device_evacuate_usage(void)
 {
-	puts("bcache device evacuate - move data off of a given device\n"
-	     "Usage: bcache device evacuate [OPTION]... filesystem device\n"
+	puts("bcachefs device evacuate - move data off of a given device\n"
+	     "Usage: bcachefs device evacuate [OPTION]... filesystem device\n"
 	     "\n"
 	     "Options:\n"
 	     "  -h, --help                  Display this help and exit\n"
@@ -400,8 +400,8 @@ int cmd_device_evacuate(int argc, char *argv[])
 
 static void device_set_state_usage(void)
 {
-	puts("bcache device set-state\n"
-	     "Usage: bcache device set-state filesystem device new-state\n"
+	puts("bcachefs device set-state\n"
+	     "Usage: bcachefs device set-state filesystem device new-state\n"
 	     "\n"
 	     "Options:\n"
 	     "  -f, --force		    Force, if data redundancy will be degraded\n"
@@ -437,7 +437,7 @@ int cmd_device_set_state(int argc, char *argv[])
 		.flags		= flags,
 		.dev		= (__u64) argv[optind + 1],
 		.new_state	= read_string_list_or_die(argv[optind + 2],
-						bch_dev_state, "device state"),
+						bch2_dev_state, "device state"),
 	};
 
 	xioctl(fs.ioctl_fd, BCH_IOCTL_DISK_SET_STATE, &i);

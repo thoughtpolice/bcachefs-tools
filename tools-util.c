@@ -18,7 +18,7 @@
 
 #include "ccan/crc/crc.h"
 
-#include "linux/bcache-ioctl.h"
+#include "bcachefs_ioctl.h"
 #include "linux/sort.h"
 #include "tools-util.h"
 #include "util.h"
@@ -93,7 +93,7 @@ u64 read_file_u64(int dirfd, const char *path)
 ssize_t read_string_list_or_die(const char *opt, const char * const list[],
 				const char *msg)
 {
-	ssize_t v = bch_read_string_list(opt, list);
+	ssize_t v = bch2_read_string_list(opt, list);
 	if (v < 0)
 		die("Bad %s %s", msg, opt);
 
@@ -169,12 +169,12 @@ int open_for_format(const char *dev, bool force)
 /* Global control device: */
 int bcachectl_open(void)
 {
-	return xopen("/dev/bcache-ctl", O_RDWR);
+	return xopen("/dev/bcachefs-ctl", O_RDWR);
 }
 
 /* Filesystem handles (ioctl, sysfs dir): */
 
-#define SYSFS_BASE "/sys/fs/bcache/"
+#define SYSFS_BASE "/sys/fs/bcachefs/"
 
 struct bcache_handle bcache_fs_open(const char *path)
 {
@@ -187,7 +187,7 @@ struct bcache_handle bcache_fs_open(const char *path)
 		ret.sysfs_fd = xopen(sysfs, O_RDONLY);
 
 		char *minor = read_file_str(ret.sysfs_fd, "minor");
-		char *ctl = mprintf("/dev/bcache%s-ctl", minor);
+		char *ctl = mprintf("/dev/bcachefs%s-ctl", minor);
 		ret.ioctl_fd = xopen(ctl, O_RDWR);
 
 		free(sysfs);
@@ -319,7 +319,7 @@ unsigned hatoi_validate(const char *s, const char *msg)
 {
 	u64 v;
 
-	if (bch_strtoull_h(s, &v))
+	if (bch2_strtoull_h(s, &v))
 		die("bad %s %s", msg, s);
 
 	if (v & (v - 1))

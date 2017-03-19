@@ -4,11 +4,11 @@
 #include <sys/types.h>
 
 #include "cmds.h"
-#include "libbcache.h"
+#include "libbcachefs.h"
 #include "qcow2.h"
 #include "tools-util.h"
 
-#include "bcache.h"
+#include "bcachefs.h"
 #include "alloc.h"
 #include "btree_cache.h"
 #include "btree_iter.h"
@@ -18,8 +18,8 @@
 
 static void dump_usage(void)
 {
-	puts("bcache dump - dump filesystem metadata\n"
-	     "Usage: bcache dump [OPTION]... <devices>\n"
+	puts("bcachefs dump - dump filesystem metadata\n"
+	     "Usage: bcachefs dump [OPTION]... <devices>\n"
 	     "\n"
 	     "Options:\n"
 	     "  -o output     Output qcow2 image(s)\n"
@@ -75,7 +75,7 @@ static void dump_one_device(struct bch_fs *c, struct bch_dev *ca, int fd)
 						  ptr->offset << 9,
 						  b->written << 9);
 		}
-		bch_btree_iter_unlock(&iter);
+		bch2_btree_iter_unlock(&iter);
 	}
 
 	qcow2_write_image(ca->disk_sb.bdev->bd_fd, fd, &data,
@@ -84,7 +84,7 @@ static void dump_one_device(struct bch_fs *c, struct bch_dev *ca, int fd)
 
 int cmd_dump(int argc, char *argv[])
 {
-	struct bch_opts opts = bch_opts_empty();
+	struct bch_opts opts = bch2_opts_empty();
 	struct bch_fs *c = NULL;
 	const char *err;
 	char *out = NULL;
@@ -116,7 +116,7 @@ int cmd_dump(int argc, char *argv[])
 	if (!out)
 		die("Please supply output filename");
 
-	err = bch_fs_open(argv + optind, argc - optind, opts, &c);
+	err = bch2_fs_open(argv + optind, argc - optind, opts, &c);
 	if (err)
 		die("error opening %s: %s", argv[optind], err);
 
@@ -149,7 +149,7 @@ int cmd_dump(int argc, char *argv[])
 
 	up_read(&c->gc_lock);
 
-	bch_fs_stop(c);
+	bch2_fs_stop(c);
 	return 0;
 }
 
@@ -164,11 +164,11 @@ static void list_keys(struct bch_fs *c, enum btree_id btree_id,
 		if (bkey_cmp(k.k->p, end) > 0)
 			break;
 
-		bch_bkey_val_to_text(c, bkey_type(0, btree_id),
-				     buf, sizeof(buf), k);
+		bch2_bkey_val_to_text(c, bkey_type(0, btree_id),
+				      buf, sizeof(buf), k);
 		puts(buf);
 	}
-	bch_btree_iter_unlock(&iter);
+	bch2_btree_iter_unlock(&iter);
 }
 
 static void list_btree_formats(struct bch_fs *c, enum btree_id btree_id,
@@ -182,10 +182,10 @@ static void list_btree_formats(struct bch_fs *c, enum btree_id btree_id,
 		if (bkey_cmp(b->key.k.p, end) > 0)
 			break;
 
-		bch_print_btree_node(c, b, buf, sizeof(buf));
+		bch2_print_btree_node(c, b, buf, sizeof(buf));
 		puts(buf);
 	}
-	bch_btree_iter_unlock(&iter);
+	bch2_btree_iter_unlock(&iter);
 }
 
 static struct bpos parse_pos(char *buf)
@@ -205,8 +205,8 @@ static struct bpos parse_pos(char *buf)
 
 static void list_keys_usage(void)
 {
-	puts("bcache list_keys - list filesystem metadata to stdout\n"
-	     "Usage: bcache list_keys [OPTION]... <devices>\n"
+	puts("bcachefs list_keys - list filesystem metadata to stdout\n"
+	     "Usage: bcachefs list_keys [OPTION]... <devices>\n"
 	     "\n"
 	     "Options:\n"
 	     "  -b (extents|inodes|dirents|xattrs)    Btree to list from\n"
@@ -225,7 +225,7 @@ static const char * const list_modes[] = {
 
 int cmd_list(int argc, char *argv[])
 {
-	struct bch_opts opts = bch_opts_empty();
+	struct bch_opts opts = bch2_opts_empty();
 	struct bch_fs *c = NULL;
 	enum btree_id btree_id = BTREE_ID_EXTENTS;
 	struct bpos start = POS_MIN, end = POS_MAX;
@@ -241,7 +241,7 @@ int cmd_list(int argc, char *argv[])
 		switch (opt) {
 		case 'b':
 			btree_id = read_string_list_or_die(optarg,
-						bch_btree_ids, "btree id");
+						bch2_btree_ids, "btree id");
 			break;
 		case 's':
 			start	= parse_pos(optarg);
@@ -261,7 +261,7 @@ int cmd_list(int argc, char *argv[])
 	if (optind >= argc)
 		die("Please supply device(s) to check");
 
-	err = bch_fs_open(argv + optind, argc - optind, opts, &c);
+	err = bch2_fs_open(argv + optind, argc - optind, opts, &c);
 	if (err)
 		die("error opening %s: %s", argv[optind], err);
 
@@ -276,6 +276,6 @@ int cmd_list(int argc, char *argv[])
 		die("Invalid mode");
 	}
 
-	bch_fs_stop(c);
+	bch2_fs_stop(c);
 	return 0;
 }

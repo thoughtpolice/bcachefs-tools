@@ -1,25 +1,17 @@
-Source: bcache-tools
-Maintainer: David Mohr <david@mcbf.net>
-Uploaders: Robie Basak <robie@justgohome.co.uk>
+Source: bcachefs-tools
+Maintainer: Kent Overstreet <kent.overstreet@gmail.com>
 Section: utils
 Priority: optional
 Standards-Version: 3.9.5
 Build-Depends: debhelper (>= 9), pkg-config, libblkid-dev, uuid-dev,
 	libscrypt-dev, libsodium-dev, libkeyutils-dev, liburcu-dev, zlib1g-dev,
 	libattr1-dev
-Vcs-Browser: http://anonscm.debian.org/gitweb/?p=collab-maint/bcache-tools.git
-Vcs-Git: git://anonscm.debian.org/collab-maint/bcache-tools.git
 Homepage: http://bcache.evilpiepirate.org/
 
-Package: bcache-tools
+Package: bcachefs-tools
 Architecture: linux-any
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Recommends: initramfs-tools | linux-initramfs-tool
-Description: bcache userspace tools
- Bcache allows the use of SSDs to cache other block devices.
- .
- Documentation for the run-time interface is included in the kernel tree; in
- Documentation/bcache.txt.
- .
- This package includes udev rules, initramfs support, and the utilities to
- create a new bcache as well as inspect existing bcache partitions.
+Description: bcachefs userspace tools
+ Userspace tools for bcachefs, a modern copy on write, checksumming, multi
+ device filesystem.

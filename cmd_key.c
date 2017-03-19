@@ -5,7 +5,7 @@
 #include "cmds.h"
 #include "checksum.h"
 #include "crypto.h"
-#include "libbcache.h"
+#include "libbcachefs.h"
 
 int cmd_unlock(int argc, char *argv[])
 {

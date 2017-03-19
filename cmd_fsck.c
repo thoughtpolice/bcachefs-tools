@@ -1,13 +1,13 @@
 
 #include "cmds.h"
-#include "libbcache.h"
+#include "libbcachefs.h"
 #include "super.h"
 #include "tools-util.h"
 
 static void usage(void)
 {
-	puts("bcache fsck - filesystem check and repair\n"
-	     "Usage: bcache fsck [OPTION]... <devices>\n"
+	puts("bcachefs fsck - filesystem check and repair\n"
+	     "Usage: bcachefs fsck [OPTION]... <devices>\n"
 	     "\n"
 	     "Options:\n"
 	     "  -p     Automatic repair (no questions\n"
@@ -21,7 +21,7 @@ static void usage(void)
 
 int cmd_fsck(int argc, char *argv[])
 {
-	struct bch_opts opts = bch_opts_empty();
+	struct bch_opts opts = bch2_opts_empty();
 	struct bch_fs *c = NULL;
 	const char *err;
 	int opt;
@@ -52,10 +52,10 @@ int cmd_fsck(int argc, char *argv[])
 	if (optind >= argc)
 		die("Please supply device(s) to check");
 
-	err = bch_fs_open(argv + optind, argc - optind, opts, &c);
+	err = bch2_fs_open(argv + optind, argc - optind, opts, &c);
 	if (err)
 		die("error opening %s: %s", argv[optind], err);
 
-	bch_fs_stop(c);
+	bch2_fs_stop(c);
 	return 0;
 }

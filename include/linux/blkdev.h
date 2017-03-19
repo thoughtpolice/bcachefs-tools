@@ -85,6 +85,12 @@ struct block_device {
 
 void generic_make_request(struct bio *);
 int submit_bio_wait(struct bio *);
+
+static inline void submit_bio(struct bio *bio)
+{
+	generic_make_request(bio);
+}
+
 int blkdev_issue_discard(struct block_device *, sector_t,
 			 sector_t, gfp_t, unsigned long);
 

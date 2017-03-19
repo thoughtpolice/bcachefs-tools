@@ -1,10 +1,7 @@
-bcache
-bcache-userspace
-probe-bcache
+bcachefs
 .*
 *.o
 *.d
 *.a
 tags
 cscope*
-bcache-tools

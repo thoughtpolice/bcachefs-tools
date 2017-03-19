@@ -5,7 +5,7 @@ CFLAGS+=-std=gnu99 -O2 -g -MMD -Wall				\
 	-Wno-unused-but-set-variable				\
 	-Wno-pointer-sign					\
 	-fno-strict-aliasing					\
-	-I. -Iinclude -Ilibbcache				\
+	-I. -Iinclude -Ilibbcachefs				\
 	-D_FILE_OFFSET_BITS=64					\
 	-D_GNU_SOURCE						\
 	-D_LGPL_SOURCE						\
@@ -38,49 +38,44 @@ else
 endif
 
 .PHONY: all
-all: bcache
+all: bcachefs
 
-CCANSRCS=$(wildcard ccan/*/*.c)
-CCANOBJS=$(patsubst %.c,%.o,$(CCANSRCS))
+SRCS=bcachefs.c				\
+     bcachefs-userspace-shim.c		\
+     cmd_assemble.c			\
+     cmd_debug.c			\
+     cmd_device.c			\
+     cmd_fs.c				\
+     cmd_fsck.c				\
+     cmd_format.c			\
+     cmd_key.c				\
+     cmd_migrate.c			\
+     cmd_run.c				\
+     crypto.c				\
+     libbcachefs.c			\
+     qcow2.c				\
+     tools-util.c			\
+     $(wildcard linux/*.c linux/*/*.c)	\
+     $(wildcard ccan/*/*.c)
 
-# Linux kernel shim:
-LINUX_SRCS=$(wildcard linux/*.c linux/*/*.c)
-LINUX_OBJS=$(LINUX_SRCS:.c=.o)
-
-OBJS=bcache.o			\
-     bcache-userspace-shim.o	\
-     cmd_assemble.o		\
-     cmd_debug.o		\
-     cmd_device.o		\
-     cmd_fs.o			\
-     cmd_fsck.o			\
-     cmd_format.o		\
-     cmd_key.o			\
-     cmd_migrate.o		\
-     cmd_run.o			\
-     crypto.o			\
-     libbcache.o		\
-     qcow2.o			\
-     tools-util.o		\
-     $(LINUX_OBJS)		\
-     $(CCANOBJS)
-
-DEPS=$(OBJS:.o=.d)
+DEPS=$(SRCS:.c=.d)
 -include $(DEPS)
 
-bcache: $(OBJS)
+OBJS=$(SRCS:.c=.o)
+bcachefs: $(OBJS)
 
 .PHONY: install
-install: bcache
+install: bcachefs
 	mkdir -p $(DESTDIR)$(ROOT_SBINDIR)
 	mkdir -p $(DESTDIR)$(PREFIX)/share/man/man8/
-	$(INSTALL) -m0755 bcache	$(DESTDIR)$(ROOT_SBINDIR)
-	$(INSTALL) -m0755 mkfs.bcache	$(DESTDIR)$(ROOT_SBINDIR)
-	$(INSTALL) -m0644 bcache.8	$(DESTDIR)$(PREFIX)/share/man/man8/
+	$(INSTALL) -m0755 bcachefs	$(DESTDIR)$(ROOT_SBINDIR)
+	$(INSTALL) -m0755 fsck.bcachefs	$(DESTDIR)$(ROOT_SBINDIR)
+	$(INSTALL) -m0755 mkfs.bcachefs	$(DESTDIR)$(ROOT_SBINDIR)
+	$(INSTALL) -m0644 bcachefs.8	$(DESTDIR)$(PREFIX)/share/man/man8/
 
 .PHONY: clean
 clean:
-	$(RM) bcache $(OBJS) $(DEPS)
+	$(RM) bcachefs $(OBJS) $(DEPS)
 
 .PHONY: deb
 deb: all
@@ -91,10 +86,8 @@ deb: all
 		--diff-ignore		\
 		--tar-ignore
 
-.PHONE: update-bcache-sources
-update-bcache-sources:
-	echo BCACHE_REVISION=`cd $(LINUX_DIR); git rev-parse HEAD` > .bcache_revision
-	cp $(LINUX_DIR)/drivers/md/bcache/*.[ch] libbcache/
-	cp $(LINUX_DIR)/include/trace/events/bcache.h include/trace/events/
-	cp $(LINUX_DIR)/include/uapi/linux/bcache.h include/linux/
-	cp $(LINUX_DIR)/include/uapi/linux/bcache-ioctl.h include/linux/
+.PHONE: update-bcachefs-sources
+update-bcachefs-sources:
+	echo `cd $(LINUX_DIR); git rev-parse HEAD` > .bcachefs_revision
+	cp $(LINUX_DIR)/fs/bcachefs/*.[ch] libbcachefs/
+	cp $(LINUX_DIR)/include/trace/events/bcachefs.h include/trace/events/

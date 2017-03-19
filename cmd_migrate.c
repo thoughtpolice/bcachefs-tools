@@ -19,8 +19,7 @@
 
 #include "cmds.h"
 #include "crypto.h"
-#include "libbcache.h"
-#include "linux/bcache.h"
+#include "libbcachefs.h"
 
 #include <linux/dcache.h>
 #include <linux/generic-radix-tree.h>
@@ -117,8 +116,8 @@ static void update_inode(struct bch_fs *c,
 	struct bkey_inode_buf packed;
 	int ret;
 
-	bch_inode_pack(&packed, inode);
-	ret = bch_btree_update(c, BTREE_ID_INODES, &packed.inode.k_i, NULL);
+	bch2_inode_pack(&packed, inode);
+	ret = bch2_btree_update(c, BTREE_ID_INODES, &packed.inode.k_i, NULL);
 	if (ret)
 		die("error creating file: %s", strerror(-ret));
 }
@@ -127,12 +126,12 @@ static void create_dirent(struct bch_fs *c,
 			  struct bch_inode_unpacked *parent,
 			  const char *name, u64 inum, mode_t mode)
 {
-	struct bch_hash_info parent_hash_info = bch_hash_info_init(parent);
+	struct bch_hash_info parent_hash_info = bch2_hash_info_init(c, parent);
 	struct qstr qname = { { { .len = strlen(name), } }, .name = name };
 
-	int ret = bch_dirent_create(c, parent->inum, &parent_hash_info,
-				    mode_to_type(mode), &qname,
-				    inum, NULL, BCH_HASH_SET_MUST_CREATE);
+	int ret = bch2_dirent_create(c, parent->inum, &parent_hash_info,
+				     mode_to_type(mode), &qname,
+				     inum, NULL, BCH_HASH_SET_MUST_CREATE);
 	if (ret)
 		die("error creating file: %s", strerror(-ret));
 
@@ -145,7 +144,7 @@ static void create_link(struct bch_fs *c,
 			const char *name, u64 inum, mode_t mode)
 {
 	struct bch_inode_unpacked inode;
-	int ret = bch_inode_find_by_inum(c, inum, &inode);
+	int ret = bch2_inode_find_by_inum(c, inum, &inode);
 	if (ret)
 		die("error looking up hardlink: %s", strerror(-ret));
 
@@ -165,11 +164,11 @@ static struct bch_inode_unpacked create_file(struct bch_fs *c,
 	struct bkey_inode_buf packed;
 	int ret;
 
-	bch_inode_init(c, &new_inode, uid, gid, mode, rdev);
-	bch_inode_pack(&packed, &new_inode);
+	bch2_inode_init(c, &new_inode, uid, gid, mode, rdev);
+	bch2_inode_pack(&packed, &new_inode);
 
-	ret = bch_inode_create(c, &packed.inode.k_i, BLOCKDEV_INODE_MAX, 0,
-			       &c->unused_inode_hint);
+	ret = bch2_inode_create(c, &packed.inode.k_i, BLOCKDEV_INODE_MAX, 0,
+				&c->unused_inode_hint);
 	if (ret)
 		die("error creating file: %s", strerror(-ret));
 
@@ -187,7 +186,7 @@ static struct bch_inode_unpacked create_file(struct bch_fs *c,
 
 static const struct xattr_handler *xattr_resolve_name(const char **name)
 {
-	const struct xattr_handler **handlers = bch_xattr_handlers;
+	const struct xattr_handler **handlers = bch2_xattr_handlers;
 	const struct xattr_handler *handler;
 
 	for_each_xattr_handler(handlers, handler) {
@@ -210,15 +209,15 @@ static const struct xattr_handler *xattr_resolve_name(const char **name)
 static void copy_times(struct bch_fs *c, struct bch_inode_unpacked *dst,
 		       struct stat *src)
 {
-	dst->i_atime = timespec_to_bch_time(c, src->st_atim);
-	dst->i_mtime = timespec_to_bch_time(c, src->st_mtim);
-	dst->i_ctime = timespec_to_bch_time(c, src->st_ctim);
+	dst->i_atime = timespec_to_bch2_time(c, src->st_atim);
+	dst->i_mtime = timespec_to_bch2_time(c, src->st_mtim);
+	dst->i_ctime = timespec_to_bch2_time(c, src->st_ctim);
 }
 
 static void copy_xattrs(struct bch_fs *c, struct bch_inode_unpacked *dst,
 			char *src)
 {
-	struct bch_hash_info hash_info = bch_hash_info_init(dst);
+	struct bch_hash_info hash_info = bch2_hash_info_init(c, dst);
 
 	char attrs[XATTR_LIST_MAX];
 	ssize_t attrs_size = llistxattr(src, attrs, sizeof(attrs));
@@ -238,8 +237,8 @@ static void copy_xattrs(struct bch_fs *c, struct bch_inode_unpacked *dst,
 
 		const struct xattr_handler *h = xattr_resolve_name(&attr);
 
-		int ret = __bch_xattr_set(c, dst->inum, &hash_info, attr,
-					  val, val_size, 0, h->flags, NULL);
+		int ret = __bch2_xattr_set(c, dst->inum, &hash_info, attr,
+					   val, val_size, 0, h->flags, NULL);
 		if (ret < 0)
 			die("error creating xattr: %s", strerror(-ret));
 	}
@@ -264,15 +263,15 @@ static void write_data(struct bch_fs *c,
 	bio.bio.bi_max_vecs	= 1;
 	bio.bio.bi_io_vec	= &bv;
 	bio.bio.bi_iter.bi_size	= len;
-	bch_bio_map(&bio.bio, buf);
+	bch2_bio_map(&bio.bio, buf);
 
-	int ret = bch_disk_reservation_get(c, &res, len >> 9, 0);
+	int ret = bch2_disk_reservation_get(c, &res, len >> 9, 0);
 	if (ret)
 		die("error reserving space in new filesystem: %s", strerror(-ret));
 
-	bch_write_op_init(&op, c, &bio, res, c->write_points,
-			  POS(dst_inode->inum, dst_offset >> 9), NULL, 0);
-	closure_call(&op.cl, bch_write, NULL, &cl);
+	bch2_write_op_init(&op, c, &bio, res, c->write_points,
+			   POS(dst_inode->inum, dst_offset >> 9), NULL, 0);
+	closure_call(&op.cl, bch2_write, NULL, &cl);
 	closure_sync(&cl);
 
 	dst_inode->i_sectors += len >> 9;
@@ -330,18 +329,18 @@ static void link_data(struct bch_fs *c, struct bch_inode_unpacked *dst,
 					.gen = ca->buckets[b].mark.gen,
 				  });
 
-		ret = bch_disk_reservation_get(c, &res, sectors,
-					       BCH_DISK_RESERVATION_NOFAIL);
+		ret = bch2_disk_reservation_get(c, &res, sectors,
+						BCH_DISK_RESERVATION_NOFAIL);
 		if (ret)
 			die("error reserving space in new filesystem: %s",
 			    strerror(-ret));
 
-		ret = bch_btree_insert(c, BTREE_ID_EXTENTS, &e->k_i,
-				       &res, NULL, NULL, 0);
+		ret = bch2_btree_insert(c, BTREE_ID_EXTENTS, &e->k_i,
+					&res, NULL, NULL, 0);
 		if (ret)
 			die("btree insert error %s", strerror(-ret));
 
-		bch_disk_reservation_put(c, &res);
+		bch2_disk_reservation_put(c, &res);
 
 		dst->i_sectors	+= sectors;
 		logical		+= sectors;
@@ -566,7 +565,7 @@ static void copy_fs(struct bch_fs *c, int src_fd, const char *src_path,
 	syncfs(src_fd);
 
 	struct bch_inode_unpacked root_inode;
-	int ret = bch_inode_find_by_inum(c, BCACHE_ROOT_INO, &root_inode);
+	int ret = bch2_inode_find_by_inum(c, BCACHE_ROOT_INO, &root_inode);
 	if (ret)
 		die("error looking up root directory: %s", strerror(-ret));
 
@@ -612,8 +611,8 @@ static void find_superblock_space(ranges extents, struct dev_opts *dev)
 
 static void migrate_usage(void)
 {
-	puts("bcache migrate - migrate an existing filesystem to bcachefs\n"
-	     "Usage: bcache migrate [OPTION]...\n"
+	puts("bcachefs migrate - migrate an existing filesystem to bcachefs\n"
+	     "Usage: bcachefs migrate [OPTION]...\n"
 	     "\n"
 	     "Options:\n"
 	     "  -f fs                  Root of filesystem to migrate(s)\n"
@@ -719,21 +718,21 @@ int cmd_migrate(int argc, char *argv[])
 
 	printf("Creating new filesystem on %s in space reserved at %s\n"
 	       "To mount, run\n"
-	       "  mount -t bcache -o sb=%llu %s dir\n"
+	       "  mount -t bcachefs -o sb=%llu %s dir\n"
 	       "\n"
 	       "After verifying that the new filesystem is correct, to create a\n"
 	       "superblock at the default offset and finish the migration run\n"
-	       "  bcache migrate_superblock -d %s -o %llu\n"
+	       "  bcachefs migrate_superblock -d %s -o %llu\n"
 	       "\n"
 	       "The new filesystem will have a file at /old_migrated_filestem\n"
 	       "referencing all disk space that might be used by the existing\n"
 	       "filesystem. That file can be deleted once the old filesystem is\n"
 	       "no longer needed (and should be deleted prior to running\n"
-	       "bcache migrate_superblock)\n",
+	       "bcachefs migrate_superblock)\n",
 	       dev.path, file_path, sb_offset, dev.path,
 	       dev.path, sb_offset);
 
-	struct bch_opts opts = bch_opts_empty();
+	struct bch_opts opts = bch2_opts_empty();
 	struct bch_fs *c = NULL;
 	char *path[1] = { dev.path };
 	const char *err;
@@ -742,38 +741,38 @@ int cmd_migrate(int argc, char *argv[])
 	opts.nostart	= true;
 	opts.noexcl	= true;
 
-	err = bch_fs_open(path, 1, opts, &c);
+	err = bch2_fs_open(path, 1, opts, &c);
 	if (err)
 		die("Error opening new filesystem: %s", err);
 
 	mark_unreserved_space(c, extents);
 
-	err = bch_fs_start(c);
+	err = bch2_fs_start(c);
 	if (err)
 		die("Error starting new filesystem: %s", err);
 
 	copy_fs(c, fs_fd, fs_path, bcachefs_inum, &extents);
 
-	bch_fs_stop(c);
+	bch2_fs_stop(c);
 
 	printf("Migrate complete, running fsck:\n");
 	opts.nostart	= false;
 	opts.nochanges	= true;
 	fsck_err_opt	= FSCK_ERR_NO;
 
-	err = bch_fs_open(path, 1, opts, &c);
+	err = bch2_fs_open(path, 1, opts, &c);
 	if (err)
 		die("Error opening new filesystem: %s", err);
 
-	bch_fs_stop(c);
+	bch2_fs_stop(c);
 	printf("fsck complete\n");
 	return 0;
 }
 
 static void migrate_superblock_usage(void)
 {
-	puts("bcache migrate_superblock - create default superblock after migrating\n"
-	     "Usage: bcache migrate_superblock [OPTION]...\n"
+	puts("bcachefs migrate_superblock - create default superblock after migrating\n"
+	     "Usage: bcachefs migrate_superblock [OPTION]...\n"
 	     "\n"
 	     "Options:\n"
 	     "  -d device     Device to create superblock for\n"

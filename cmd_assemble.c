@@ -7,8 +7,8 @@
 #include <string.h>
 #include <sys/ioctl.h>
 
+#include "bcachefs_ioctl.h"
 #include "cmds.h"
-#include "linux/bcache-ioctl.h"
 
 int cmd_assemble(int argc, char *argv[])
 {

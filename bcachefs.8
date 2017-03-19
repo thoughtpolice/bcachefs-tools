@@ -1,0 +1,153 @@
+.TH bcachefs 8
+.SH NAME
+bcachefs \- manage bcachefs filesystems/devices
+
+.SH  SYNOPSIS
+.B bcachefs
+[\fIoptions\fR]
+.B COMMAND
+[\fIoptions\fR]
+
+.SH COMMANDS
+.TP
+.BR format
+.RS
+Format one or a list of devices with bcachefs data structures. You need to do this before you create a volume.
+.RE
+
+.BR register
+.RS
+Register a list of devices.
+.RE
+
+.BR list-cachesets
+.RS
+List cachesets on this system. This just searches /sys/fs/bcachefs.
+.RE
+
+.BR query-devs
+.RS
+Gives info about the superblock for a list of devices.
+.RE
+
+.BR status
+.RS
+Finds the status of the most up to date superblock in each tier. Pass in a list of devices.
+.RE
+
+.BR stats
+.RS
+List bcache specific statistics. Use --list to find out exactly what these are. To list stats for a cacheset, just give the cacheset uuid. To target a cache within the cacheset, use the -c option. To get time interval stats, use the hour, day, etc, options.
+.RE
+
+.BR probe
+.RS
+Return UUID if device identified as bcache-formatted.
+.PP
+Only necessary until support for the bcache superblock is included
+in blkid; in the meantime, provides just enough functionality for a udev script
+to create the /dev/disk/by-uuid symlink.
+.RE
+
+.BR help
+.RS
+List the bcache commands
+.RE
+
+.SH OPTIONS
+.SH Options for bcache
+.TP
+.BR \--help
+
+
+.SH Options for format
+.SH Global options:
+.TP
+.BR \-w,\ --block=
+block size, in bytes (e.g. 4k)
+.TP
+.BR \-w,\ --btree_node_size=
+btree node size in bytes - default 256k
+.TP
+.BR \--metadata_checksum_type=TYPE
+.TP
+.BR \--data_checksum_type=TYPE
+where TYPE is one of none, crc32c (default), or crc64
+.TP
+.BR \--compression_type=TYPE
+where TYPE is one of none (default), lz4 or gzip
+.TP
+.BR \--encrypted
+Enable encryption; passphrase will be prompted for
+.TP
+.BR \--error_action=TYPE
+where TYPE is one of continue, readonly (default) or panic
+.TP
+.BR \-l\ --label=LABEL
+Create the filesystem with the specified label
+.TP
+.BR \--uuid=UUID
+Create the filesystem with the specified UUID
+.TP
+.BR \--force
+Force the filesystem to be created, even if the device already contains a
+filesystem
+
+.SH Options that apply to subsequent devices:
+.TP
+.BR \--fs_size=SIZE
+Create the filesystem using SIZE bytes on the subsequent device
+.TP
+.BR \-b\ --bucket-size=SIZE
+Specifies the bucket size - must be greater than the btree node size
+.TP
+.BR \-t,\ --tier=INDEX
+Specifies the tier of subsequent devices, where INDEX is a small integer and a
+smaller index indicates a faster tier - tier 0 being the fastest. Currently only
+two tiers are supported.
+.TP
+.BR \--discard
+Enable discards on subsequent devices
+
+.SH Options for register
+
+.SH Options for list-cachesets
+.TP
+.BR \-d,\ --dir=
+Provide a directory other than /sys/fs/bcache
+
+.SH Options for query-devs
+.TP
+.BR \-f,\ --force-csum
+Enables bcache to going even if the superblock crc is invalid
+
+.SH Options for status
+
+.SH Options for stats
+.TP
+.BR \-a,\ --all
+List all stats and their values for the given device.
+.TP
+.BR \-l,\ --list
+List the names of the different stats for the given device.
+.TP
+.BR \-u,\ --set=
+UUID for the cacheset
+.TP
+.BR \-d,\ --dev=
+UUID for a device within the cacheset. Must pass in the cacheset UUID in order to search for a dev.
+.TP
+.BR \-c,\ --cache=
+Cache number, starts from 0
+.TP
+.BR \--five-min-stats
+stats accumulated in the last 5 minutes
+.TP
+.BR \--hour-stats
+stats accumulated in the last hour
+.TP
+.BR \--day-stats
+stats accumulated in the last day
+.TP
+.BR \--total-stats
+stats accumulated in total

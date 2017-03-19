@@ -1,8 +1,3 @@
 version=3
 
 http://evilpiepirate.org/git/bcache-tools.git/refs/ /git/bcache-tools.git/tag/\?id=v(\d[\d.]*)
-
-# tag/\?id=(v?\d[\d.]*)
-#opts="filenamemangle=s/(?:.*)?v?(\d[\d\.]*)\.tar\.gz/bcache-tools-$1.tar.gz/" \
-# (?:.*/)?v?(\d[\d\.]*)\.tar\.gz
-# http://evilpiepirate.org/git/bcache-tools.git/tag/?id=v1.0.8

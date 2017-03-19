@@ -1,12 +1,12 @@
-Userspace tools for bcache-dev/bcachefs
+Userspace tools for bcachefs
 
-This builds the bcache tool, which has a number of subcommands for formatting
+This builds the bcachefs tool, which has a number of subcommands for formatting
 and managing bcachefs filesystems:
 
-bcache format
-bcache unlock
-bcache assemble
-bcache incremental
+bcachefs format
+bcachefs unlock
+bcachefs assemble
+bcachefs incremental
 etc.
 
-Run bcache --help for full list of commands.
+Run bcachefs --help for full list of commands.

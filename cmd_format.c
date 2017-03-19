@@ -22,14 +22,14 @@
 #include "ccan/darray/darray.h"
 
 #include "cmds.h"
-#include "libbcache.h"
+#include "libbcachefs.h"
 #include "crypto.h"
 #include "opts.h"
 #include "util.h"
 
 #define OPTS									\
-t("bcache format - create a new bcache filesystem on one or more devices")	\
-t("Usage: bcache format [OPTION]... <devices>")					\
+t("bcachefs format - create a new bcachefs filesystem on one or more devices")	\
+t("Usage: bcachefs format [OPTION]... <devices>")					\
 t("")										\
 x('b',	block_size,		"size",			NULL)			\
 x(0,	btree_node_size,	"size",			"Default 256k")		\
@@ -52,7 +52,7 @@ x(0,	bucket_size,		"size",			"Bucket size")		\
 x('t',	tier,			"#",			"Higher tier indicates slower devices")\
 x(0,	discard,		NULL,			NULL)			\
 t("Device specific options must come before corresponding devices, e.g.")	\
-t("  bcache format --tier 0 /dev/sdb --tier 1 /dev/sdc")			\
+t("  bcachefs format --tier 0 /dev/sdb --tier 1 /dev/sdc")			\
 t("")										\
 x('q',	quiet,			NULL,			"Only print errors")	\
 x('h',	help,			NULL,			"Display this help and exit")
@@ -65,8 +65,8 @@ static void usage(void)
 #undef x
 #undef t
 
-	puts("bcache format - create a new bcache filesystem on one or more devices\n"
-	     "Usage: bcache format [OPTION]... <devices>\n"
+	puts("bcachefs format - create a new bcachefs filesystem on one or more devices\n"
+	     "Usage: bcachefs format [OPTION]... <devices>\n"
 	     "\n"
 	     "Options:\n"
 	     "  -b, --block=size\n"
@@ -95,7 +95,7 @@ static void usage(void)
 	     "  -h, --help                  Display this help and exit\n"
 	     "\n"
 	     "Device specific options must come before corresponding devices, e.g.\n"
-	     "  bcache format --tier 0 /dev/sdb --tier 1 /dev/sdc\n"
+	     "  bcachefs format --tier 0 /dev/sdb --tier 1 /dev/sdc\n"
 	     "\n"
 	     "Report bugs to <linux-bcache@vger.kernel.org>");
 }
@@ -150,17 +150,17 @@ int cmd_format(int argc, char *argv[])
 		case O_metadata_checksum_type:
 			opts.meta_csum_type =
 				read_string_list_or_die(optarg,
-						bch_csum_types, "checksum type");
+						bch2_csum_types, "checksum type");
 			break;
 		case O_data_checksum_type:
 			opts.data_csum_type =
 				read_string_list_or_die(optarg,
-						bch_csum_types, "checksum type");
+						bch2_csum_types, "checksum type");
 			break;
 		case O_compression_type:
 			opts.compression_type =
 				read_string_list_or_die(optarg,
-						bch_compression_types,
+						bch2_compression_types,
 						"compression type");
 			break;
 		case O_data_replicas:
@@ -183,7 +183,7 @@ int cmd_format(int argc, char *argv[])
 		case 'e':
 			opts.on_error_action =
 				read_string_list_or_die(optarg,
-						bch_error_actions, "error action");
+						bch2_error_actions, "error action");
 			break;
 		case O_max_journal_entry_size:
 			opts.max_journal_entry_size =
@@ -203,7 +203,7 @@ int cmd_format(int argc, char *argv[])
 			force = true;
 			break;
 		case O_fs_size:
-			if (bch_strtoull_h(optarg, &dev_opts.size))
+			if (bch2_strtoull_h(optarg, &dev_opts.size))
 				die("invalid filesystem size");
 
 			dev_opts.size >>= 9;

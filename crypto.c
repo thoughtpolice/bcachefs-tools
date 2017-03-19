@@ -79,29 +79,29 @@ void derive_passphrase(struct bch_sb_field_crypt *crypt,
 
 void add_bcache_key(struct bch_sb *sb, const char *passphrase)
 {
-	struct bch_sb_field_crypt *crypt = bch_sb_get_crypt(sb);
+	struct bch_sb_field_crypt *crypt = bch2_sb_get_crypt(sb);
 	if (!crypt)
 		die("filesystem is not encrypted");
 
 	struct bch_encrypted_key sb_key = crypt->key;
-	if (!bch_key_is_encrypted(&sb_key))
+	if (!bch2_key_is_encrypted(&sb_key))
 		die("filesystem does not have encryption key");
 
 	struct bch_key passphrase_key;
 	derive_passphrase(crypt, &passphrase_key, passphrase);
 
 	/* Check if the user supplied the correct passphrase: */
-	if (bch_chacha_encrypt_key(&passphrase_key, __bch_sb_key_nonce(sb),
+	if (bch2_chacha_encrypt_key(&passphrase_key, __bch2_sb_key_nonce(sb),
 				   &sb_key, sizeof(sb_key)))
 		die("error encrypting key");
 
-	if (bch_key_is_encrypted(&sb_key))
+	if (bch2_key_is_encrypted(&sb_key))
 		die("incorrect passphrase");
 
 	char uuid[40];
 	uuid_unparse_lower(sb->user_uuid.b, uuid);
 
-	char *description = mprintf("bcache:%s", uuid);
+	char *description = mprintf("bcachefs:%s", uuid);
 
 	if (add_key("logon", description,
 		    &passphrase_key, sizeof(passphrase_key),
@@ -134,13 +134,13 @@ void bch_sb_crypt_init(struct bch_sb *sb,
 
 		derive_passphrase(crypt, &passphrase_key, passphrase);
 
-		assert(!bch_key_is_encrypted(&crypt->key));
+		assert(!bch2_key_is_encrypted(&crypt->key));
 
-		if (bch_chacha_encrypt_key(&passphrase_key, __bch_sb_key_nonce(sb),
+		if (bch2_chacha_encrypt_key(&passphrase_key, __bch2_sb_key_nonce(sb),
 					   &crypt->key, sizeof(crypt->key)))
 			die("error encrypting key");
 
-		assert(bch_key_is_encrypted(&crypt->key));
+		assert(bch2_key_is_encrypted(&crypt->key));
 
 		memzero_explicit(&passphrase_key, sizeof(passphrase_key));
 	}

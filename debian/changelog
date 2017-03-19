@@ -1,16 +1,16 @@
-bcache-tools (1.0.8-2~bpo8+1) jessie-backports; urgency=medium
+bcachefs-tools (1.0.8-2~bpo8+1) jessie-backports; urgency=medium
 
   * Rebuild for jessie-backports.
 
  -- Mathieu Parent <sathieu@debian.org>  Mon, 21 Sep 2015 21:18:39 +0200
 
-bcache-tools (1.0.8-2) unstable; urgency=medium
+bcachefs-tools (1.0.8-2) unstable; urgency=medium
 
   * Only run update-initramfs if installed. Fix dracut. (Closes: #788442)
 
  -- David Mohr <david@mcbf.net>  Thu, 11 Jun 2015 10:23:48 -0600
 
-bcache-tools (1.0.8-1) unstable; urgency=medium
+bcachefs-tools (1.0.8-1) unstable; urgency=medium
 
   [ James Page ]
   * d/control: Add Vcs fields.
@@ -28,7 +28,7 @@ bcache-tools (1.0.8-1) unstable; urgency=medium
 
  -- David Mohr <david@mcbf.net>  Tue, 26 May 2015 20:57:58 -0600
 
-bcache-tools (1.0.7-1) unstable; urgency=medium
+bcachefs-tools (1.0.7-1) unstable; urgency=medium
 
   [ David Mohr ]
   * Based on work by Gabriel de Perthuis <g2p.code+debian@gmail.com>
