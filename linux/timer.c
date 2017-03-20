@@ -142,30 +142,30 @@ static inline bool timer_running(void)
 	return timer_seq & 1;
 }
 
-static size_t timer_idx(struct timer_list *timer)
+static ssize_t timer_idx(struct timer_list *timer)
 {
 	size_t i;
 
-	for (i = 0; i < pending_timers.size; i++)
+	for (i = 0; i < pending_timers.used; i++)
 		if (pending_timers.data[i].timer == timer)
 			return i;
-	BUG();
+
+	return -1;
 }
 
 int del_timer(struct timer_list *timer)
 {
-	int pending;
+	ssize_t idx;
 
 	pthread_mutex_lock(&timer_lock);
-	pending = timer_pending(timer);
+	idx = timer_idx(timer);
+	if (idx >= 0)
+		heap_del(&pending_timers, idx, pending_timer_cmp);
+
 	timer->pending = false;
-
-	if (pending)
-		heap_del(&pending_timers, timer_idx(timer), pending_timer_cmp);
-
 	pthread_mutex_unlock(&timer_lock);
 
-	return pending;
+	return idx >= 0;
 }
 
 void flush_timers(void)
@@ -183,44 +183,41 @@ void flush_timers(void)
 int del_timer_sync(struct timer_list *timer)
 {
 	unsigned long seq;
-	int pending;
+	ssize_t idx;
 
 	pthread_mutex_lock(&timer_lock);
-	pending = timer_pending(timer);
-	timer->pending = false;
+	idx = timer_idx(timer);
+	if (idx >= 0)
+		heap_del(&pending_timers, idx, pending_timer_cmp);
 
-	if (pending)
-		heap_del(&pending_timers, timer_idx(timer), pending_timer_cmp);
+	timer->pending = false;
 
 	seq = timer_seq;
 	while (timer_running() && seq == timer_seq)
 		pthread_cond_wait(&timer_running_cond, &timer_lock);
-
 	pthread_mutex_unlock(&timer_lock);
 
-	return pending;
+	return idx >= 0;
 }
 
 int mod_timer(struct timer_list *timer, unsigned long expires)
 {
-	int pending;
-	size_t i;
+	ssize_t idx;
 
 	pthread_mutex_lock(&timer_lock);
-	pending = timer_pending(timer);
-
-	if (pending && timer->expires == expires)
-		goto out;
-
 	timer->expires = expires;
 	timer->pending = true;
+	idx = timer_idx(timer);
 
-	if (pending) {
-		i = timer_idx(timer);
-		pending_timers.data[i].expires = expires;
+	if (idx >= 0 &&
+	    pending_timers.data[idx].expires == expires)
+		goto out;
 
-		heap_sift_down(&pending_timers, i, pending_timer_cmp);
-		heap_sift(&pending_timers, i, pending_timer_cmp);
+	if (idx >= 0) {
+		pending_timers.data[idx].expires = expires;
+
+		heap_sift_down(&pending_timers, idx, pending_timer_cmp);
+		heap_sift(&pending_timers, idx, pending_timer_cmp);
 	} else {
 		if (heap_full(&pending_timers)) {
 			pending_timers.size *= 2;
@@ -244,7 +241,7 @@ int mod_timer(struct timer_list *timer, unsigned long expires)
 out:
 	pthread_mutex_unlock(&timer_lock);
 
-	return pending;
+	return idx >= 0;
 }
 
 static int timer_thread(void *arg)
