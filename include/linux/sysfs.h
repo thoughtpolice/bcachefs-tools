@@ -17,6 +17,11 @@ struct attribute {
 	.store	= _store,						\
 }
 
+struct sysfs_ops {
+	ssize_t	(*show)(struct kobject *, struct attribute *, char *);
+	ssize_t	(*store)(struct kobject *, struct attribute *, const char *, size_t);
+};
+
 static inline int sysfs_create_files(struct kobject *kobj,
 				    const struct attribute **attr)
 {

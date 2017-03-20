@@ -95,7 +95,6 @@ int cmd_dump(int argc, char *argv[])
 	opts.nochanges	= true;
 	opts.noreplay	= true;
 	opts.errors	= BCH_ON_ERROR_CONTINUE;
-	fsck_err_opt	= FSCK_ERR_NO;
 
 	while ((opt = getopt(argc, argv, "o:fh")) != -1)
 		switch (opt) {
@@ -235,7 +234,6 @@ int cmd_list(int argc, char *argv[])
 	opts.nochanges	= true;
 	opts.norecovery	= true;
 	opts.errors	= BCH_ON_ERROR_CONTINUE;
-	fsck_err_opt	= FSCK_ERR_NO;
 
 	while ((opt = getopt(argc, argv, "b:s:e:m:h")) != -1)
 		switch (opt) {

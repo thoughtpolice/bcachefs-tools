@@ -760,7 +760,6 @@ int cmd_migrate(int argc, char *argv[])
 	printf("Migrate complete, running fsck:\n");
 	opts.nostart	= false;
 	opts.nochanges	= true;
-	fsck_err_opt	= FSCK_ERR_NO;
 
 	err = bch2_fs_open(path, 1, opts, &c);
 	if (err)

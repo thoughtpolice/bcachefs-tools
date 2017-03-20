@@ -8,16 +8,6 @@
 #include "tools-util.h"
 #include "vstructs.h"
 
-struct cache_sb;
-
-enum fsck_err_opts {
-	FSCK_ERR_ASK,
-	FSCK_ERR_YES,
-	FSCK_ERR_NO,
-};
-
-extern enum fsck_err_opts fsck_err_opt;
-
 struct format_opts {
 	char		*label;
 	uuid_le		uuid;

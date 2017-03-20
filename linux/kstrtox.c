@@ -11,8 +11,8 @@
  *
  * If -E is returned, result is not touched.
  */
+#include <errno.h>
 #include <linux/ctype.h>
-#include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/math64.h>
 #include <linux/export.h>

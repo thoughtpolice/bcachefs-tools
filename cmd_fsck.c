@@ -1,5 +1,6 @@
 
 #include "cmds.h"
+#include "error.h"
 #include "libbcachefs.h"
 #include "super.h"
 #include "tools-util.h"
@@ -29,14 +30,14 @@ int cmd_fsck(int argc, char *argv[])
 	while ((opt = getopt(argc, argv, "pynfvh")) != -1)
 		switch (opt) {
 		case 'p':
-			fsck_err_opt = FSCK_ERR_YES;
+			opts.fix_errors = FSCK_ERR_YES;
 			break;
 		case 'y':
-			fsck_err_opt = FSCK_ERR_YES;
+			opts.fix_errors = FSCK_ERR_YES;
 			break;
 		case 'n':
 			opts.nochanges = true;
-			fsck_err_opt = FSCK_ERR_NO;
+			opts.fix_errors = FSCK_ERR_NO;
 			break;
 		case 'f':
 			/* force check, even if filesystem marked clean: */

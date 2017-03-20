@@ -10,12 +10,9 @@ CFLAGS+=-std=gnu99 -O2 -g -MMD -Wall				\
 	-D_GNU_SOURCE						\
 	-D_LGPL_SOURCE						\
 	-DRCU_MEMBARRIER					\
-	-DNO_BCACHE_ACCOUNTING					\
-	-DNO_BCACHE_BLOCKDEV					\
 	-DNO_BCACHE_CHARDEV					\
 	-DNO_BCACHE_FS						\
-	-DNO_BCACHE_NOTIFY					\
-	-DNO_BCACHE_WRITEBACK					\
+	-DNO_BCACHE_SYSFS					\
 	$(EXTRA_CFLAGS)
 LDFLAGS+=-O2 -g
 
@@ -41,7 +38,6 @@ endif
 all: bcachefs
 
 SRCS=bcachefs.c				\
-     bcachefs-userspace-shim.c		\
      cmd_assemble.c			\
      cmd_debug.c			\
      cmd_device.c			\
@@ -55,6 +51,40 @@ SRCS=bcachefs.c				\
      libbcachefs.c			\
      qcow2.c				\
      tools-util.c			\
+     libbcachefs/alloc.c		\
+     libbcachefs/bkey.c			\
+     libbcachefs/bkey_methods.c		\
+     libbcachefs/bset.c			\
+     libbcachefs/btree_cache.c		\
+     libbcachefs/btree_gc.c		\
+     libbcachefs/btree_io.c		\
+     libbcachefs/btree_iter.c		\
+     libbcachefs/btree_update.c		\
+     libbcachefs/buckets.c		\
+     libbcachefs/checksum.c		\
+     libbcachefs/clock.c		\
+     libbcachefs/compress.c		\
+     libbcachefs/debug.c		\
+     libbcachefs/dirent.c		\
+     libbcachefs/error.c		\
+     libbcachefs/extents.c		\
+     libbcachefs/fs-gc.c		\
+     libbcachefs/inode.c		\
+     libbcachefs/io.c			\
+     libbcachefs/journal.c		\
+     libbcachefs/keylist.c		\
+     libbcachefs/migrate.c		\
+     libbcachefs/move.c			\
+     libbcachefs/movinggc.c		\
+     libbcachefs/opts.c			\
+     libbcachefs/siphash.c		\
+     libbcachefs/six.c			\
+     libbcachefs/super.c		\
+     libbcachefs/super-io.c		\
+     libbcachefs/tier.c			\
+     libbcachefs/trace.c		\
+     libbcachefs/util.c			\
+     libbcachefs/xattr.c		\
      $(wildcard linux/*.c linux/*/*.c)	\
      $(wildcard ccan/*/*.c)
 

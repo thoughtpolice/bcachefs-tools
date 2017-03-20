@@ -160,6 +160,7 @@ int main(int argc, char *argv[])
 	if (!strcmp(cmd, "list"))
 		return cmd_list(argc, argv);
 
+	printf("Unknown command %s\n", cmd);
 	usage();
-	return 0;
+	exit(EXIT_FAILURE);
 }

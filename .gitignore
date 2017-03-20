@@ -5,3 +5,4 @@ bcachefs
 *.a
 tags
 cscope*
+bcachefs-tools
