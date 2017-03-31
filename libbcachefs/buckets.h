@@ -73,20 +73,16 @@ static inline struct bucket *PTR_BUCKET(const struct bch_dev *ca,
 	return ca->buckets + PTR_BUCKET_NR(ca, ptr);
 }
 
-static inline u8 __gen_after(u8 a, u8 b)
+static inline int gen_cmp(u8 a, u8 b)
 {
-	u8 r = a - b;
-
-	return r > 128U ? 0 : r;
+	return (s8) (a - b);
 }
 
-static inline u8 gen_after(u8 a, u8 b)
+static inline int gen_after(u8 a, u8 b)
 {
-	u8 r = a - b;
+	int r = gen_cmp(a, b);
 
-	BUG_ON(r > 128U);
-
-	return r;
+	return r > 0 ? r : 0;
 }
 
 /**
@@ -239,7 +235,7 @@ void bch2_invalidate_bucket(struct bch_dev *, struct bucket *);
 void bch2_mark_free_bucket(struct bch_dev *, struct bucket *);
 void bch2_mark_alloc_bucket(struct bch_dev *, struct bucket *, bool);
 void bch2_mark_metadata_bucket(struct bch_dev *, struct bucket *,
-			      enum bucket_data_type, bool);
+			       enum bucket_data_type, bool);
 
 void __bch2_gc_mark_key(struct bch_fs *, struct bkey_s_c, s64, bool,
 		       struct bch_fs_usage *);
