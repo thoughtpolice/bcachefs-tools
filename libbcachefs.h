@@ -59,12 +59,13 @@ struct dev_opts {
 	u64		sb_end;
 };
 
-struct bch_sb *bcache_format(struct format_opts, struct dev_opts *, size_t);
+void bch2_pick_bucket_size(struct format_opts, struct dev_opts *);
+struct bch_sb *bch2_format(struct format_opts, struct dev_opts *, size_t);
 
-void bcache_super_write(int, struct bch_sb *);
-struct bch_sb *__bcache_super_read(int, u64);
-struct bch_sb *bcache_super_read(const char *);
+void bch2_super_write(int, struct bch_sb *);
+struct bch_sb *__bch2_super_read(int, u64);
+struct bch_sb *bch2_super_read(const char *);
 
-void bcache_super_print(struct bch_sb *, int);
+void bch2_super_print(struct bch_sb *, int);
 
 #endif /* _LIBBCACHE_H */

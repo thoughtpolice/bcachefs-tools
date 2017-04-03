@@ -245,7 +245,7 @@ int cmd_device_add(int argc, char *argv[])
 	format_opts.btree_node_size =
 		read_file_u64(fs.sysfs_fd, "btree_node_size_bytes") >> 9;
 
-	struct bch_sb *sb = bcache_format(format_opts, &dev_opts, 1);
+	struct bch_sb *sb = bch2_format(format_opts, &dev_opts, 1);
 	free(sb);
 	fsync(dev_opts.fd);
 	close(dev_opts.fd);

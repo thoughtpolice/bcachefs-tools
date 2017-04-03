@@ -77,7 +77,7 @@ void derive_passphrase(struct bch_sb_field_crypt *crypt,
 	}
 }
 
-void add_bcache_key(struct bch_sb *sb, const char *passphrase)
+void bch2_add_key(struct bch_sb *sb, const char *passphrase)
 {
 	struct bch_sb_field_crypt *crypt = bch2_sb_get_crypt(sb);
 	if (!crypt)

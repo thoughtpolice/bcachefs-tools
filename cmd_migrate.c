@@ -390,6 +390,15 @@ static void copy_file(struct bch_fs *c, struct bch_inode_unpacked *dst,
 			continue;
 		}
 
+		if (e.fe_physical < 1 << 20) {
+			copy_data(c, dst,
+				  src,
+				  round_down(e.fe_logical, block_bytes(c)),
+				  round_up(e.fe_logical + e.fe_length,
+					   block_bytes(c)));
+			continue;
+		}
+
 		if ((e.fe_physical	& (block_bytes(c) - 1)))
 			die("Unaligned extent in %s - can't handle", src_path);
 
@@ -598,11 +607,15 @@ static void copy_fs(struct bch_fs *c, int src_fd, const char *src_path,
 static void find_superblock_space(ranges extents, struct dev_opts *dev)
 {
 	struct range *i;
-	darray_foreach(i, extents) {
-		u64 offset = max(256ULL << 10, i->start);
 
-		if (offset + (128 << 10) <= i->end) {
-			dev->sb_offset	= offset >> 9;
+	darray_foreach(i, extents) {
+		u64 start = round_up(max(256ULL << 10, i->start),
+				     dev->bucket_size << 9);
+		u64 end = round_down(i->end,
+				     dev->bucket_size << 9);
+
+		if (start + (128 << 10) <= end) {
+			dev->sb_offset	= start >> 9;
 			dev->sb_end	= dev->sb_offset + 256;
 			return;
 		}
@@ -685,6 +698,8 @@ int cmd_migrate(int argc, char *argv[])
 	u64 bcachefs_inum;
 	char *file_path = mprintf("%s/bcachefs", fs_path);
 
+	bch2_pick_bucket_size(format_opts, &dev);
+
 	ranges extents = reserve_new_fs_space(file_path,
 				block_size, get_size(dev.path, dev.fd) / 5,
 				&bcachefs_inum, stat.st_dev, force);
@@ -710,11 +725,11 @@ int cmd_migrate(int argc, char *argv[])
 		}
 	}
 
-	struct bch_sb *sb = bcache_format(format_opts, &dev, 1);
+	struct bch_sb *sb = bch2_format(format_opts, &dev, 1);
 	u64 sb_offset = le64_to_cpu(sb->layout.sb_offset[0]);
 
 	if (format_opts.passphrase)
-		add_bcache_key(sb, format_opts.passphrase);
+		bch2_add_key(sb, format_opts.passphrase);
 
 	free(sb);
 
@@ -810,7 +825,7 @@ int cmd_migrate_superblock(int argc, char *argv[])
 		die("Please specify offset of existing superblock");
 
 	int fd = xopen(dev, O_RDWR);
-	struct bch_sb *sb = __bcache_super_read(fd, offset);
+	struct bch_sb *sb = __bch2_super_read(fd, offset);
 
 	if (sb->layout.nr_superblocks >= ARRAY_SIZE(sb->layout.sb_offset))
 		die("Can't add superblock: no space left in superblock layout");
@@ -826,7 +841,7 @@ int cmd_migrate_superblock(int argc, char *argv[])
 
 	sb->layout.sb_offset[0] = cpu_to_le64(BCH_SB_SECTOR);
 
-	bcache_super_write(fd, sb);
+	bch2_super_write(fd, sb);
 	close(fd);
 
 	return 0;

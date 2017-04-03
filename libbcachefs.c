@@ -68,8 +68,61 @@ static void init_layout(struct bch_sb_layout *l, unsigned block_size,
 	l->sb_offset[1]		= cpu_to_le64(backup);
 }
 
-struct bch_sb *bcache_format(struct format_opts opts,
-			     struct dev_opts *devs, size_t nr_devs)
+void bch2_pick_bucket_size(struct format_opts opts, struct dev_opts *dev)
+{
+	if (!dev->sb_offset) {
+		dev->sb_offset	= BCH_SB_SECTOR;
+		dev->sb_end	= BCH_SB_SECTOR + 256;
+	}
+
+	if (!dev->size)
+		dev->size = get_size(dev->path, dev->fd) >> 9;
+
+	if (!dev->bucket_size) {
+		if (dev->size < min_size(opts.block_size))
+			die("cannot format %s, too small (%llu sectors, min %llu)",
+			    dev->path, dev->size, min_size(opts.block_size));
+
+		/* Bucket size must be >= block size: */
+		dev->bucket_size = opts.block_size;
+
+		/* Bucket size must be >= btree node size: */
+		dev->bucket_size = max(dev->bucket_size, opts.btree_node_size);
+
+		/* Want a bucket size of at least 128k, if possible: */
+		dev->bucket_size = max(dev->bucket_size, 256U);
+
+		if (dev->size >= min_size(dev->bucket_size)) {
+			unsigned scale = max(1,
+					     ilog2(dev->size / min_size(dev->bucket_size)) / 4);
+
+			scale = rounddown_pow_of_two(scale);
+
+			/* max bucket size 1 mb */
+			dev->bucket_size = min(dev->bucket_size * scale, 1U << 11);
+		} else {
+			do {
+				dev->bucket_size /= 2;
+			} while (dev->size < min_size(dev->bucket_size));
+		}
+	}
+
+	dev->nbuckets	= dev->size / dev->bucket_size;
+
+	if (dev->bucket_size < opts.block_size)
+		die("Bucket size cannot be smaller than block size");
+
+	if (dev->bucket_size < opts.btree_node_size)
+		die("Bucket size cannot be smaller than btree node size");
+
+	if (dev->nbuckets < BCH_MIN_NR_NBUCKETS)
+		die("Not enough buckets: %llu, need %u (bucket size %u)",
+		    dev->nbuckets, BCH_MIN_NR_NBUCKETS, dev->bucket_size);
+
+}
+
+struct bch_sb *bch2_format(struct format_opts opts,
+			   struct dev_opts *devs, size_t nr_devs)
 {
 	struct bch_sb *sb;
 	struct dev_opts *i;
@@ -83,56 +136,8 @@ struct bch_sb *bcache_format(struct format_opts opts,
 					      get_blocksize(i->path, i->fd));
 
 	/* calculate bucket sizes: */
-	for (i = devs; i < devs + nr_devs; i++) {
-		if (!i->sb_offset) {
-			i->sb_offset	= BCH_SB_SECTOR;
-			i->sb_end	= BCH_SB_SECTOR + 256;
-		}
-
-		if (!i->size)
-			i->size = get_size(i->path, i->fd) >> 9;
-
-		if (!i->bucket_size) {
-			if (i->size < min_size(opts.block_size))
-				die("cannot format %s, too small (%llu sectors, min %llu)",
-				    i->path, i->size, min_size(opts.block_size));
-
-			/* Bucket size must be >= block size: */
-			i->bucket_size = opts.block_size;
-
-			/* Bucket size must be >= btree node size: */
-			i->bucket_size = max(i->bucket_size, opts.btree_node_size);
-
-			/* Want a bucket size of at least 128k, if possible: */
-			i->bucket_size = max(i->bucket_size, 256U);
-
-			if (i->size >= min_size(i->bucket_size)) {
-				unsigned scale = max(1,
-					ilog2(i->size / min_size(i->bucket_size)) / 4);
-
-				scale = rounddown_pow_of_two(scale);
-
-				/* max bucket size 1 mb */
-				i->bucket_size = min(i->bucket_size * scale, 1U << 11);
-			} else {
-				do {
-					i->bucket_size /= 2;
-				} while (i->size < min_size(i->bucket_size));
-			}
-		}
-
-		i->nbuckets	= i->size / i->bucket_size;
-
-		if (i->bucket_size < opts.block_size)
-			die("Bucket size cannot be smaller than block size");
-
-		if (i->bucket_size < opts.btree_node_size)
-			die("Bucket size cannot be smaller than btree node size");
-
-		if (i->nbuckets < BCH_MIN_NR_NBUCKETS)
-			die("Not enough buckets: %llu, need %u (bucket size %u)",
-			    i->nbuckets, BCH_MIN_NR_NBUCKETS, i->bucket_size);
-	}
+	for (i = devs; i < devs + nr_devs; i++)
+		bch2_pick_bucket_size(opts, i);
 
 	/* calculate btree node size: */
 	if (!opts.btree_node_size) {
@@ -242,14 +247,14 @@ struct bch_sb *bcache_format(struct format_opts opts,
 			xpwrite(i->fd, zeroes, BCH_SB_SECTOR << 9, 0);
 		}
 
-		bcache_super_write(i->fd, sb);
+		bch2_super_write(i->fd, sb);
 		close(i->fd);
 	}
 
 	return sb;
 }
 
-void bcache_super_write(int fd, struct bch_sb *sb)
+void bch2_super_write(int fd, struct bch_sb *sb)
 {
 	struct nonce nonce = { 0 };
 
@@ -270,7 +275,7 @@ void bcache_super_write(int fd, struct bch_sb *sb)
 	fsync(fd);
 }
 
-struct bch_sb *__bcache_super_read(int fd, u64 sector)
+struct bch_sb *__bch2_super_read(int fd, u64 sector)
 {
 	struct bch_sb sb, *ret;
 
@@ -288,15 +293,15 @@ struct bch_sb *__bcache_super_read(int fd, u64 sector)
 	return ret;
 }
 
-struct bch_sb *bcache_super_read(const char *path)
+struct bch_sb *bch2_super_read(const char *path)
 {
 	int fd = xopen(path, O_RDONLY);
-	struct bch_sb *sb = __bcache_super_read(fd, BCH_SB_SECTOR);
+	struct bch_sb *sb = __bch2_super_read(fd, BCH_SB_SECTOR);
 	close(fd);
 	return sb;
 }
 
-void bcache_super_print(struct bch_sb *sb, int units)
+void bch2_super_print(struct bch_sb *sb, int units)
 {
 	struct bch_sb_field_members *mi;
 	char user_uuid_str[40], internal_uuid_str[40], member_uuid_str[40];

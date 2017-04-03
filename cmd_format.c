@@ -263,10 +263,10 @@ int cmd_format(int argc, char *argv[])
 		dev->fd = open_for_format(dev->path, force);
 
 	struct bch_sb *sb =
-		bcache_format(opts, devices.item, darray_size(devices));
+		bch2_format(opts, devices.item, darray_size(devices));
 
 	if (!quiet)
-		bcache_super_print(sb, HUMAN_READABLE);
+		bch2_super_print(sb, HUMAN_READABLE);
 	free(sb);
 
 	if (opts.passphrase) {
@@ -284,7 +284,7 @@ int cmd_show_super(int argc, char *argv[])
 	if (argc != 2)
 		die("please supply a single device");
 
-	sb = bcache_super_read(argv[1]);
-	bcache_super_print(sb, HUMAN_READABLE);
+	sb = bch2_super_read(argv[1]);
+	bch2_super_print(sb, HUMAN_READABLE);
 	return 0;
 }
