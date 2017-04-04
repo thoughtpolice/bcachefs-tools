@@ -768,6 +768,15 @@ static const char *__bch2_fs_start(struct bch_fs *c)
 		if (ret)
 			goto err;
 
+		for_each_rw_member(ca, c, i)
+			if (ca->need_prio_write) {
+				ret = bch2_prio_write(ca);
+				if (ret) {
+					percpu_ref_put(&ca->io_ref);
+					goto err;
+				}
+			}
+
 		bch_verbose(c, "fsck done");
 	} else {
 		struct bch_inode_unpacked inode;
@@ -1092,6 +1101,7 @@ static int bch2_dev_alloc(struct bch_fs *c, unsigned dev_idx)
 	spin_lock_init(&ca->freelist_lock);
 	spin_lock_init(&ca->prio_buckets_lock);
 	mutex_init(&ca->heap_lock);
+	mutex_init(&ca->prio_write_lock);
 	bch2_dev_moving_gc_init(ca);
 
 	INIT_WORK(&ca->io_error_work, bch2_nonfatal_io_error_work);
@@ -1265,12 +1275,31 @@ bool bch2_fs_may_start(struct bch_fs *c, int flags)
 	return true;
 }
 
+/*
+ * Note: this function is also used by the error paths - when a particular
+ * device sees an error, we call it to determine whether we can just set the
+ * device RO, or - if this function returns false - we'll set the whole
+ * filesystem RO:
+ *
+ * XXX: maybe we should be more explicit about whether we're changing state
+ * because we got an error or what have you?
+ */
 bool bch2_dev_state_allowed(struct bch_fs *c, struct bch_dev *ca,
 			    enum bch_member_state new_state, int flags)
 {
 	lockdep_assert_held(&c->state_lock);
 
 	if (new_state == BCH_MEMBER_STATE_RW)
+		return true;
+
+	if (ca->mi.state == BCH_MEMBER_STATE_FAILED)
+		return true;
+
+	/*
+	 * If the device is already offline - whatever is going on with it can't
+	 * possible make the FS need to go RO:
+	 */
+	if (!bch2_dev_is_online(ca))
 		return true;
 
 	if (ca->mi.has_data &&

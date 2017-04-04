@@ -121,3 +121,8 @@ update-bcachefs-sources:
 	echo `cd $(LINUX_DIR); git rev-parse HEAD` > .bcachefs_revision
 	cp $(LINUX_DIR)/fs/bcachefs/*.[ch] libbcachefs/
 	cp $(LINUX_DIR)/include/trace/events/bcachefs.h include/trace/events/
+
+.PHONE: update-commit-bcachefs-sources
+update-commit-bcachefs-sources: update-bcachefs-sources
+	git commit -m "Update bcachefs sources to `cut -b1-10 .bcachefs_revision`"	\
+		.bcachefs_revision libbcachefs/
