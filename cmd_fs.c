@@ -23,9 +23,10 @@ int cmd_fs_show(int argc, char *argv[])
 	if (argc != 2)
 		die("Please supply a filesystem");
 
+#if 0
 	struct bcache_handle fs = bcache_fs_open(argv[1]);
+#endif
 
-	fs = fs;
 	return 0;
 }
 
@@ -34,8 +35,9 @@ int cmd_fs_set(int argc, char *argv[])
 	if (argc != 2)
 		die("Please supply a filesystem");
 
+#if 0
 	struct bcache_handle fs = bcache_fs_open(argv[1]);
+#endif
 
-	fs = fs;
 	return 0;
 }

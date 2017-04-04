@@ -30,7 +30,7 @@ static inline void raw_spin_unlock(raw_spinlock_t *lock)
 
 #define raw_spin_lock_irqsave(lock, flags)		\
 do {							\
-	(void) flags;					\
+	flags = 0;					\
 	raw_spin_lock(lock);				\
 } while (0)
 

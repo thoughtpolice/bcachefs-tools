@@ -2,7 +2,6 @@
 PREFIX=/usr
 INSTALL=install
 CFLAGS+=-std=gnu99 -O2 -g -MMD -Wall				\
-	-Wno-unused-but-set-variable				\
 	-Wno-pointer-sign					\
 	-fno-strict-aliasing					\
 	-I. -Iinclude -Ilibbcachefs				\
@@ -16,11 +15,22 @@ CFLAGS+=-std=gnu99 -O2 -g -MMD -Wall				\
 	$(EXTRA_CFLAGS)
 LDFLAGS+=-O2 -g
 
-ifdef D
-	CFLAGS+=-Werror
-else
+CC_VERSION=$(shell $(CC) -v 2>&1|grep -E '(gcc|clang) version')
+
+ifneq (,$(findstring gcc,$(CC_VERSION)))
+	CFLAGS+=-Wno-unused-but-set-variable
+ifndef D
 	CFLAGS+=-flto
 	LDFLAGS+=-flto
+endif
+endif
+
+ifneq (,$(findstring clang,$(CC_VERSION)))
+	CFLAGS+=-Wno-missing-braces
+endif
+
+ifdef D
+	CFLAGS+=-Werror
 endif
 
 PKGCONFIG_LIBS="blkid uuid liburcu libsodium zlib"

@@ -4,8 +4,8 @@
 #include <linux/backing-dev.h>
 #include <linux/blk_types.h>
 #include <linux/kobject.h>
+#include <linux/types.h>
 
-typedef u64 sector_t;
 typedef unsigned fmode_t;
 
 struct bio;

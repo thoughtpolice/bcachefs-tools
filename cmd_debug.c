@@ -192,14 +192,14 @@ static struct bpos parse_pos(char *buf)
 	char *s = buf;
 	char *inode	= strsep(&s, ":");
 	char *offset	= strsep(&s, ":");
-	struct bpos ret = { 0 };
+	u64 inode_v, offset_v;
 
 	if (!inode || !offset || s ||
-	    kstrtoull(inode, 10, &ret.inode) ||
-	    kstrtoull(offset, 10, &ret.offset))
+	    kstrtoull(inode, 10, &inode_v) ||
+	    kstrtoull(offset, 10, &offset_v))
 		die("invalid bpos %s", buf);
 
-	return ret;
+	return (struct bpos) { .inode = inode_v, .offset = offset_v };
 }
 
 static void list_keys_usage(void)

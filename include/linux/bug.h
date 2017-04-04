@@ -22,10 +22,10 @@
 #define WARN(cond, ...)		assert(!(cond))
 
 #define WARN_ON(condition) ({						\
-	int __ret_warn_on = !!(condition);				\
-	if (unlikely(__ret_warn_on))					\
+	int __ret_warn_on = unlikely(!!(condition));			\
+	if (__ret_warn_on)						\
 		__WARN();						\
-	unlikely(__ret_warn_on);					\
+	__ret_warn_on;							\
 })
 
 #endif /* __TOOLS_LINUX_BUG_H */
