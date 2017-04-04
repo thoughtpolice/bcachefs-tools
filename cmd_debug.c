@@ -86,6 +86,7 @@ int cmd_dump(int argc, char *argv[])
 {
 	struct bch_opts opts = bch2_opts_empty();
 	struct bch_fs *c = NULL;
+	struct bch_dev *ca;
 	const char *err;
 	char *out = NULL;
 	unsigned i, nr_devices = 0;
@@ -121,13 +122,12 @@ int cmd_dump(int argc, char *argv[])
 
 	down_read(&c->gc_lock);
 
-	for (i = 0; i < c->sb.nr_devices; i++)
-		if (c->devs[i])
-			nr_devices++;
+	for_each_online_member(ca, c, i)
+		nr_devices++;
 
 	BUG_ON(!nr_devices);
 
-	for (i = 0; i < c->sb.nr_devices; i++) {
+	for_each_online_member(ca, c, i) {
 		int mode = O_WRONLY|O_CREAT|O_TRUNC;
 
 		if (!force)
@@ -142,7 +142,7 @@ int cmd_dump(int argc, char *argv[])
 		fd = xopen(path, mode, 0600);
 		free(path);
 
-		dump_one_device(c, c->devs[i], fd);
+		dump_one_device(c, ca, fd);
 		close(fd);
 	}
 
