@@ -167,7 +167,12 @@ int cmd_device_show(int argc, char *argv[])
 
 static void disk_ioctl(const char *fs, const char *dev, int cmd, int flags)
 {
-	struct bch_ioctl_disk i = { .flags = flags, .dev = (__u64) dev, };
+	struct bch_ioctl_disk i = { .flags = flags, };
+
+	if (!kstrtoull(dev, 10, &i.dev))
+		i.flags |= BCH_BY_INDEX;
+	else
+		i.dev = (u64) dev;
 
 	xioctl(bcache_fs_open(fs).ioctl_fd, cmd, &i);
 }
@@ -435,10 +440,15 @@ int cmd_device_set_state(int argc, char *argv[])
 
 	struct bch_ioctl_disk_set_state i = {
 		.flags		= flags,
-		.dev		= (__u64) argv[optind + 1],
 		.new_state	= read_string_list_or_die(argv[optind + 2],
 						bch2_dev_state, "device state"),
 	};
+
+	const char *dev = argv[optind + 1];
+	if (!kstrtoull(dev, 10, &i.dev))
+		i.flags |= BCH_BY_INDEX;
+	else
+		i.dev = (u64) dev;
 
 	xioctl(fs.ioctl_fd, BCH_IOCTL_DISK_SET_STATE, &i);
 	return 0;
