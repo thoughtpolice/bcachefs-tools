@@ -189,14 +189,18 @@ static void list_btree_formats(struct bch_fs *c, enum btree_id btree_id,
 
 static struct bpos parse_pos(char *buf)
 {
-	char *s = buf;
-	char *inode	= strsep(&s, ":");
-	char *offset	= strsep(&s, ":");
-	u64 inode_v, offset_v;
+	char *s = buf, *field;
+	u64 inode_v = 0, offset_v = 0;
 
-	if (!inode || !offset || s ||
-	    kstrtoull(inode, 10, &inode_v) ||
-	    kstrtoull(offset, 10, &offset_v))
+	if (!(field = strsep(&s, ":")) ||
+	    kstrtoull(field, 10, &inode_v))
+		die("invalid bpos %s", buf);
+
+	if ((field = strsep(&s, ":")) &&
+	    kstrtoull(field, 10, &offset_v))
+		die("invalid bpos %s", buf);
+
+	if (s)
 		die("invalid bpos %s", buf);
 
 	return (struct bpos) { .inode = inode_v, .offset = offset_v };
@@ -211,6 +215,7 @@ static void list_keys_usage(void)
 	     "  -b (extents|inodes|dirents|xattrs)    Btree to list from\n"
 	     "  -s inode:offset                       Start position to list from\n"
 	     "  -e inode:offset                       End position\n"
+	     "  -i inode                              List keys for a given inode number\n"
 	     "  -m (keys|formats)                     List mode\n"
 	     "  -h                                    Display this help and exit\n"
 	     "Report bugs to <linux-bcache@vger.kernel.org>");
@@ -229,13 +234,14 @@ int cmd_list(int argc, char *argv[])
 	enum btree_id btree_id = BTREE_ID_EXTENTS;
 	struct bpos start = POS_MIN, end = POS_MAX;
 	const char *err;
+	u64 inum;
 	int mode = 0, opt;
 
 	opts.nochanges	= true;
 	opts.norecovery	= true;
 	opts.errors	= BCH_ON_ERROR_CONTINUE;
 
-	while ((opt = getopt(argc, argv, "b:s:e:m:h")) != -1)
+	while ((opt = getopt(argc, argv, "b:s:e:i:m:h")) != -1)
 		switch (opt) {
 		case 'b':
 			btree_id = read_string_list_or_die(optarg,
@@ -246,6 +252,12 @@ int cmd_list(int argc, char *argv[])
 			break;
 		case 'e':
 			end	= parse_pos(optarg);
+			break;
+		case 'i':
+			if (kstrtoull(optarg, 10, &inum))
+				die("invalid inode %s", optarg);
+			start	= POS(inum, 0);
+			end	= POS(inum + 1, 0);
 			break;
 		case 'm':
 			mode = read_string_list_or_die(optarg,
