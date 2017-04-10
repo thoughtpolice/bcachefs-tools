@@ -15,7 +15,11 @@ struct journal_res;
  */
 struct journal_buf {
 	struct jset		*data;
+
 	struct closure_waitlist	wait;
+
+	unsigned		size;
+	unsigned		disk_sectors;
 
 	/*
 	 * ugh, prio_buckets are stupid - need to convert them to new
@@ -39,7 +43,8 @@ struct journal_entry_pin_list {
 
 struct journal;
 struct journal_entry_pin;
-typedef void (*journal_pin_flush_fn)(struct journal *j, struct journal_entry_pin *);
+typedef void (*journal_pin_flush_fn)(struct journal *j,
+				struct journal_entry_pin *, u64);
 
 struct journal_entry_pin {
 	struct list_head		list;
@@ -90,11 +95,13 @@ union journal_res_state {
 	};
 };
 
-/* 4 mb, in bytes: */
-#define JOURNAL_ENTRY_SIZE_MAX		(4U << 20)
+/* bytes: */
+#define JOURNAL_ENTRY_SIZE_MIN		(64U << 10) /* 64k */
+#define JOURNAL_ENTRY_SIZE_MAX		(4U  << 20) /* 4M */
 
 /*
  * We stash some journal state as sentinal values in cur_entry_offset:
+ * note - cur_entry_offset is in units of u64s
  */
 #define JOURNAL_ENTRY_OFFSET_MAX	((1U << 20) - 1)
 
@@ -123,7 +130,7 @@ struct journal {
 	unsigned		cur_entry_u64s;
 	unsigned		prev_buf_sectors;
 	unsigned		cur_buf_sectors;
-	unsigned		entry_size_max; /* bytes */
+	unsigned		buf_size_want;
 
 	/*
 	 * Two journal entries -- one is currently open for new entries, the
@@ -162,7 +169,7 @@ struct journal {
 	 * longer needed, the bucket can be discarded and reused.
 	 */
 	DECLARE_FIFO(struct journal_entry_pin_list, pin);
-	struct journal_entry_pin_list *cur_pin_list;
+	struct journal_entry_pin_list *replay_pin_list;
 
 	/*
 	 * Protects the pin lists - the fifo itself is still protected by

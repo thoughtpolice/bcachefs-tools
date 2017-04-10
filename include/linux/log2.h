@@ -184,4 +184,29 @@ unsigned long __rounddown_pow_of_two(unsigned long n)
 	__rounddown_pow_of_two(n)		\
  )
 
+static inline __attribute_const__
+int __get_order(unsigned long size)
+{
+	int order;
+
+	size--;
+	size >>= PAGE_SHIFT;
+#if BITS_PER_LONG == 32
+	order = fls(size);
+#else
+	order = fls64(size);
+#endif
+	return order;
+}
+
+#define get_order(n)						\
+(								\
+	__builtin_constant_p(n) ? (				\
+		((n) == 0UL) ? BITS_PER_LONG - PAGE_SHIFT :	\
+		(((n) < (1UL << PAGE_SHIFT)) ? 0 :		\
+		 ilog2((n) - 1) - PAGE_SHIFT + 1)		\
+	) :							\
+	__get_order(n)						\
+)
+
 #endif /* _TOOLS_LINUX_LOG2_H */

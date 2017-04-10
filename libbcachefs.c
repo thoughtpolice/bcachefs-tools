@@ -149,14 +149,6 @@ struct bch_sb *bch2_format(struct format_opts opts,
 				min(opts.btree_node_size, i->bucket_size);
 	}
 
-	if (!opts.max_journal_entry_size) {
-		/* 2 MB default: */
-		opts.max_journal_entry_size = 4096;
-	}
-
-	opts.max_journal_entry_size =
-		roundup_pow_of_two(opts.max_journal_entry_size);
-
 	if (uuid_is_null(opts.uuid.b))
 		uuid_generate(opts.uuid.b);
 
@@ -191,7 +183,6 @@ struct bch_sb *bch2_format(struct format_opts opts,
 	SET_BCH_SB_DATA_REPLICAS_REQ(sb,	opts.data_replicas_required);
 	SET_BCH_SB_ERROR_ACTION(sb,		opts.on_error_action);
 	SET_BCH_SB_STR_HASH_TYPE(sb,		BCH_STR_HASH_SIPHASH);
-	SET_BCH_SB_JOURNAL_ENTRY_SIZE(sb,	ilog2(opts.max_journal_entry_size));
 
 	struct timespec now;
 	if (clock_gettime(CLOCK_REALTIME, &now))
@@ -319,7 +310,6 @@ void bch2_super_print(struct bch_sb *sb, int units)
 	       "Version:			%llu\n"
 	       "Block_size:			%s\n"
 	       "Btree node size:		%s\n"
-	       "Max journal entry size:		%s\n"
 	       "Error action:			%s\n"
 	       "Clean:				%llu\n"
 
@@ -342,7 +332,6 @@ void bch2_super_print(struct bch_sb *sb, int units)
 	       le64_to_cpu(sb->version),
 	       pr_units(le16_to_cpu(sb->block_size), units),
 	       pr_units(BCH_SB_BTREE_NODE_SIZE(sb), units),
-	       pr_units(1U << BCH_SB_JOURNAL_ENTRY_SIZE(sb), units),
 
 	       BCH_SB_ERROR_ACTION(sb) < BCH_NR_ERROR_ACTIONS
 	       ? bch2_error_actions[BCH_SB_ERROR_ACTION(sb)]

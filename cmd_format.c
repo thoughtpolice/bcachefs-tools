@@ -41,7 +41,6 @@ x(0,	metadata_replicas,	"#",			NULL)			\
 x(0,	encrypted,		NULL,			"Enable whole filesystem encryption (chacha20/poly1305)")\
 x(0,	no_passphrase,		NULL,			"Don't encrypt master encryption key")\
 x('e',	error_action,		"(continue|readonly|panic)", NULL)		\
-x(0,	max_journal_entry_size,	"size",			NULL)			\
 x('L',	label,			"label",		NULL)			\
 x('U',	uuid,			"uuid",			NULL)			\
 x('f',	force,			NULL,			NULL)			\
@@ -80,7 +79,6 @@ static void usage(void)
 	     "      --no_passphrase         Don't encrypt master encryption key\n"
 	     "      --error_action=(continue|readonly|panic)\n"
 	     "                              Action to take on filesystem error\n"
-	     "      --max_journal_entry_size=size\n"
 	     "  -l, --label=label\n"
 	     "      --uuid=uuid\n"
 	     "  -f, --force\n"
@@ -184,10 +182,6 @@ int cmd_format(int argc, char *argv[])
 			opts.on_error_action =
 				read_string_list_or_die(optarg,
 						bch2_error_actions, "error action");
-			break;
-		case O_max_journal_entry_size:
-			opts.max_journal_entry_size =
-				hatoi_validate(optarg, "journal entry size");
 			break;
 		case O_label:
 		case 'L':

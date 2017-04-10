@@ -13,7 +13,6 @@ struct format_opts {
 	uuid_le		uuid;
 
 	unsigned	on_error_action;
-	unsigned	max_journal_entry_size; /* will be removed */
 
 	unsigned	block_size;
 	unsigned	btree_node_size;
