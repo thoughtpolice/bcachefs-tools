@@ -26,7 +26,9 @@ do {									\
 #define mprintf(...)							\
 ({									\
 	char *_str;							\
-	asprintf(&_str, __VA_ARGS__);					\
+	int ret = asprintf(&_str, __VA_ARGS__);				\
+	if (ret < 0)							\
+		die("insufficient memory");				\
 	_str;								\
 })
 
