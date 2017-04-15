@@ -21,32 +21,16 @@
 #include <linux/kernel.h>
 #include <linux/export.h>
 
-void bio_copy_data_iter(struct bio *dst, struct bvec_iter dst_iter,
-			struct bio *src, struct bvec_iter src_iter)
+void bio_copy_data_iter(struct bio *dst, struct bvec_iter *dst_iter,
+			struct bio *src, struct bvec_iter *src_iter)
 {
 	struct bio_vec src_bv, dst_bv;
 	void *src_p, *dst_p;
 	unsigned bytes;
 
-	while (1) {
-		if (!src_iter.bi_size) {
-			src = src->bi_next;
-			if (!src)
-				break;
-
-			src_iter = src->bi_iter;
-		}
-
-		if (!dst_iter.bi_size) {
-			dst = dst->bi_next;
-			if (!dst)
-				break;
-
-			dst_iter = dst->bi_iter;
-		}
-
-		src_bv = bio_iter_iovec(src, src_iter);
-		dst_bv = bio_iter_iovec(dst, dst_iter);
+	while (src_iter->bi_size && dst_iter->bi_size) {
+		src_bv = bio_iter_iovec(src, *src_iter);
+		dst_bv = bio_iter_iovec(dst, *dst_iter);
 
 		bytes = min(src_bv.bv_len, dst_bv.bv_len);
 
@@ -60,15 +44,27 @@ void bio_copy_data_iter(struct bio *dst, struct bvec_iter dst_iter,
 		kunmap_atomic(dst_p);
 		kunmap_atomic(src_p);
 
-		bio_advance_iter(src, &src_iter, bytes);
-		bio_advance_iter(dst, &dst_iter, bytes);
+		flush_dcache_page(dst_bv.bv_page);
+
+		bio_advance_iter(src, src_iter, bytes);
+		bio_advance_iter(dst, dst_iter, bytes);
 	}
 }
 
+/**
+ * bio_copy_data - copy contents of data buffers from one bio to another
+ * @src: source bio
+ * @dst: destination bio
+ *
+ * Stops when it reaches the end of either @src or @dst - that is, copies
+ * min(src->bi_size, dst->bi_size) bytes (or the equivalent for lists of bios).
+ */
 void bio_copy_data(struct bio *dst, struct bio *src)
 {
-	bio_copy_data_iter(dst, dst->bi_iter,
-			   src, src->bi_iter);
+	struct bvec_iter src_iter = src->bi_iter;
+	struct bvec_iter dst_iter = dst->bi_iter;
+
+	bio_copy_data_iter(dst, &dst_iter, src, &src_iter);
 }
 
 void zero_fill_bio_iter(struct bio *bio, struct bvec_iter start)

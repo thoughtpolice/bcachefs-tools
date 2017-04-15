@@ -19,7 +19,7 @@
 #include "debug.h"
 #include "error.h"
 #include "fs.h"
-#include "fs-gc.h"
+#include "fsck.h"
 #include "inode.h"
 #include "io.h"
 #include "journal.h"
@@ -513,6 +513,9 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	INIT_WORK(&c->read_retry_work, bch2_read_retry_work);
 	mutex_init(&c->zlib_workspace_lock);
 
+	INIT_LIST_HEAD(&c->fsck_errors);
+	mutex_init(&c->fsck_error_lock);
+
 	seqcount_init(&c->gc_pos_lock);
 
 	c->prio_clock[READ].hand = 1;
@@ -875,12 +878,12 @@ err:
 	switch (ret) {
 	case BCH_FSCK_ERRORS_NOT_FIXED:
 		bch_err(c, "filesystem contains errors: please report this to the developers");
-		pr_cont("mount with -o fix_errors to repair");
+		pr_cont("mount with -o fix_errors to repair\n");
 		err = "fsck error";
 		break;
 	case BCH_FSCK_REPAIR_UNIMPLEMENTED:
 		bch_err(c, "filesystem contains errors: please report this to the developers");
-		pr_cont("repair unimplemented: inform the developers so that it can be added");
+		pr_cont("repair unimplemented: inform the developers so that it can be added\n");
 		err = "fsck error";
 		break;
 	case BCH_FSCK_REPAIR_IMPOSSIBLE:
@@ -979,8 +982,8 @@ static void bch2_dev_free(struct bch_dev *ca)
 	kvpfree(ca->disk_buckets, bucket_bytes(ca));
 	kfree(ca->prio_buckets);
 	kfree(ca->bio_prio);
-	vfree(ca->buckets);
-	vfree(ca->oldest_gens);
+	kvpfree(ca->buckets,	 ca->mi.nbuckets * sizeof(struct bucket));
+	kvpfree(ca->oldest_gens, ca->mi.nbuckets * sizeof(u8));
 	free_heap(&ca->heap);
 	free_fifo(&ca->free_inc);
 
@@ -1140,10 +1143,12 @@ static int bch2_dev_alloc(struct bch_fs *c, unsigned dev_idx)
 	    !init_fifo(&ca->free[RESERVE_NONE], reserve_none, GFP_KERNEL) ||
 	    !init_fifo(&ca->free_inc,	free_inc_reserve, GFP_KERNEL) ||
 	    !init_heap(&ca->heap,	heap_size, GFP_KERNEL) ||
-	    !(ca->oldest_gens	= vzalloc(sizeof(u8) *
-					  ca->mi.nbuckets)) ||
-	    !(ca->buckets	= vzalloc(sizeof(struct bucket) *
-					  ca->mi.nbuckets)) ||
+	    !(ca->oldest_gens	= kvpmalloc(ca->mi.nbuckets *
+					    sizeof(u8),
+					    GFP_KERNEL|__GFP_ZERO)) ||
+	    !(ca->buckets	= kvpmalloc(ca->mi.nbuckets *
+					    sizeof(struct bucket),
+					    GFP_KERNEL|__GFP_ZERO)) ||
 	    !(ca->prio_buckets	= kzalloc(sizeof(u64) * prio_buckets(ca) *
 					  2, GFP_KERNEL)) ||
 	    !(ca->disk_buckets	= kvpmalloc(bucket_bytes(ca), GFP_KERNEL)) ||
@@ -1871,6 +1876,7 @@ static void bcachefs_exit(void)
 static int __init bcachefs_init(void)
 {
 	bch2_bkey_pack_test();
+	bch2_inode_pack_test();
 
 	if (!(bcachefs_kset = kset_create_and_add("bcachefs", NULL, fs_kobj)) ||
 	    bch2_chardev_init() ||

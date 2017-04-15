@@ -162,9 +162,11 @@ static void __btree_node_free(struct bch_fs *c, struct btree *b,
 	trace_btree_node_free(c, b);
 
 	BUG_ON(btree_node_dirty(b));
+	BUG_ON(btree_node_need_write(b));
 	BUG_ON(b == btree_node_root(c, b));
 	BUG_ON(b->ob);
 	BUG_ON(!list_empty(&b->write_blocked));
+	BUG_ON(!list_empty(&b->reachable));
 
 	clear_btree_node_noevict(b);
 
@@ -589,7 +591,6 @@ struct btree_reserve *bch2_btree_reserve_get(struct bch_fs *c,
 	unsigned nr_nodes = btree_reserve_required_nodes(depth) + extra_nodes;
 
 	return __bch2_btree_reserve_get(c, nr_nodes, flags, cl);
-
 }
 
 int bch2_btree_root_alloc(struct bch_fs *c, enum btree_id id,
@@ -598,6 +599,7 @@ int bch2_btree_root_alloc(struct bch_fs *c, enum btree_id id,
 	struct closure cl;
 	struct btree_reserve *reserve;
 	struct btree *b;
+	LIST_HEAD(reachable_list);
 
 	closure_init_stack(&cl);
 
@@ -614,11 +616,14 @@ int bch2_btree_root_alloc(struct bch_fs *c, enum btree_id id,
 	}
 
 	b = __btree_root_alloc(c, 0, id, reserve);
+	list_add(&b->reachable, &reachable_list);
 
 	bch2_btree_node_write(c, b, writes, SIX_LOCK_intent);
 
 	bch2_btree_set_root_initial(c, b, reserve);
 	bch2_btree_open_bucket_put(c, b);
+
+	list_del_init(&b->reachable);
 	six_unlock_intent(&b->lock);
 
 	bch2_btree_reserve_put(c, reserve);
@@ -659,6 +664,7 @@ static void bch2_insert_fixup_btree_ptr(struct btree_iter *iter,
 
 	bch2_btree_bset_insert_key(iter, b, node_iter, insert);
 	set_btree_node_dirty(b);
+	set_btree_node_need_write(b);
 }
 
 /* Inserting into a given leaf node (last stage of insert): */
@@ -798,12 +804,6 @@ void bch2_btree_journal_key(struct btree_insert *trans,
 		u64 seq = trans->journal_res.seq;
 		bool needs_whiteout = insert->k.needs_whiteout;
 
-		/*
-		 * have a bug where we're seeing an extent with an invalid crc
-		 * entry in the journal, trying to track it down:
-		 */
-		BUG_ON(bch2_bkey_invalid(c, b->btree_id, bkey_i_to_s_c(insert)));
-
 		/* ick */
 		insert->k.needs_whiteout = false;
 		bch2_journal_add_keys(j, &trans->journal_res,
@@ -878,6 +878,8 @@ bch2_btree_interior_update_alloc(struct bch_fs *c)
 	closure_init(&as->cl, &c->cl);
 	as->c		= c;
 	as->mode	= BTREE_INTERIOR_NO_UPDATE;
+	INIT_LIST_HEAD(&as->write_blocked_list);
+	INIT_LIST_HEAD(&as->reachable_list);
 
 	bch2_keylist_init(&as->parent_keys, as->inline_keys,
 			 ARRAY_SIZE(as->inline_keys));
@@ -908,6 +910,18 @@ static void btree_interior_update_nodes_reachable(struct closure *cl)
 
 	mutex_lock(&c->btree_interior_update_lock);
 
+	while (!list_empty(&as->reachable_list)) {
+		struct btree *b = list_first_entry(&as->reachable_list,
+						   struct btree, reachable);
+		list_del_init(&b->reachable);
+		mutex_unlock(&c->btree_interior_update_lock);
+
+		six_lock_read(&b->lock);
+		bch2_btree_node_write_dirty(c, b, NULL, btree_node_need_write(b));
+		six_unlock_read(&b->lock);
+		mutex_lock(&c->btree_interior_update_lock);
+	}
+
 	for (i = 0; i < as->nr_pending; i++)
 		bch2_btree_node_free_ondisk(c, &as->pending[i]);
 	as->nr_pending = 0;
@@ -929,6 +943,7 @@ static void btree_interior_update_nodes_written(struct closure *cl)
 
 	if (bch2_journal_error(&c->journal)) {
 		/* XXX what? */
+		/* we don't want to free the nodes on disk, that's what */
 	}
 
 	/* XXX: missing error handling, damnit */
@@ -962,7 +977,8 @@ retry:
 		list_del(&as->write_blocked_list);
 		mutex_unlock(&c->btree_interior_update_lock);
 
-		bch2_btree_node_write_dirty(c, b, NULL, true);
+		bch2_btree_node_write_dirty(c, b, NULL,
+					    btree_node_need_write(b));
 		six_unlock_read(&b->lock);
 		break;
 
@@ -1135,6 +1151,7 @@ void bch2_btree_interior_update_will_free_node(struct bch_fs *c,
 	}
 
 	clear_btree_node_dirty(b);
+	clear_btree_node_need_write(b);
 	w = btree_current_write(b);
 
 	llist_for_each_entry_safe(cl, cl_n, llist_del_all(&w->wait.list), list)
@@ -1152,6 +1169,8 @@ void bch2_btree_interior_update_will_free_node(struct bch_fs *c,
 				      &as->journal, interior_update_flush);
 	bch2_journal_pin_drop(&c->journal, &w->journal);
 
+	if (!list_empty(&b->reachable))
+		list_del_init(&b->reachable);
 
 	mutex_unlock(&c->btree_interior_update_lock);
 }
@@ -1265,7 +1284,8 @@ bch2_btree_insert_keys_interior(struct btree *b,
  * node)
  */
 static struct btree *__btree_split_node(struct btree_iter *iter, struct btree *n1,
-					struct btree_reserve *reserve)
+					struct btree_reserve *reserve,
+					struct btree_interior_update *as)
 {
 	size_t nr_packed = 0, nr_unpacked = 0;
 	struct btree *n2;
@@ -1273,6 +1293,8 @@ static struct btree *__btree_split_node(struct btree_iter *iter, struct btree *n
 	struct bkey_packed *k, *prev = NULL;
 
 	n2 = bch2_btree_node_alloc(iter->c, n1->level, iter->btree_id, reserve);
+	list_add(&n2->reachable, &as->reachable_list);
+
 	n2->data->max_key	= n1->data->max_key;
 	n2->data->format	= n1->format;
 	n2->key.k.p = n1->key.k.p;
@@ -1421,13 +1443,15 @@ static void btree_split(struct btree *b, struct btree_iter *iter,
 	bch2_btree_interior_update_will_free_node(c, as, b);
 
 	n1 = bch2_btree_node_alloc_replacement(c, b, reserve);
+	list_add(&n1->reachable, &as->reachable_list);
+
 	if (b->level)
 		btree_split_insert_keys(iter, n1, insert_keys, reserve);
 
 	if (vstruct_blocks(n1->data, c->block_bits) > BTREE_SPLIT_THRESHOLD(c)) {
 		trace_btree_node_split(c, b, b->nr.live_u64s);
 
-		n2 = __btree_split_node(iter, n1, reserve);
+		n2 = __btree_split_node(iter, n1, reserve, as);
 
 		bch2_btree_build_aux_trees(n2);
 		bch2_btree_build_aux_trees(n1);
@@ -1449,6 +1473,8 @@ static void btree_split(struct btree *b, struct btree_iter *iter,
 			n3 = __btree_root_alloc(c, b->level + 1,
 						iter->btree_id,
 						reserve);
+			list_add(&n3->reachable, &as->reachable_list);
+
 			n3->sib_u64s[0] = U16_MAX;
 			n3->sib_u64s[1] = U16_MAX;
 
@@ -1748,6 +1774,8 @@ retry:
 	bch2_btree_interior_update_will_free_node(c, as, m);
 
 	n = bch2_btree_node_alloc(c, b->level, b->btree_id, reserve);
+	list_add(&n->reachable, &as->reachable_list);
+
 	n->data->min_key	= prev->data->min_key;
 	n->data->max_key	= next->data->max_key;
 	n->data->format		= new_f;
@@ -1914,8 +1942,8 @@ int __bch2_btree_insert_at(struct btree_insert *trans)
 	int ret;
 
 	trans_for_each_entry(trans, i) {
-		EBUG_ON(i->iter->level);
-		EBUG_ON(bkey_cmp(bkey_start_pos(&i->k->k), i->iter->pos));
+		BUG_ON(i->iter->level);
+		BUG_ON(bkey_cmp(bkey_start_pos(&i->k->k), i->iter->pos));
 	}
 
 	sort(trans->entries, trans->nr, sizeof(trans->entries[0]),
@@ -2076,6 +2104,19 @@ err:
 	goto out;
 }
 
+int bch2_btree_delete_at(struct btree_iter *iter, unsigned flags)
+{
+	struct bkey_i k;
+
+	bkey_init(&k.k);
+	k.k.p = iter->pos;
+
+	return bch2_btree_insert_at(iter->c, NULL, NULL, NULL,
+				    BTREE_INSERT_NOFAIL|
+				    BTREE_INSERT_USE_RESERVE|flags,
+				    BTREE_INSERT_ENTRY(iter, &k));
+}
+
 int bch2_btree_insert_list_at(struct btree_iter *iter,
 			     struct keylist *keys,
 			     struct disk_reservation *disk_res,
@@ -2102,45 +2143,6 @@ int bch2_btree_insert_list_at(struct btree_iter *iter,
 	}
 
 	return 0;
-}
-
-/**
- * bch_btree_insert_check_key - insert dummy key into btree
- *
- * We insert a random key on a cache miss, then compare exchange on it
- * once the cache promotion or backing device read completes. This
- * ensures that if this key is written to after the read, the read will
- * lose and not overwrite the key with stale data.
- *
- * Return values:
- * -EAGAIN: @iter->cl was put on a waitlist waiting for btree node allocation
- * -EINTR: btree node was changed while upgrading to write lock
- */
-int bch2_btree_insert_check_key(struct btree_iter *iter,
-			       struct bkey_i *check_key)
-{
-	struct bpos saved_pos = iter->pos;
-	struct bkey_i_cookie *cookie;
-	BKEY_PADDED(key) tmp;
-	int ret;
-
-	BUG_ON(bkey_cmp(iter->pos, bkey_start_pos(&check_key->k)));
-
-	check_key->k.type = KEY_TYPE_COOKIE;
-	set_bkey_val_bytes(&check_key->k, sizeof(struct bch_cookie));
-
-	cookie = bkey_i_to_cookie(check_key);
-	get_random_bytes(&cookie->v, sizeof(cookie->v));
-
-	bkey_copy(&tmp.key, check_key);
-
-	ret = bch2_btree_insert_at(iter->c, NULL, NULL, NULL,
-				  BTREE_INSERT_ATOMIC,
-				  BTREE_INSERT_ENTRY(iter, &tmp.key));
-
-	bch2_btree_iter_rewind(iter, saved_pos);
-
-	return ret;
 }
 
 /**
@@ -2310,6 +2312,7 @@ int bch2_btree_node_rewrite(struct btree_iter *iter, struct btree *b,
 	bch2_btree_interior_update_will_free_node(c, as, b);
 
 	n = bch2_btree_node_alloc_replacement(c, b, reserve);
+	list_add(&n->reachable, &as->reachable_list);
 
 	bch2_btree_build_aux_trees(n);
 	six_unlock_write(&n->lock);

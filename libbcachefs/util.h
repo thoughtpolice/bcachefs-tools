@@ -93,7 +93,8 @@ static inline void kvpfree(void *p, size_t size)
 static inline void *kvpmalloc(size_t size, gfp_t gfp_mask)
 {
 	return size < PAGE_SIZE ? kmalloc(size, gfp_mask)
-		:  (void *) __get_free_pages(gfp_mask, get_order(size))
+		:  (void *) __get_free_pages(gfp_mask|__GFP_NOWARN,
+					     get_order(size))
 		?: __vmalloc(size, gfp_mask, PAGE_KERNEL);
 }
 
@@ -749,5 +750,7 @@ static inline struct bio_vec next_contig_bvec(struct bio *bio,
 
 #define bio_for_each_contig_segment(bv, bio, iter)			\
 	__bio_for_each_contig_segment(bv, bio, iter, (bio)->bi_iter)
+
+size_t bch_scnmemcpy(char *, size_t, const char *, size_t);
 
 #endif /* _BCACHE_UTIL_H */

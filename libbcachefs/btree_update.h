@@ -64,7 +64,7 @@ struct pending_btree_node_free {
  */
 struct btree_interior_update {
 	struct closure			cl;
-	struct bch_fs		*c;
+	struct bch_fs			*c;
 
 	struct list_head		list;
 
@@ -86,6 +86,7 @@ struct btree_interior_update {
 	 */
 	struct btree			*b;
 	struct list_head		write_blocked_list;
+	struct list_head		reachable_list;
 
 	/*
 	 * BTREE_INTERIOR_UPDATING_AS: btree node we updated was freed, so now
@@ -317,7 +318,6 @@ struct btree_insert {
 
 int __bch2_btree_insert_at(struct btree_insert *);
 
-
 #define _TENTH_ARG(_1, _2, _3, _4, _5, _6, _7, _8, _9, N, ...)   N
 #define COUNT_ARGS(...)  _TENTH_ARG(__VA_ARGS__, 9, 8, 7, 6, 5, 4, 3, 2, 1)
 
@@ -380,6 +380,8 @@ int __bch2_btree_insert_at(struct btree_insert *);
  */
 #define BTREE_INSERT_JOURNAL_REPLAY	(1 << 3)
 
+int bch2_btree_delete_at(struct btree_iter *, unsigned);
+
 int bch2_btree_insert_list_at(struct btree_iter *, struct keylist *,
 			     struct disk_reservation *,
 			     struct extent_insert_hook *, u64 *, unsigned);
@@ -403,7 +405,6 @@ static inline bool journal_res_insert_fits(struct btree_insert *trans,
 	return u64s <= trans->journal_res.u64s;
 }
 
-int bch2_btree_insert_check_key(struct btree_iter *, struct bkey_i *);
 int bch2_btree_insert(struct bch_fs *, enum btree_id, struct bkey_i *,
 		     struct disk_reservation *,
 		     struct extent_insert_hook *, u64 *, int flags);

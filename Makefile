@@ -78,7 +78,7 @@ SRCS=bcachefs.c				\
      libbcachefs/dirent.c		\
      libbcachefs/error.c		\
      libbcachefs/extents.c		\
-     libbcachefs/fs-gc.c		\
+     libbcachefs/fsck.c			\
      libbcachefs/inode.c		\
      libbcachefs/io.c			\
      libbcachefs/journal.c		\
