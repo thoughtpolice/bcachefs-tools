@@ -119,7 +119,7 @@ int cmd_device_show(int argc, char *argv[])
 		char link[PATH_MAX];
 		if (readlinkat(dirfd(fs.sysfs), entry->d_name,
 			       link, sizeof(link)) < 0)
-			die("readlink error: %s\n", strerror(errno));
+			die("readlink error: %m\n");
 
 		char *dev_name = basename(dirname(link));
 

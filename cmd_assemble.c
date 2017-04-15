@@ -26,10 +26,7 @@ int cmd_assemble(int argc, char *argv[])
 	for (unsigned i = 1; i < argc; i++)
 	     assemble->devs[i] = (__u64) argv[i];
 
-	int ret = ioctl(bcachectl_open(), BCH_IOCTL_ASSEMBLE, assemble);
-	if (ret < 0)
-		die("BCH_IOCTL_ASSEMBLE error: %s", strerror(errno));
-
+	xioctl(bcachectl_open(), BCH_IOCTL_ASSEMBLE, assemble);
 	return 0;
 }
 
@@ -42,9 +39,6 @@ int cmd_incremental(int argc, char *argv[])
 		.dev = (__u64) argv[1],
 	};
 
-	int ret = ioctl(bcachectl_open(), BCH_IOCTL_INCREMENTAL, &incremental);
-	if (ret < 0)
-		die("BCH_IOCTL_INCREMENTAL error: %s", strerror(errno));
-
+	xioctl(bcachectl_open(), BCH_IOCTL_INCREMENTAL, &incremental);
 	return 0;
 }

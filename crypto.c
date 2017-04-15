@@ -109,7 +109,7 @@ void bch2_add_key(struct bch_sb *sb, const char *passphrase)
 	    add_key("user", description,
 		    &passphrase_key, sizeof(passphrase_key),
 		    KEY_SPEC_USER_KEYRING) < 0)
-		die("add_key error: %s", strerror(errno));
+		die("add_key error: %m");
 
 	memzero_explicit(description, strlen(description));
 	free(description);

@@ -23,8 +23,7 @@ int submit_bio_wait(struct bio *bio)
 	if (bio->bi_opf & REQ_PREFLUSH) {
 		ret = fdatasync(bio->bi_bdev->bd_fd);
 		if (ret) {
-			fprintf(stderr, "fsync error: %s\n",
-				strerror(errno));
+			fprintf(stderr, "fsync error: %m\n");
 			return -EIO;
 		}
 	}
@@ -56,16 +55,14 @@ int submit_bio_wait(struct bio *bio)
 	}
 
 	if (ret != bio->bi_iter.bi_size) {
-		fprintf(stderr, "IO error: %li (%s)\n",
-			ret, strerror(errno));
+		fprintf(stderr, "IO error: %li (%m)\n", ret);
 		return -EIO;
 	}
 
 	if (bio->bi_opf & REQ_FUA) {
 		ret = fdatasync(bio->bi_bdev->bd_fd);
 		if (ret) {
-			fprintf(stderr, "fsync error: %s\n",
-				strerror(errno));
+			fprintf(stderr, "fsync error: %m\n");
 			return -EIO;
 		}
 	}

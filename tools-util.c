@@ -67,7 +67,7 @@ char *read_file_str(int dirfd, const char *path)
 
 	len = read(fd, buf, len);
 	if (len < 0)
-		die("read error: %s", strerror(errno));
+		die("read error: %m");
 
 	buf[len] = '\0';
 	if (len && buf[len - 1] == '\n')

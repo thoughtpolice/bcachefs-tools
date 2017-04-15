@@ -13,6 +13,7 @@
 #include "btree_cache.h"
 #include "btree_iter.h"
 #include "buckets.h"
+#include "error.h"
 #include "journal.h"
 #include "super.h"
 
@@ -153,7 +154,7 @@ int cmd_dump(int argc, char *argv[])
 }
 
 static void list_keys(struct bch_fs *c, enum btree_id btree_id,
-		      struct bpos start, struct bpos end, int mode)
+		      struct bpos start, struct bpos end)
 {
 	struct btree_iter iter;
 	struct bkey_s_c k;
@@ -171,7 +172,7 @@ static void list_keys(struct bch_fs *c, enum btree_id btree_id,
 }
 
 static void list_btree_formats(struct bch_fs *c, enum btree_id btree_id,
-			       struct bpos start, struct bpos end, int mode)
+			       struct bpos start, struct bpos end)
 {
 	struct btree_iter iter;
 	struct btree *b;
@@ -183,6 +184,36 @@ static void list_btree_formats(struct bch_fs *c, enum btree_id btree_id,
 
 		bch2_print_btree_node(c, b, buf, sizeof(buf));
 		puts(buf);
+	}
+	bch2_btree_iter_unlock(&iter);
+}
+
+static void list_nodes_keys(struct bch_fs *c, enum btree_id btree_id,
+			    struct bpos start, struct bpos end)
+{
+	struct btree_iter iter;
+	struct btree_node_iter node_iter;
+	struct bkey unpacked;
+	struct bkey_s_c k;
+	struct btree *b;
+	char buf[4096];
+
+	for_each_btree_node(&iter, c, btree_id, start, 0, b) {
+		if (bkey_cmp(b->key.k.p, end) > 0)
+			break;
+
+		bch2_print_btree_node(c, b, buf, sizeof(buf));
+		fputs(buf, stdout);
+
+		buf[0] = '\t';
+
+		for_each_btree_node_key_unpack(b, k, &node_iter,
+					       btree_node_is_extents(b),
+					       &unpacked) {
+			bch2_bkey_val_to_text(c, bkey_type(0, btree_id),
+					      buf + 1, sizeof(buf) - 1, k);
+			puts(buf);
+		}
 	}
 	bch2_btree_iter_unlock(&iter);
 }
@@ -224,6 +255,7 @@ static void list_keys_usage(void)
 static const char * const list_modes[] = {
 	"keys",
 	"formats",
+	"nodes",
 	NULL
 };
 
@@ -241,7 +273,7 @@ int cmd_list(int argc, char *argv[])
 	opts.norecovery	= true;
 	opts.errors	= BCH_ON_ERROR_CONTINUE;
 
-	while ((opt = getopt(argc, argv, "b:s:e:i:m:h")) != -1)
+	while ((opt = getopt(argc, argv, "b:s:e:i:m:fvh")) != -1)
 		switch (opt) {
 		case 'b':
 			btree_id = read_string_list_or_die(optarg,
@@ -263,6 +295,13 @@ int cmd_list(int argc, char *argv[])
 			mode = read_string_list_or_die(optarg,
 						list_modes, "list mode");
 			break;
+		case 'f':
+			opts.fix_errors = FSCK_ERR_YES;
+			opts.norecovery	= false;
+			break;
+		case 'v':
+			opts.verbose_recovery = true;
+			break;
 		case 'h':
 			list_keys_usage();
 			exit(EXIT_SUCCESS);
@@ -277,10 +316,13 @@ int cmd_list(int argc, char *argv[])
 
 	switch (mode) {
 	case 0:
-		list_keys(c, btree_id, start, end, mode);
+		list_keys(c, btree_id, start, end);
 		break;
 	case 1:
-		list_btree_formats(c, btree_id, start, end, mode);
+		list_btree_formats(c, btree_id, start, end);
+		break;
+	case 2:
+		list_nodes_keys(c, btree_id, start, end);
 		break;
 	default:
 		die("Invalid mode");

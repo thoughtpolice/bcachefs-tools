@@ -66,14 +66,14 @@ static inline void xpwrite(int fd, const void *buf, size_t count, off_t offset)
 	ssize_t r = pwrite(fd, buf, count, offset);
 
 	if (r != count)
-		die("write error (ret %zi err %s)", r, strerror(errno));
+		die("write error (ret %zi err %m)", r);
 }
 
 #define xopenat(_dirfd, _path, ...)					\
 ({									\
 	int _fd = openat((_dirfd), (_path), __VA_ARGS__);		\
 	if (_fd < 0)							\
-		die("Error opening %s: %s", (_path), strerror(errno));	\
+		die("Error opening %s: %m", (_path));			\
 	_fd;								\
 })
 
@@ -83,7 +83,7 @@ static inline struct stat xfstatat(int dirfd, const char *path, int flags)
 {
 	struct stat stat;
 	if (fstatat(dirfd, path, &stat, flags))
-		die("stat error: %s", strerror(errno));
+		die("stat error: %m");
 	return stat;
 }
 
@@ -91,14 +91,14 @@ static inline struct stat xfstat(int fd)
 {
 	struct stat stat;
 	if (fstat(fd, &stat))
-		die("stat error: %s", strerror(errno));
+		die("stat error: %m");
 	return stat;
 }
 
 #define xioctl(_fd, _nr, ...)						\
 do {									\
 	if (ioctl((_fd), (_nr), ##__VA_ARGS__))				\
-		die(#_nr " ioctl error: %s", strerror(errno));		\
+		die(#_nr " ioctl error: %m");				\
 } while (0)
 
 enum units {

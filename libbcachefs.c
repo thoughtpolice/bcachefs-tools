@@ -186,7 +186,7 @@ struct bch_sb *bch2_format(struct format_opts opts,
 
 	struct timespec now;
 	if (clock_gettime(CLOCK_REALTIME, &now))
-		die("error getting current time: %s", strerror(errno));
+		die("error getting current time: %m");
 
 	sb->time_base_lo	= cpu_to_le64(now.tv_sec * NSEC_PER_SEC + now.tv_nsec);
 	sb->time_precision	= cpu_to_le32(1);

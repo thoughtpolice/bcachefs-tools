@@ -45,7 +45,7 @@ static char *dev_t_to_path(dev_t dev)
 	free(sysfs_dev);
 
 	if (ret < 0 || ret >= sizeof(link))
-		die("readlink error while looking up block device: %s", strerror(errno));
+		die("readlink error while looking up block device: %m");
 
 	link[ret] = '\0';
 
@@ -222,7 +222,7 @@ static void copy_xattrs(struct bch_fs *c, struct bch_inode_unpacked *dst,
 	char attrs[XATTR_LIST_MAX];
 	ssize_t attrs_size = llistxattr(src, attrs, sizeof(attrs));
 	if (attrs_size < 0)
-		die("listxattr error: %s", strerror(errno));
+		die("listxattr error: %m");
 
 	for (const char *next, *attr = attrs;
 	     attr < attrs + attrs_size;
@@ -233,7 +233,7 @@ static void copy_xattrs(struct bch_fs *c, struct bch_inode_unpacked *dst,
 		ssize_t val_size = lgetxattr(src, attr, val, sizeof(val));
 
 		if (val_size < 0)
-			die("error getting xattr val: %s", strerror(errno));
+			die("error getting xattr val: %m");
 
 		const struct xattr_handler *h = xattr_resolve_name(&attr);
 
@@ -356,7 +356,7 @@ static void copy_link(struct bch_fs *c, struct bch_inode_unpacked *dst,
 {
 	ssize_t ret = readlink(src, buf, sizeof(buf));
 	if (ret < 0)
-		die("readlink error: %s", strerror(errno));
+		die("readlink error: %m");
 
 	write_data(c, dst, 0, buf, round_up(ret, block_bytes(c)));
 }
@@ -428,7 +428,7 @@ static void copy_dir(struct copy_fs_state *s,
 		int fd;
 
 		if (fchdir(src_fd))
-			die("chdir error: %s", strerror(errno));
+			die("chdir error: %m");
 
 		struct stat stat =
 			xfstatat(src_fd, d->d_name, AT_SYMLINK_NOFOLLOW);
@@ -499,7 +499,7 @@ next:
 	}
 
 	if (errno)
-		die("readdir error: %s", strerror(errno));
+		die("readdir error: %m");
 }
 
 static ranges reserve_new_fs_space(const char *file_path, unsigned block_size,
@@ -510,8 +510,8 @@ static ranges reserve_new_fs_space(const char *file_path, unsigned block_size,
 		? open(file_path, O_RDWR|O_CREAT, 0600)
 		: open(file_path, O_RDWR|O_CREAT|O_EXCL, 0600);
 	if (fd < 0)
-		die("Error creating %s for bcachefs metadata: %s",
-		    file_path, strerror(errno));
+		die("Error creating %s for bcachefs metadata: %m",
+		    file_path);
 
 	struct stat statbuf = xfstat(fd);
 
@@ -521,8 +521,7 @@ static ranges reserve_new_fs_space(const char *file_path, unsigned block_size,
 	*bcachefs_inum = statbuf.st_ino;
 
 	if (fallocate(fd, 0, 0, size))
-		die("Error reserving space for bcachefs metadata: %s",
-		    strerror(errno));
+		die("Error reserving space for bcachefs metadata: %m");
 
 	fsync(fd);
 
@@ -581,7 +580,7 @@ static void copy_fs(struct bch_fs *c, int src_fd, const char *src_path,
 		die("error looking up root directory: %s", strerror(-ret));
 
 	if (fchdir(src_fd))
-		die("chdir error: %s", strerror(errno));
+		die("chdir error: %m");
 
 	struct stat stat = xfstat(src_fd);
 	copy_times(c, &root_inode, &stat);
