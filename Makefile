@@ -36,7 +36,7 @@ endif
 PKGCONFIG_LIBS="blkid uuid liburcu libsodium zlib"
 CFLAGS+=`pkg-config --cflags	${PKGCONFIG_LIBS}`
 LDLIBS+=`pkg-config --libs	${PKGCONFIG_LIBS}` 		\
-	-lm -lpthread -lrt -lscrypt -lkeyutils
+	-lm -lpthread -lrt -lscrypt -lkeyutils -laio
 
 ifeq ($(PREFIX),/usr)
 	ROOT_SBINDIR=/sbin

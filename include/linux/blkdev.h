@@ -81,6 +81,7 @@ struct block_device {
 	struct gendisk		*bd_disk;
 	struct gendisk		__bd_disk;
 	int			bd_fd;
+	int			bd_sync_fd;
 };
 
 void generic_make_request(struct bio *);
