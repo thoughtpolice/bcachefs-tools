@@ -22,6 +22,9 @@ struct btree *bch2_btree_node_mem_alloc(struct bch_fs *);
 struct btree *bch2_btree_node_get(struct btree_iter *, const struct bkey_i *,
 				  unsigned, enum six_lock_type);
 
+void bch2_btree_node_prefetch(struct btree_iter *, const struct bkey_i *,
+			      unsigned);
+
 void bch2_fs_btree_exit(struct bch_fs *);
 int bch2_fs_btree_init(struct bch_fs *);
 

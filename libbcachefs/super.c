@@ -377,7 +377,8 @@ static void bch2_fs_free(struct bch_fs *c)
 	bch2_io_clock_exit(&c->io_clock[WRITE]);
 	bch2_io_clock_exit(&c->io_clock[READ]);
 	bch2_fs_compress_exit(c);
-	bdi_destroy(&c->bdi);
+	if (c->bdi.bdi_list.next)
+		bdi_destroy(&c->bdi);
 	lg_lock_free(&c->usage_lock);
 	free_percpu(c->usage_percpu);
 	mempool_exit(&c->btree_bounce_pool);
@@ -572,7 +573,8 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	    mempool_init_kmalloc_pool(&c->btree_interior_update_pool, 1,
 				      sizeof(struct btree_interior_update)) ||
 	    mempool_init_kmalloc_pool(&c->fill_iter, 1, iter_size) ||
-	    bioset_init(&c->btree_read_bio, 1, 0) ||
+	    bioset_init(&c->btree_read_bio, 1,
+			offsetof(struct btree_read_bio, bio)) ||
 	    bioset_init(&c->bio_read, 1, offsetof(struct bch_read_bio, bio)) ||
 	    bioset_init(&c->bio_read_split, 1, offsetof(struct bch_read_bio, bio)) ||
 	    bioset_init(&c->bio_write, 1, offsetof(struct bch_write_bio, bio)) ||
@@ -984,7 +986,8 @@ static void bch2_dev_free(struct bch_dev *ca)
 	kfree(ca->bio_prio);
 	kvpfree(ca->buckets,	 ca->mi.nbuckets * sizeof(struct bucket));
 	kvpfree(ca->oldest_gens, ca->mi.nbuckets * sizeof(u8));
-	free_heap(&ca->heap);
+	free_heap(&ca->copygc_heap);
+	free_heap(&ca->alloc_heap);
 	free_fifo(&ca->free_inc);
 
 	for (i = 0; i < RESERVE_NR; i++)
@@ -1105,7 +1108,6 @@ static int bch2_dev_alloc(struct bch_fs *c, unsigned dev_idx)
 
 	spin_lock_init(&ca->freelist_lock);
 	spin_lock_init(&ca->prio_buckets_lock);
-	mutex_init(&ca->heap_lock);
 	mutex_init(&ca->prio_write_lock);
 	bch2_dev_moving_gc_init(ca);
 
@@ -1142,7 +1144,8 @@ static int bch2_dev_alloc(struct bch_fs *c, unsigned dev_idx)
 		       movinggc_reserve, GFP_KERNEL) ||
 	    !init_fifo(&ca->free[RESERVE_NONE], reserve_none, GFP_KERNEL) ||
 	    !init_fifo(&ca->free_inc,	free_inc_reserve, GFP_KERNEL) ||
-	    !init_heap(&ca->heap,	heap_size, GFP_KERNEL) ||
+	    !init_heap(&ca->alloc_heap,	heap_size, GFP_KERNEL) ||
+	    !init_heap(&ca->copygc_heap,heap_size, GFP_KERNEL) ||
 	    !(ca->oldest_gens	= kvpmalloc(ca->mi.nbuckets *
 					    sizeof(u8),
 					    GFP_KERNEL|__GFP_ZERO)) ||

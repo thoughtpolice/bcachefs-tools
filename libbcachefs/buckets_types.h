@@ -1,6 +1,8 @@
 #ifndef _BUCKETS_TYPES_H
 #define _BUCKETS_TYPES_H
 
+#include "util.h"
+
 enum bucket_data_type {
 	BUCKET_DATA	= 0,
 	BUCKET_BTREE,
@@ -17,9 +19,6 @@ struct bucket_mark {
 
 	struct {
 		u8		gen;
-
-		/* generation copygc is going to move this bucket into */
-		unsigned	copygc:1;
 
 		unsigned	journal_seq_valid:1;
 
@@ -96,9 +95,11 @@ struct bch_fs_usage {
 };
 
 struct bucket_heap_entry {
-	struct bucket *g;
-	unsigned long val;
+	size_t			bucket;
+	struct bucket_mark	mark;
 };
+
+typedef HEAP(struct bucket_heap_entry) bucket_heap;
 
 /*
  * A reservation for space on disk:

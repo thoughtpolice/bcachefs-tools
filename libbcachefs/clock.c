@@ -5,9 +5,11 @@
 #include <linux/kthread.h>
 #include <linux/preempt.h>
 
-static inline bool io_timer_cmp(struct io_timer *l, struct io_timer *r)
+static inline long io_timer_cmp(io_timer_heap *h,
+				struct io_timer *l,
+				struct io_timer *r)
 {
-	return time_after(l->expire, r->expire);
+	return l->expire - r->expire;
 }
 
 void bch2_io_timer_add(struct io_clock *clock, struct io_timer *timer)

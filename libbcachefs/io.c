@@ -182,8 +182,9 @@ static int bch2_write_index_default(struct bch_write_op *op)
 	struct btree_iter iter;
 	int ret;
 
-	bch2_btree_iter_init_intent(&iter, op->c, BTREE_ID_EXTENTS,
-		bkey_start_pos(&bch2_keylist_front(keys)->k));
+	bch2_btree_iter_init(&iter, op->c, BTREE_ID_EXTENTS,
+			     bkey_start_pos(&bch2_keylist_front(keys)->k),
+			     BTREE_ITER_INTENT);
 
 	ret = bch2_btree_insert_list_at(&iter, keys, &op->res,
 				       NULL, op_journal_seq(op),
@@ -1112,9 +1113,9 @@ void bch2_read_extent_iter(struct bch_fs *c, struct bch_read_bio *orig,
 		if (promote_op) {
 			struct bio *promote_bio = &promote_op->write.wbio.bio;
 
-			bio_init(promote_bio);
-			promote_bio->bi_max_vecs = pages;
-			promote_bio->bi_io_vec	= promote_bio->bi_inline_vecs;
+			bio_init(promote_bio,
+				 promote_bio->bi_inline_vecs,
+				 pages);
 			bounce = true;
 			/* could also set read_full */
 		}
@@ -1265,8 +1266,9 @@ static void bch2_read_iter(struct bch_fs *c, struct bch_read_bio *rbio,
 	struct bkey_s_c k;
 	int ret;
 
-	for_each_btree_key_with_holes(&iter, c, BTREE_ID_EXTENTS,
-				      POS(inode, bvec_iter.bi_sector), k) {
+	for_each_btree_key(&iter, c, BTREE_ID_EXTENTS,
+			   POS(inode, bvec_iter.bi_sector),
+			   BTREE_ITER_WITH_HOLES, k) {
 		BKEY_PADDED(k) tmp;
 		struct extent_pick_ptr pick;
 		unsigned bytes, sectors;

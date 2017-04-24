@@ -169,7 +169,7 @@ static bool six_spin_on_owner(struct six_lock *lock, struct task_struct *owner)
 			break;
 		}
 
-		cpu_relax_lowlatency();
+		cpu_relax();
 	}
 	rcu_read_unlock();
 
@@ -222,7 +222,7 @@ static bool six_optimistic_spin(struct six_lock *lock, enum six_lock_type type)
 		 * memory barriers as we'll eventually observe the right
 		 * values at the cost of a few extra spins.
 		 */
-		cpu_relax_lowlatency();
+		cpu_relax();
 	}
 
 	osq_unlock(&lock->osq);

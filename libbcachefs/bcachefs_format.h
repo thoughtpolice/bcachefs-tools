@@ -1,14 +1,9 @@
-#ifndef _LINUX_BCACHE_H
-#define _LINUX_BCACHE_H
+#ifndef _BCACHEFS_FORMAT_H
+#define _BCACHEFS_FORMAT_H
 
 /*
  * Bcache on disk data structures
  */
-
-#ifdef __cplusplus
-typedef bool _Bool;
-extern "C" {
-#endif
 
 #include <asm/types.h>
 #include <asm/byteorder.h>
@@ -230,8 +225,6 @@ struct bkey_i {
 	};
 };
 
-#ifndef __cplusplus
-
 #define KEY(_inode, _offset, _size)					\
 ((struct bkey) {							\
 	.u64s		= BKEY_U64s,					\
@@ -239,24 +232,6 @@ struct bkey_i {
 	.p		= POS(_inode, _offset),				\
 	.size		= _size,					\
 })
-
-#else
-
-static inline struct bkey KEY(__u64 inode, __u64 offset, __u64 size)
-{
-	struct bkey ret;
-
-	memset(&ret, 0, sizeof(ret));
-	ret.u64s	= BKEY_U64s;
-	ret.format	= KEY_FORMAT_CURRENT;
-	ret.p.inode	= inode;
-	ret.p.offset	= offset;
-	ret.size	= size;
-
-	return ret;
-}
-
-#endif
 
 static inline void bkey_init(struct bkey *k)
 {
@@ -1344,9 +1319,4 @@ struct btree_node_entry {
 	};
 } __attribute__((packed, aligned(8)));
 
-#ifdef __cplusplus
-}
-#endif
-#endif /* _LINUX_BCACHE_H */
-
-/* vim: set foldnestmax=2: */
+#endif /* _BCACHEFS_FORMAT_H */

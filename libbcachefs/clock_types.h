@@ -22,12 +22,14 @@ struct io_timer {
 /* Amount to buffer up on a percpu counter */
 #define IO_CLOCK_PCPU_SECTORS	128
 
+typedef HEAP(struct io_timer *)	io_timer_heap;
+
 struct io_clock {
 	atomic_long_t		now;
 	u16 __percpu		*pcpu_buf;
 
 	spinlock_t		timer_lock;
-	DECLARE_HEAP(struct io_timer *, timers);
+	io_timer_heap		timers;
 };
 
 #endif /* _BCACHE_CLOCK_TYPES_H */

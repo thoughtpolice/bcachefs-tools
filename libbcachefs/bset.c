@@ -473,7 +473,7 @@ void bch2_btree_keys_init(struct btree *b, bool *expensive_debug_checks)
  * in one cacheline in t->set (BSET_CACHELINE bytes).
  *
  * This means we don't have to store the full index of the key that a node in
- * the binary tree points to; eytzinger_to_inorder() gives us the cacheline, and
+ * the binary tree points to; eytzinger1_to_inorder() gives us the cacheline, and
  * then bkey_float->m gives us the offset within that cacheline, in units of 8
  * bytes.
  *
@@ -534,7 +534,7 @@ static inline struct bkey_packed *tree_to_bkey(const struct btree *b,
 					       unsigned j)
 {
 	return cacheline_to_bkey(b, t,
-			__eytzinger_to_inorder(j, t->size, t->extra),
+			__eytzinger1_to_inorder(j, t->size, t->extra),
 			bkey_float(b, t, j)->key_offset);
 }
 
@@ -882,7 +882,7 @@ retry:
 	t->extra = (t->size - rounddown_pow_of_two(t->size - 1)) << 1;
 
 	/* First we figure out where the first key in each cacheline is */
-	eytzinger_for_each(j, t->size) {
+	eytzinger1_for_each(j, t->size) {
 		while (bkey_to_cacheline(b, t, k) < cacheline)
 			prev = k, k = bkey_next(k);
 
@@ -905,7 +905,7 @@ retry:
 	t->max_key = bkey_unpack_pos(b, k);
 
 	/* Then we build the tree */
-	eytzinger_for_each(j, t->size)
+	eytzinger1_for_each(j, t->size)
 		make_bfloat(b, t, j, &min_key, &max_key);
 }
 
@@ -996,7 +996,7 @@ static struct bkey_packed *__bkey_prev(struct btree *b, struct bset_tree *t,
 
 		do {
 			p = j ? tree_to_bkey(b, t,
-					__inorder_to_eytzinger(j--,
+					__inorder_to_eytzinger1(j--,
 							t->size, t->extra))
 			      : btree_bkey_first(b, t);
 		} while (p >= k);
@@ -1087,30 +1087,30 @@ static void ro_aux_tree_fix_invalidated_key(struct btree *b,
 
 	if (inorder &&
 	    inorder < t->size) {
-		j = __inorder_to_eytzinger(inorder, t->size, t->extra);
+		j = __inorder_to_eytzinger1(inorder, t->size, t->extra);
 
 		if (k == tree_to_bkey(b, t, j)) {
 			/* Fix the node this key corresponds to */
 			make_bfloat(b, t, j, &min_key, &max_key);
 
 			/* Children for which this key is the right boundary */
-			for (j = eytzinger_left_child(j);
+			for (j = eytzinger1_left_child(j);
 			     j < t->size;
-			     j = eytzinger_right_child(j))
+			     j = eytzinger1_right_child(j))
 				make_bfloat(b, t, j, &min_key, &max_key);
 		}
 	}
 
 	if (inorder + 1 < t->size) {
-		j = __inorder_to_eytzinger(inorder + 1, t->size, t->extra);
+		j = __inorder_to_eytzinger1(inorder + 1, t->size, t->extra);
 
 		if (k == tree_to_prev_bkey(b, t, j)) {
 			make_bfloat(b, t, j, &min_key, &max_key);
 
 			/* Children for which this key is the left boundary */
-			for (j = eytzinger_right_child(j);
+			for (j = eytzinger1_right_child(j);
 			     j < t->size;
-			     j = eytzinger_left_child(j))
+			     j = eytzinger1_left_child(j))
 				make_bfloat(b, t, j, &min_key, &max_key);
 		}
 	}
@@ -1331,7 +1331,7 @@ static struct bkey_packed *bset_search_tree(const struct btree *b,
 			p = bkey_float_get(base, n << 4);
 			prefetch(p);
 		} else if (n << 3 < t->size) {
-			inorder = __eytzinger_to_inorder(n, t->size, t->extra);
+			inorder = __eytzinger1_to_inorder(n, t->size, t->extra);
 			p = bset_cacheline(b, t, inorder);
 #ifdef CONFIG_X86_64
 			asm(".intel_syntax noprefix;"
@@ -1362,7 +1362,7 @@ static struct bkey_packed *bset_search_tree(const struct btree *b,
 						&search, packed_search, n);
 	} while (n < t->size);
 
-	inorder = __eytzinger_to_inorder(n >> 1, t->size, t->extra);
+	inorder = __eytzinger1_to_inorder(n >> 1, t->size, t->extra);
 
 	/*
 	 * n would have been the node we recursed to - the low bit tells us if
@@ -1372,7 +1372,7 @@ static struct bkey_packed *bset_search_tree(const struct btree *b,
 		return cacheline_to_bkey(b, t, inorder, f->key_offset);
 	} else {
 		if (--inorder) {
-			n = eytzinger_prev(n >> 1, t->size);
+			n = eytzinger1_prev(n >> 1, t->size);
 			f = bkey_float_get(base, n);
 			return cacheline_to_bkey(b, t, inorder, f->key_offset);
 		} else
@@ -1790,7 +1790,7 @@ int bch2_bkey_print_bfloat(struct btree *b, struct bkey_packed *k,
 	if (!bset_has_ro_aux_tree(t))
 		goto out;
 
-	j = __inorder_to_eytzinger(bkey_to_cacheline(b, t, k), t->size, t->extra);
+	j = __inorder_to_eytzinger1(bkey_to_cacheline(b, t, k), t->size, t->extra);
 	if (j &&
 	    j < t->size &&
 	    k == tree_to_bkey(b, t, j))

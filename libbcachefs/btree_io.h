@@ -1,10 +1,19 @@
 #ifndef _BCACHE_BTREE_IO_H
 #define _BCACHE_BTREE_IO_H
 
+#include "extents.h"
+
 struct bch_fs;
 struct btree_write;
 struct btree;
 struct btree_iter;
+
+struct btree_read_bio {
+	struct bch_fs		*c;
+	struct extent_pick_ptr	pick;
+	struct work_struct	work;
+	struct bio		bio;
+};
 
 static inline void btree_node_io_unlock(struct btree *b)
 {
@@ -64,7 +73,7 @@ void bch2_btree_init_next(struct bch_fs *, struct btree *,
 
 void bch2_btree_node_read_done(struct bch_fs *, struct btree *,
 			      struct bch_dev *, const struct bch_extent_ptr *);
-void bch2_btree_node_read(struct bch_fs *, struct btree *);
+void bch2_btree_node_read(struct bch_fs *, struct btree *, bool);
 int bch2_btree_root_read(struct bch_fs *, enum btree_id,
 			const struct bkey_i *, unsigned);
 

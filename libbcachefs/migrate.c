@@ -97,7 +97,8 @@ int bch2_move_data_off_device(struct bch_dev *ca)
 		atomic_set(&ctxt.error_count, 0);
 		atomic_set(&ctxt.error_flags, 0);
 
-		bch2_btree_iter_init(&iter, c, BTREE_ID_EXTENTS, POS_MIN);
+		bch2_btree_iter_init(&iter, c, BTREE_ID_EXTENTS, POS_MIN,
+				     BTREE_ITER_PREFETCH);
 
 		while (!bch2_move_ctxt_wait(&ctxt) &&
 		       (k = bch2_btree_iter_peek(&iter)).k &&
@@ -167,7 +168,7 @@ static int bch2_move_btree_off(struct bch_dev *ca, enum btree_id id)
 
 	closure_init_stack(&cl);
 
-	for_each_btree_node(&iter, c, id, POS_MIN, 0, b) {
+	for_each_btree_node(&iter, c, id, POS_MIN, BTREE_ITER_PREFETCH, b) {
 		struct bkey_s_c_extent e = bkey_i_to_s_c_extent(&b->key);
 retry:
 		if (!bch2_extent_has_device(e, ca->dev_idx))
@@ -197,7 +198,7 @@ retry:
 		return ret; /* btree IO error */
 
 	if (IS_ENABLED(CONFIG_BCACHEFS_DEBUG)) {
-		for_each_btree_node(&iter, c, id, POS_MIN, 0, b) {
+		for_each_btree_node(&iter, c, id, POS_MIN, BTREE_ITER_PREFETCH, b) {
 			struct bkey_s_c_extent e = bkey_i_to_s_c_extent(&b->key);
 
 			BUG_ON(bch2_extent_has_device(e, ca->dev_idx));
@@ -341,7 +342,8 @@ int bch2_flag_data_bad(struct bch_dev *ca)
 	struct bkey_s_c_extent e;
 	struct btree_iter iter;
 
-	bch2_btree_iter_init(&iter, ca->fs, BTREE_ID_EXTENTS, POS_MIN);
+	bch2_btree_iter_init(&iter, ca->fs, BTREE_ID_EXTENTS,
+			     POS_MIN, BTREE_ITER_PREFETCH);
 
 	while ((k = bch2_btree_iter_peek(&iter)).k &&
 	       !(ret = btree_iter_err(k))) {

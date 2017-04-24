@@ -160,7 +160,8 @@ static void list_keys(struct bch_fs *c, enum btree_id btree_id,
 	struct bkey_s_c k;
 	char buf[512];
 
-	for_each_btree_key(&iter, c, btree_id, start, k) {
+	for_each_btree_key(&iter, c, btree_id, start,
+			   BTREE_ITER_PREFETCH, k) {
 		if (bkey_cmp(k.k->p, end) > 0)
 			break;
 

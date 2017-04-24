@@ -190,7 +190,7 @@ bch2_hash_lookup(const struct bch_hash_desc desc,
 		struct btree_iter *iter, const void *key)
 {
 	bch2_btree_iter_init(iter, c, desc.btree_id,
-			    POS(inode, desc.hash_key(info, key)));
+			    POS(inode, desc.hash_key(info, key)), 0);
 
 	return bch2_hash_lookup_at(desc, info, iter, key);
 }
@@ -201,8 +201,9 @@ bch2_hash_lookup_intent(const struct bch_hash_desc desc,
 		       struct bch_fs *c, u64 inode,
 		       struct btree_iter *iter, const void *key)
 {
-	bch2_btree_iter_init_intent(iter, c, desc.btree_id,
-			    POS(inode, desc.hash_key(info, key)));
+	bch2_btree_iter_init(iter, c, desc.btree_id,
+			     POS(inode, desc.hash_key(info, key)),
+			     BTREE_ITER_INTENT);
 
 	return bch2_hash_lookup_at(desc, info, iter, key);
 }
@@ -232,8 +233,9 @@ static inline struct bkey_s_c bch2_hash_hole(const struct bch_hash_desc desc,
 					    struct btree_iter *iter,
 					    const void *key)
 {
-	bch2_btree_iter_init_intent(iter, c, desc.btree_id,
-			    POS(inode, desc.hash_key(info, key)));
+	bch2_btree_iter_init(iter, c, desc.btree_id,
+			     POS(inode, desc.hash_key(info, key)),
+			     BTREE_ITER_INTENT);
 
 	return bch2_hash_hole_at(desc, iter);
 }
@@ -278,9 +280,11 @@ static inline int bch2_hash_set(const struct bch_hash_desc desc,
 	struct bkey_s_c k;
 	int ret;
 
-	bch2_btree_iter_init_intent(&hashed_slot, c, desc.btree_id,
-		POS(inode, desc.hash_bkey(info, bkey_i_to_s_c(insert))));
-	bch2_btree_iter_init_intent(&iter, c, desc.btree_id, hashed_slot.pos);
+	bch2_btree_iter_init(&hashed_slot, c, desc.btree_id,
+		POS(inode, desc.hash_bkey(info, bkey_i_to_s_c(insert))),
+		BTREE_ITER_INTENT);
+	bch2_btree_iter_init(&iter, c, desc.btree_id, hashed_slot.pos,
+			     BTREE_ITER_INTENT);
 	bch2_btree_iter_link(&hashed_slot, &iter);
 retry:
 	/*
@@ -353,7 +357,7 @@ static inline int bch2_hash_delete_at(const struct bch_hash_desc desc,
 	int ret = -ENOENT;
 
 	bch2_btree_iter_init(&whiteout_iter, iter->c, desc.btree_id,
-			     iter->pos);
+			     iter->pos, 0);
 	bch2_btree_iter_link(iter, &whiteout_iter);
 
 	ret = bch2_hash_needs_whiteout(desc, info, &whiteout_iter, iter);
@@ -382,10 +386,11 @@ static inline int bch2_hash_delete(const struct bch_hash_desc desc,
 	struct bkey_s_c k;
 	int ret = -ENOENT;
 
-	bch2_btree_iter_init_intent(&iter, c, desc.btree_id,
-			    POS(inode, desc.hash_key(info, key)));
+	bch2_btree_iter_init(&iter, c, desc.btree_id,
+			     POS(inode, desc.hash_key(info, key)),
+			     BTREE_ITER_INTENT);
 	bch2_btree_iter_init(&whiteout_iter, c, desc.btree_id,
-			    POS(inode, desc.hash_key(info, key)));
+			    POS(inode, desc.hash_key(info, key)), 0);
 	bch2_btree_iter_link(&iter, &whiteout_iter);
 retry:
 	k = bch2_hash_lookup_at(desc, info, &iter, key);

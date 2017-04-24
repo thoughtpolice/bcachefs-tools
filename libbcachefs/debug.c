@@ -60,9 +60,9 @@ void __bch2_btree_verify(struct bch_fs *c, struct btree *b)
 
 	bio = bio_alloc_bioset(GFP_NOIO, btree_pages(c), &c->btree_read_bio);
 	bio->bi_bdev		= pick.ca->disk_sb.bdev;
+	bio->bi_opf		= REQ_OP_READ|REQ_META;
 	bio->bi_iter.bi_sector	= pick.ptr.offset;
 	bio->bi_iter.bi_size	= btree_bytes(c);
-	bio_set_op_attrs(bio, REQ_OP_READ, REQ_META|READ_SYNC);
 	bch2_bio_map(bio, n_sorted);
 
 	submit_bio_wait(bio);
@@ -212,7 +212,7 @@ static ssize_t bch2_read_btree(struct file *file, char __user *buf,
 	if (!i->size)
 		return i->ret;
 
-	bch2_btree_iter_init(&iter, i->c, i->id, i->from);
+	bch2_btree_iter_init(&iter, i->c, i->id, i->from, BTREE_ITER_PREFETCH);
 
 	while ((k = bch2_btree_iter_peek(&iter)).k &&
 	       !(err = btree_iter_err(k))) {
@@ -314,7 +314,7 @@ static ssize_t bch2_read_bfloat_failed(struct file *file, char __user *buf,
 	if (!i->size)
 		return i->ret;
 
-	bch2_btree_iter_init(&iter, i->c, i->id, i->from);
+	bch2_btree_iter_init(&iter, i->c, i->id, i->from, BTREE_ITER_PREFETCH);
 
 	while ((k = bch2_btree_iter_peek(&iter)).k &&
 	       !(err = btree_iter_err(k))) {

@@ -282,7 +282,7 @@ ssize_t bch2_xattr_list(struct dentry *dentry, char *buffer, size_t buffer_size)
 	ssize_t ret = 0;
 	size_t len;
 
-	for_each_btree_key(&iter, c, BTREE_ID_XATTRS, POS(inum, 0), k) {
+	for_each_btree_key(&iter, c, BTREE_ID_XATTRS, POS(inum, 0), 0, k) {
 		BUG_ON(k.k->p.inode < inum);
 
 		if (k.k->p.inode > inum)

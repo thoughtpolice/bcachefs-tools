@@ -214,11 +214,13 @@ int bch2_dirent_rename(struct bch_fs *c,
 	bool need_whiteout;
 	int ret = -ENOMEM;
 
-	bch2_btree_iter_init_intent(&src_iter, c, BTREE_ID_DIRENTS, src_pos);
-	bch2_btree_iter_init_intent(&dst_iter, c, BTREE_ID_DIRENTS, dst_pos);
+	bch2_btree_iter_init(&src_iter, c, BTREE_ID_DIRENTS, src_pos,
+			     BTREE_ITER_INTENT);
+	bch2_btree_iter_init(&dst_iter, c, BTREE_ID_DIRENTS, dst_pos,
+			     BTREE_ITER_INTENT);
 	bch2_btree_iter_link(&src_iter, &dst_iter);
 
-	bch2_btree_iter_init(&whiteout_iter, c, BTREE_ID_DIRENTS, src_pos);
+	bch2_btree_iter_init(&whiteout_iter, c, BTREE_ID_DIRENTS, src_pos, 0);
 	bch2_btree_iter_link(&src_iter, &whiteout_iter);
 
 	if (mode == BCH_RENAME_EXCHANGE) {
@@ -376,7 +378,7 @@ int bch2_empty_dir(struct bch_fs *c, u64 dir_inum)
 	struct bkey_s_c k;
 	int ret = 0;
 
-	for_each_btree_key(&iter, c, BTREE_ID_DIRENTS, POS(dir_inum, 0), k) {
+	for_each_btree_key(&iter, c, BTREE_ID_DIRENTS, POS(dir_inum, 0), 0, k) {
 		if (k.k->p.inode > dir_inum)
 			break;
 
@@ -405,7 +407,7 @@ int bch2_readdir(struct bch_fs *c, struct file *file,
 	pr_debug("listing for %lu from %llu", inode->i_ino, ctx->pos);
 
 	for_each_btree_key(&iter, c, BTREE_ID_DIRENTS,
-			   POS(inode->i_ino, ctx->pos), k) {
+			   POS(inode->i_ino, ctx->pos), 0, k) {
 		if (k.k->type != BCH_DIRENT)
 			continue;
 

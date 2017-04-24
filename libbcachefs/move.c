@@ -54,8 +54,9 @@ static int bch2_migrate_index_update(struct bch_write_op *op)
 	struct btree_iter iter;
 	int ret = 0;
 
-	bch2_btree_iter_init_intent(&iter, c, BTREE_ID_EXTENTS,
-		bkey_start_pos(&bch2_keylist_front(keys)->k));
+	bch2_btree_iter_init(&iter, c, BTREE_ID_EXTENTS,
+			     bkey_start_pos(&bch2_keylist_front(keys)->k),
+			     BTREE_ITER_INTENT);
 
 	while (1) {
 		struct bkey_s_extent insert =
@@ -171,13 +172,12 @@ void bch2_migrate_write_init(struct bch_fs *c,
 static void migrate_bio_init(struct moving_io *io, struct bio *bio,
 			     unsigned sectors)
 {
-	bio_init(bio);
+	bio_init(bio, io->bi_inline_vecs,
+		 DIV_ROUND_UP(sectors, PAGE_SECTORS));
 	bio_set_prio(bio, IOPRIO_PRIO_VALUE(IOPRIO_CLASS_IDLE, 0));
 
 	bio->bi_iter.bi_size	= sectors << 9;
-	bio->bi_max_vecs	= DIV_ROUND_UP(sectors, PAGE_SECTORS);
 	bio->bi_private		= &io->cl;
-	bio->bi_io_vec		= io->bi_inline_vecs;
 	bch2_bio_map(bio, NULL);
 }
 

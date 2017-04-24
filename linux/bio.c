@@ -278,10 +278,8 @@ struct bio *bio_alloc_bioset(gfp_t gfp_mask, int nr_iovecs, struct bio_set *bs)
 		return NULL;
 
 	bio = p + front_pad;
-	bio_init(bio);
-	bio->bi_pool		= bs;
-	bio->bi_max_vecs	= nr_iovecs;
-	bio->bi_io_vec		= bio->bi_inline_vecs;
+	bio_init(bio, bio->bi_inline_vecs, nr_iovecs);
+	bio->bi_pool = bs;
 
 	return bio;
 }

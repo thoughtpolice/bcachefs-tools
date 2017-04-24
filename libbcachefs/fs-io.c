@@ -282,10 +282,12 @@ static int bchfs_write_index_update(struct bch_write_op *wop)
 
 	BUG_ON(k->k.p.inode != op->ei->vfs_inode.i_ino);
 
-	bch2_btree_iter_init_intent(&extent_iter, wop->c, BTREE_ID_EXTENTS,
-				   bkey_start_pos(&bch2_keylist_front(keys)->k));
-	bch2_btree_iter_init_intent(&inode_iter, wop->c,	BTREE_ID_INODES,
-				   POS(extent_iter.pos.inode, 0));
+	bch2_btree_iter_init(&extent_iter, wop->c, BTREE_ID_EXTENTS,
+			     bkey_start_pos(&bch2_keylist_front(keys)->k),
+			     BTREE_ITER_INTENT);
+	bch2_btree_iter_init(&inode_iter, wop->c, BTREE_ID_INODES,
+			     POS(extent_iter.pos.inode, 0),
+			     BTREE_ITER_INTENT);
 
 	hook.op			= op;
 	hook.hook.fn		= bchfs_extent_update_hook;
@@ -786,7 +788,7 @@ int bch2_readpages(struct file *file, struct address_space *mapping,
 		.mapping = mapping, .nr_pages = nr_pages
 	};
 
-	bch2_btree_iter_init(&iter, c, BTREE_ID_EXTENTS, POS_MIN);
+	bch2_btree_iter_init(&iter, c, BTREE_ID_EXTENTS, POS_MIN, 0);
 
 	INIT_LIST_HEAD(&readpages_iter.pages);
 	list_add(&readpages_iter.pages, pages);
@@ -841,7 +843,7 @@ static void __bchfs_readpage(struct bch_fs *c, struct bch_read_bio *rbio,
 	bio_set_op_attrs(&rbio->bio, REQ_OP_READ, REQ_SYNC);
 	bio_add_page_contig(&rbio->bio, page);
 
-	bch2_btree_iter_init(&iter, c, BTREE_ID_EXTENTS, POS_MIN);
+	bch2_btree_iter_init(&iter, c, BTREE_ID_EXTENTS, POS_MIN, 0);
 	bchfs_read(c, &iter, rbio, inode, NULL);
 }
 
@@ -1036,7 +1038,7 @@ do_io:
 	w->io->op.new_i_size = i_size;
 
 	if (wbc->sync_mode == WB_SYNC_ALL)
-		w->io->bio.bio.bi_opf |= WRITE_SYNC;
+		w->io->bio.bio.bi_opf |= REQ_SYNC;
 
 	/* Before unlocking the page, transfer reservation to w->io: */
 	old = page_state_cmpxchg(page_state(page), new, {
@@ -1448,7 +1450,7 @@ start:
 		bio->bi_iter.bi_sector	= offset >> 9;
 		bio->bi_private		= dio;
 
-		ret = bio_get_user_pages(bio, iter, 1);
+		ret = bio_iov_iter_get_pages(bio, iter);
 		if (ret < 0) {
 			/* XXX: fault inject this path */
 			bio->bi_error = ret;
@@ -1537,7 +1539,7 @@ static void bch2_do_direct_IO_write(struct dio_write *dio)
 
 	bio->bi_iter.bi_sector = (dio->offset + dio->written) >> 9;
 
-	ret = bio_get_user_pages(bio, &dio->iter, 0);
+	ret = bio_iov_iter_get_pages(bio, &dio->iter);
 	if (ret < 0) {
 		/*
 		 * these didn't get initialized, but bch2_dio_write_done() will
@@ -1908,7 +1910,7 @@ static int __bch2_truncate_page(struct address_space *mapping,
 		 */
 		for_each_btree_key(&iter, c, BTREE_ID_EXTENTS,
 				   POS(inode->i_ino,
-				       index << (PAGE_SHIFT - 9)), k) {
+				       index << (PAGE_SHIFT - 9)), 0, k) {
 			if (bkey_cmp(bkey_start_pos(k.k),
 				     POS(inode->i_ino,
 					 (index + 1) << (PAGE_SHIFT - 9))) >= 0)
@@ -2122,10 +2124,11 @@ static long bch2_fcollapse(struct inode *inode, loff_t offset, loff_t len)
 	if ((offset | len) & (PAGE_SIZE - 1))
 		return -EINVAL;
 
-	bch2_btree_iter_init_intent(&dst, c, BTREE_ID_EXTENTS,
-				   POS(inode->i_ino, offset >> 9));
+	bch2_btree_iter_init(&dst, c, BTREE_ID_EXTENTS,
+			     POS(inode->i_ino, offset >> 9),
+			     BTREE_ITER_INTENT);
 	/* position will be set from dst iter's position: */
-	bch2_btree_iter_init(&src, c, BTREE_ID_EXTENTS, POS_MIN);
+	bch2_btree_iter_init(&src, c, BTREE_ID_EXTENTS, POS_MIN, 0);
 	bch2_btree_iter_link(&src, &dst);
 
 	/*
@@ -2249,7 +2252,8 @@ static long bch2_fallocate(struct inode *inode, int mode,
 	unsigned replicas = READ_ONCE(c->opts.data_replicas);
 	int ret;
 
-	bch2_btree_iter_init_intent(&iter, c, BTREE_ID_EXTENTS, POS_MIN);
+	bch2_btree_iter_init(&iter, c, BTREE_ID_EXTENTS, POS_MIN,
+			     BTREE_ITER_INTENT);
 
 	inode_lock(inode);
 	inode_dio_wait(inode);
@@ -2459,7 +2463,7 @@ static loff_t bch2_seek_data(struct file *file, u64 offset)
 		return -ENXIO;
 
 	for_each_btree_key(&iter, c, BTREE_ID_EXTENTS,
-			   POS(inode->i_ino, offset >> 9), k) {
+			   POS(inode->i_ino, offset >> 9), 0, k) {
 		if (k.k->p.inode != inode->i_ino) {
 			break;
 		} else if (bkey_extent_is_data(k.k)) {
@@ -2527,8 +2531,9 @@ static loff_t bch2_seek_hole(struct file *file, u64 offset)
 	if (offset >= isize)
 		return -ENXIO;
 
-	for_each_btree_key_with_holes(&iter, c, BTREE_ID_EXTENTS,
-				      POS(inode->i_ino, offset >> 9), k) {
+	for_each_btree_key(&iter, c, BTREE_ID_EXTENTS,
+			   POS(inode->i_ino, offset >> 9),
+			   BTREE_ITER_WITH_HOLES, k) {
 		if (k.k->p.inode != inode->i_ino) {
 			next_hole = bch2_next_pagecache_hole(inode,
 					offset, MAX_LFS_FILESIZE);

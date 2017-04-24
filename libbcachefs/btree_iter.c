@@ -161,8 +161,9 @@ bool __bch2_btree_node_lock(struct btree *b, struct bpos pos,
 		 */
 		if (type == SIX_LOCK_intent &&
 		    linked->nodes_locked != linked->nodes_intent_locked) {
-			linked->locks_want = max(linked->locks_want,
-						 iter->locks_want);
+			linked->locks_want = max_t(unsigned,
+						   linked->locks_want,
+						   iter->locks_want);
 			return false;
 		}
 
@@ -177,8 +178,9 @@ bool __bch2_btree_node_lock(struct btree *b, struct bpos pos,
 		 */
 		if (linked->btree_id == iter->btree_id &&
 		    level > __fls(linked->nodes_locked)) {
-			linked->locks_want = max(linked->locks_want,
-						 iter->locks_want);
+			linked->locks_want = max_t(unsigned,
+						   linked->locks_want,
+						   iter->locks_want);
 			return false;
 		}
 	}
@@ -247,12 +249,10 @@ fail:
 
 static int __bch2_btree_iter_unlock(struct btree_iter *iter)
 {
-	BUG_ON(iter->error == -EINTR);
-
 	while (iter->nodes_locked)
 		btree_node_unlock(iter, __ffs(iter->nodes_locked));
 
-	return iter->error;
+	return iter->flags & BTREE_ITER_ERROR ? -EIO : 0;
 }
 
 int bch2_btree_iter_unlock(struct btree_iter *iter)
@@ -285,7 +285,7 @@ static void __bch2_btree_iter_verify(struct btree_iter *iter,
 		? bch2_btree_node_iter_prev(&tmp, b)
 		: bch2_btree_node_iter_prev_all(&tmp, b);
 	if (k && btree_iter_pos_cmp_packed(b, &iter->pos, k,
-					   iter->is_extents)) {
+				iter->flags & BTREE_ITER_IS_EXTENTS)) {
 		char buf[100];
 		struct bkey uk = bkey_unpack_key(b, k);
 
@@ -296,7 +296,7 @@ static void __bch2_btree_iter_verify(struct btree_iter *iter,
 
 	k = bch2_btree_node_iter_peek_all(node_iter, b);
 	if (k && !btree_iter_pos_cmp_packed(b, &iter->pos, k,
-					    iter->is_extents)) {
+				iter->flags & BTREE_ITER_IS_EXTENTS)) {
 		char buf[100];
 		struct bkey uk = bkey_unpack_key(b, k);
 
@@ -340,7 +340,7 @@ static void __bch2_btree_node_iter_fix(struct btree_iter *iter,
 	/* didn't find the bset in the iterator - might have to readd it: */
 	if (new_u64s &&
 	    btree_iter_pos_cmp_packed(b, &iter->pos, where,
-				      iter->is_extents))
+				      iter->flags & BTREE_ITER_IS_EXTENTS))
 		bch2_btree_node_iter_push(node_iter, b, where, end);
 	return;
 found:
@@ -352,7 +352,7 @@ found:
 
 	if (new_u64s &&
 	    btree_iter_pos_cmp_packed(b, &iter->pos, where,
-				      iter->is_extents)) {
+				iter->flags & BTREE_ITER_IS_EXTENTS)) {
 		set->k = offset;
 		bch2_btree_node_iter_sort(node_iter, b);
 	} else if (set->k < offset + clobber_u64s) {
@@ -388,7 +388,7 @@ found:
 	 */
 	if (b->level && new_u64s && !bkey_deleted(where) &&
 	    btree_iter_pos_cmp_packed(b, &iter->pos, where,
-				      iter->is_extents)) {
+				iter->flags & BTREE_ITER_IS_EXTENTS)) {
 		struct bset_tree *t;
 		struct bkey_packed *k;
 
@@ -535,9 +535,9 @@ static void btree_iter_verify_new_node(struct btree_iter *iter, struct btree *b)
 static inline void __btree_iter_init(struct btree_iter *iter,
 				     struct btree *b)
 {
-	bch2_btree_node_iter_init(&iter->node_iters[b->level], b,
-				 iter->pos, iter->is_extents,
-				 btree_node_is_extents(b));
+	bch2_btree_node_iter_init(&iter->node_iters[b->level], b, iter->pos,
+				  iter->flags & BTREE_ITER_IS_EXTENTS,
+				  btree_node_is_extents(b));
 
 	/* Skip to first non whiteout: */
 	if (b->level)
@@ -549,7 +549,8 @@ static inline bool btree_iter_pos_in_node(struct btree_iter *iter,
 {
 	return iter->btree_id == b->btree_id &&
 		bkey_cmp(iter->pos, b->data->min_key) >= 0 &&
-		btree_iter_pos_cmp(iter->pos, &b->key.k, iter->is_extents);
+		btree_iter_pos_cmp(iter->pos, &b->key.k,
+				   iter->flags & BTREE_ITER_IS_EXTENTS);
 }
 
 static inline void btree_iter_node_set(struct btree_iter *iter,
@@ -695,6 +696,26 @@ static inline int btree_iter_lock_root(struct btree_iter *iter,
 	}
 }
 
+noinline
+static void btree_iter_prefetch(struct btree_iter *iter)
+{
+	struct btree *b = iter->nodes[iter->level + 1];
+	struct btree_node_iter node_iter = iter->node_iters[iter->level + 1];
+	struct bkey_packed *k;
+	BKEY_PADDED(k) tmp;
+	unsigned nr = iter->level ? 1 : 8;
+
+	while (nr) {
+		bch2_btree_node_iter_advance(&node_iter, b);
+		k = bch2_btree_node_iter_peek(&node_iter, b);
+		if (!k)
+			break;
+
+		bch2_bkey_unpack(b, &tmp.k, k);
+		bch2_btree_node_prefetch(iter, &tmp.k, iter->level);
+	}
+}
+
 static inline int btree_iter_down(struct btree_iter *iter)
 {
 	struct btree *b;
@@ -712,6 +733,10 @@ static inline int btree_iter_down(struct btree_iter *iter)
 	iter->level = level;
 	mark_btree_node_locked(iter, level, lock_type);
 	btree_iter_node_set(iter, b);
+
+	if (iter->flags & BTREE_ITER_PREFETCH)
+		btree_iter_prefetch(iter);
+
 	return 0;
 }
 
@@ -791,7 +816,7 @@ out:
 io_error:
 	BUG_ON(ret != -EIO);
 
-	iter->error = ret;
+	iter->flags |= BTREE_ITER_ERROR;
 	iter->nodes[iter->level] = NULL;
 	goto out;
 }
@@ -834,7 +859,7 @@ int __must_check __bch2_btree_iter_traverse(struct btree_iter *iter)
 		 bch2_btree_node_relock(iter, iter->level) &&
 		 btree_iter_pos_cmp(iter->pos,
 				    &iter->nodes[iter->level]->key.k,
-				    iter->is_extents)))
+				    iter->flags & BTREE_ITER_IS_EXTENTS)))
 		btree_iter_up(iter);
 
 	/*
@@ -845,7 +870,8 @@ int __must_check __bch2_btree_iter_traverse(struct btree_iter *iter)
 		struct bkey_s_c k;
 
 		while ((k = __btree_iter_peek_all(iter)).k &&
-		       !btree_iter_pos_cmp(iter->pos, k.k, iter->is_extents))
+		       !btree_iter_pos_cmp(iter->pos, k.k,
+					   iter->flags & BTREE_ITER_IS_EXTENTS))
 			__btree_iter_advance(iter);
 	}
 
@@ -875,7 +901,7 @@ int __must_check bch2_btree_iter_traverse(struct btree_iter *iter)
 	if (unlikely(!iter->nodes[iter->level]))
 		return 0;
 
-	iter->at_end_of_leaf = false;
+	iter->flags &= ~BTREE_ITER_AT_END_OF_LEAF;
 
 	ret = __bch2_btree_iter_traverse(iter);
 	if (unlikely(ret))
@@ -891,7 +917,7 @@ struct btree *bch2_btree_iter_peek_node(struct btree_iter *iter)
 	struct btree *b;
 	int ret;
 
-	EBUG_ON(iter->is_extents);
+	EBUG_ON(iter->flags & BTREE_ITER_IS_EXTENTS);
 
 	ret = bch2_btree_iter_traverse(iter);
 	if (ret)
@@ -912,7 +938,7 @@ struct btree *bch2_btree_iter_next_node(struct btree_iter *iter, unsigned depth)
 	struct btree *b;
 	int ret;
 
-	EBUG_ON(iter->is_extents);
+	EBUG_ON(iter->flags & BTREE_ITER_IS_EXTENTS);
 
 	btree_iter_up(iter);
 
@@ -964,12 +990,13 @@ void bch2_btree_iter_set_pos_same_leaf(struct btree_iter *iter, struct bpos new_
 
 	while ((k = bch2_btree_node_iter_peek_all(node_iter, b)) &&
 	       !btree_iter_pos_cmp_packed(b, &new_pos, k,
-					  iter->is_extents))
+					  iter->flags & BTREE_ITER_IS_EXTENTS))
 		bch2_btree_node_iter_advance(node_iter, b);
 
 	if (!k &&
-	    !btree_iter_pos_cmp(new_pos, &b->key.k, iter->is_extents))
-		iter->at_end_of_leaf = true;
+	    !btree_iter_pos_cmp(new_pos, &b->key.k,
+				iter->flags & BTREE_ITER_IS_EXTENTS))
+		iter->flags |= BTREE_ITER_AT_END_OF_LEAF;
 
 	iter->pos = new_pos;
 }
@@ -1006,6 +1033,9 @@ struct bkey_s_c bch2_btree_iter_peek(struct btree_iter *iter)
 	struct bkey_s_c k;
 	int ret;
 
+	EBUG_ON(!!(iter->flags & BTREE_ITER_IS_EXTENTS) !=
+		(iter->btree_id == BTREE_ID_EXTENTS));
+
 	while (1) {
 		ret = bch2_btree_iter_traverse(iter);
 		if (unlikely(ret)) {
@@ -1019,7 +1049,7 @@ struct bkey_s_c bch2_btree_iter_peek(struct btree_iter *iter)
 			 * iter->pos should always be equal to the key we just
 			 * returned - except extents can straddle iter->pos:
 			 */
-			if (!iter->is_extents ||
+			if (!(iter->flags & BTREE_ITER_IS_EXTENTS) ||
 			    bkey_cmp(bkey_start_pos(k.k), iter->pos) > 0)
 				bch2_btree_iter_set_pos(iter, bkey_start_pos(k.k));
 			return k;
@@ -1043,6 +1073,9 @@ struct bkey_s_c bch2_btree_iter_peek_with_holes(struct btree_iter *iter)
 	struct bkey n;
 	int ret;
 
+	EBUG_ON(!!(iter->flags & BTREE_ITER_IS_EXTENTS) !=
+		(iter->btree_id == BTREE_ID_EXTENTS));
+
 	while (1) {
 		ret = bch2_btree_iter_traverse(iter);
 		if (unlikely(ret)) {
@@ -1057,7 +1090,7 @@ recheck:
 			bkey_init(&n);
 			n.p = iter->pos;
 
-			if (iter->is_extents) {
+			if (iter->flags & BTREE_ITER_IS_EXTENTS) {
 				if (n.p.offset == KEY_OFFSET_MAX) {
 					iter->pos = bkey_successor(iter->pos);
 					goto recheck;
@@ -1087,21 +1120,18 @@ recheck:
 }
 
 void __bch2_btree_iter_init(struct btree_iter *iter, struct bch_fs *c,
-			   enum btree_id btree_id, struct bpos pos,
-			   unsigned locks_want, unsigned depth)
+			    enum btree_id btree_id, struct bpos pos,
+			    unsigned locks_want, unsigned depth,
+			    unsigned flags)
 {
-	iter->level			= depth;
-	/* bch2_bkey_ops isn't used much, this would be a cache miss */
-	/* iter->is_extents		= bch2_bkey_ops[btree_id]->is_extents; */
-	iter->is_extents		= btree_id == BTREE_ID_EXTENTS;
-	iter->nodes_locked		= 0;
-	iter->nodes_intent_locked	= 0;
-	iter->locks_want		= min(locks_want, BTREE_MAX_DEPTH);
-	iter->btree_id			= btree_id;
-	iter->at_end_of_leaf		= 0;
-	iter->error			= 0;
 	iter->c				= c;
 	iter->pos			= pos;
+	iter->flags			= flags;
+	iter->btree_id			= btree_id;
+	iter->level			= depth;
+	iter->locks_want		= min(locks_want, BTREE_MAX_DEPTH);
+	iter->nodes_locked		= 0;
+	iter->nodes_intent_locked	= 0;
 	memset(iter->nodes, 0, sizeof(iter->nodes));
 	iter->nodes[iter->level]	= BTREE_ITER_NOT_END;
 	iter->next			= iter;

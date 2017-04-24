@@ -134,8 +134,8 @@ struct hash_check {
 static void hash_check_init(const struct bch_hash_desc desc,
 			    struct hash_check *h, struct bch_fs *c)
 {
-	bch2_btree_iter_init(&h->chain, c, desc.btree_id, POS_MIN);
-	bch2_btree_iter_init(&h->iter, c, desc.btree_id, POS_MIN);
+	bch2_btree_iter_init(&h->chain, c, desc.btree_id, POS_MIN, 0);
+	bch2_btree_iter_init(&h->iter, c, desc.btree_id, POS_MIN, 0);
 }
 
 static void hash_check_set_inode(struct hash_check *h, struct bch_fs *c,
@@ -251,7 +251,7 @@ static int check_extents(struct bch_fs *c)
 	int ret = 0;
 
 	for_each_btree_key(&iter, c, BTREE_ID_EXTENTS,
-			   POS(BCACHE_ROOT_INO, 0), k) {
+			   POS(BCACHE_ROOT_INO, 0), 0, k) {
 		if (k.k->type == KEY_TYPE_DISCARD)
 			continue;
 
@@ -310,7 +310,7 @@ static int check_dirents(struct bch_fs *c)
 	hash_check_init(bch2_dirent_hash_desc, &h, c);
 
 	for_each_btree_key(&iter, c, BTREE_ID_DIRENTS,
-			   POS(BCACHE_ROOT_INO, 0), k) {
+			   POS(BCACHE_ROOT_INO, 0), 0, k) {
 		struct bkey_s_c_dirent d;
 		struct bch_inode_unpacked target;
 		bool have_target;
@@ -444,7 +444,7 @@ static int check_xattrs(struct bch_fs *c)
 	hash_check_init(bch2_xattr_hash_desc, &h, c);
 
 	for_each_btree_key(&iter, c, BTREE_ID_XATTRS,
-			   POS(BCACHE_ROOT_INO, 0), k) {
+			   POS(BCACHE_ROOT_INO, 0), 0, k) {
 		ret = walk_inode(c, &w, k.k->p.inode);
 		if (ret)
 			break;
@@ -664,7 +664,7 @@ next:
 			goto up;
 
 		for_each_btree_key(&iter, c, BTREE_ID_DIRENTS,
-				   POS(e->inum, e->offset + 1), k) {
+				   POS(e->inum, e->offset + 1), 0, k) {
 			if (k.k->p.inode != e->inum)
 				break;
 
@@ -712,7 +712,7 @@ up:
 		path.nr--;
 	}
 
-	for_each_btree_key(&iter, c, BTREE_ID_INODES, POS_MIN, k) {
+	for_each_btree_key(&iter, c, BTREE_ID_INODES, POS_MIN, 0, k) {
 		if (k.k->type != BCH_INODE_FS ||
 		    !S_ISDIR(le16_to_cpu(bkey_s_c_to_inode(k).v->i_mode)))
 			continue;
@@ -794,7 +794,7 @@ static int bch2_gc_walk_dirents(struct bch_fs *c, nlink_table *links,
 
 	inc_link(c, links, range_start, range_end, BCACHE_ROOT_INO, false);
 
-	for_each_btree_key(&iter, c, BTREE_ID_DIRENTS, POS_MIN, k) {
+	for_each_btree_key(&iter, c, BTREE_ID_DIRENTS, POS_MIN, 0, k) {
 		switch (k.k->type) {
 		case BCH_DIRENT:
 			d = bkey_s_c_to_dirent(k);
@@ -825,7 +825,7 @@ s64 bch2_count_inode_sectors(struct bch_fs *c, u64 inum)
 	struct bkey_s_c k;
 	u64 sectors = 0;
 
-	for_each_btree_key(&iter, c, BTREE_ID_EXTENTS, POS(inum, 0), k) {
+	for_each_btree_key(&iter, c, BTREE_ID_EXTENTS, POS(inum, 0), 0, k) {
 		if (k.k->p.inode != inum)
 			break;
 
@@ -999,7 +999,7 @@ static int bch2_gc_walk_inodes(struct bch_fs *c,
 	int ret = 0, ret2 = 0;
 	u64 nlinks_pos;
 
-	bch2_btree_iter_init(&iter, c, BTREE_ID_INODES, POS(range_start, 0));
+	bch2_btree_iter_init(&iter, c, BTREE_ID_INODES, POS(range_start, 0), 0);
 	genradix_iter_init(&nlinks_iter);
 
 	while ((k = bch2_btree_iter_peek(&iter)).k &&

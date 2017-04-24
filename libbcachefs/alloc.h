@@ -1,6 +1,7 @@
 #ifndef _BCACHE_ALLOC_H
 #define _BCACHE_ALLOC_H
 
+#include "bcachefs.h"
 #include "alloc_types.h"
 
 struct bkey;

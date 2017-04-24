@@ -233,11 +233,8 @@ static void pd_controllers_update(struct work_struct *work)
 
 static int prio_io(struct bch_dev *ca, uint64_t bucket, int op)
 {
-	bio_init(ca->bio_prio);
-	bio_set_op_attrs(ca->bio_prio, op, REQ_SYNC|REQ_META);
-
-	ca->bio_prio->bi_max_vecs	= bucket_pages(ca);
-	ca->bio_prio->bi_io_vec		= ca->bio_prio->bi_inline_vecs;
+	bio_init(ca->bio_prio, ca->bio_prio->bi_inline_vecs, bucket_pages(ca));
+	ca->bio_prio->bi_opf		= op|REQ_SYNC|REQ_META;
 	ca->bio_prio->bi_iter.bi_sector	= bucket * ca->mi.bucket_size;
 	ca->bio_prio->bi_bdev		= ca->disk_sb.bdev;
 	ca->bio_prio->bi_iter.bi_size	= bucket_bytes(ca);
@@ -636,9 +633,10 @@ static inline bool can_inc_bucket_gen(struct bch_dev *ca, struct bucket *g)
 	return bucket_gc_gen(ca, g) < BUCKET_GC_GEN_MAX;
 }
 
-static bool bch2_can_invalidate_bucket(struct bch_dev *ca, struct bucket *g)
+static bool bch2_can_invalidate_bucket(struct bch_dev *ca, struct bucket *g,
+				       struct bucket_mark mark)
 {
-	if (!is_available_bucket(READ_ONCE(g->mark)))
+	if (!is_available_bucket(mark))
 		return false;
 
 	if (bucket_gc_gen(ca, g) >= BUCKET_GC_GEN_MAX - 1)
@@ -679,24 +677,38 @@ static void bch2_invalidate_one_bucket(struct bch_dev *ca, struct bucket *g)
  *   btree GC to rewrite nodes with stale pointers.
  */
 
-#define bucket_sort_key(g)						\
-({									\
-	unsigned long prio = g->read_prio - ca->min_prio[READ];		\
-	prio = (prio * 7) / (ca->fs->prio_clock[READ].hand -		\
-			     ca->min_prio[READ]);			\
-									\
-	(((prio + 1) * bucket_sectors_used(g)) << 8) | bucket_gc_gen(ca, g);\
-})
+static unsigned long bucket_sort_key(bucket_heap *h,
+				     struct bucket_heap_entry e)
+{
+	struct bch_dev *ca = container_of(h, struct bch_dev, alloc_heap);
+	struct bucket *g = ca->buckets + e.bucket;
+	unsigned long prio = g->read_prio - ca->min_prio[READ];
+	prio = (prio * 7) / (ca->fs->prio_clock[READ].hand -
+			     ca->min_prio[READ]);
+
+	return (prio + 1) * bucket_sectors_used(e.mark);
+}
+
+static inline int bucket_alloc_cmp(bucket_heap *h,
+				   struct bucket_heap_entry l,
+				   struct bucket_heap_entry r)
+{
+	return bucket_sort_key(h, l) - bucket_sort_key(h, r);
+}
+
+static inline long bucket_idx_cmp(bucket_heap *h,
+				  struct bucket_heap_entry l,
+				  struct bucket_heap_entry r)
+{
+	return l.bucket - r.bucket;
+}
 
 static void invalidate_buckets_lru(struct bch_dev *ca)
 {
 	struct bucket_heap_entry e;
 	struct bucket *g;
-	unsigned i;
 
-	mutex_lock(&ca->heap_lock);
-
-	ca->heap.used = 0;
+	ca->alloc_heap.used = 0;
 
 	mutex_lock(&ca->fs->bucket_lock);
 	bch2_recalc_min_prio(ca, READ);
@@ -708,37 +720,32 @@ static void invalidate_buckets_lru(struct bch_dev *ca)
 	 * all buckets have been visited.
 	 */
 	for_each_bucket(g, ca) {
-		if (!bch2_can_invalidate_bucket(ca, g))
+		struct bucket_mark m = READ_ONCE(g->mark);
+		struct bucket_heap_entry e = { g - ca->buckets, m };
+
+		if (!bch2_can_invalidate_bucket(ca, g, m))
 			continue;
 
-		bucket_heap_push(ca, g, bucket_sort_key(g));
+		heap_add_or_replace(&ca->alloc_heap, e, -bucket_alloc_cmp);
 	}
 
 	/* Sort buckets by physical location on disk for better locality */
-	for (i = 0; i < ca->heap.used; i++) {
-		struct bucket_heap_entry *e = &ca->heap.data[i];
-
-		e->val = e->g - ca->buckets;
-	}
-
-	heap_resort(&ca->heap, bucket_max_cmp);
+	heap_resort(&ca->alloc_heap, bucket_idx_cmp);
 
 	/*
 	 * If we run out of buckets to invalidate, bch2_allocator_thread() will
 	 * kick stuff and retry us
 	 */
 	while (!fifo_full(&ca->free_inc) &&
-	       heap_pop(&ca->heap, e, bucket_max_cmp)) {
-		BUG_ON(!bch2_can_invalidate_bucket(ca, e.g));
-		bch2_invalidate_one_bucket(ca, e.g);
-	}
+	       heap_pop(&ca->alloc_heap, e, bucket_idx_cmp))
+		bch2_invalidate_one_bucket(ca, &ca->buckets[e.bucket]);
 
 	mutex_unlock(&ca->fs->bucket_lock);
-	mutex_unlock(&ca->heap_lock);
 }
 
 static void invalidate_buckets_fifo(struct bch_dev *ca)
 {
+	struct bucket_mark m;
 	struct bucket *g;
 	size_t checked = 0;
 
@@ -748,8 +755,9 @@ static void invalidate_buckets_fifo(struct bch_dev *ca)
 			ca->fifo_last_bucket = ca->mi.first_bucket;
 
 		g = ca->buckets + ca->fifo_last_bucket++;
+		m = READ_ONCE(g->mark);
 
-		if (bch2_can_invalidate_bucket(ca, g))
+		if (bch2_can_invalidate_bucket(ca, g, m))
 			bch2_invalidate_one_bucket(ca, g);
 
 		if (++checked >= ca->mi.nbuckets)
@@ -759,6 +767,7 @@ static void invalidate_buckets_fifo(struct bch_dev *ca)
 
 static void invalidate_buckets_random(struct bch_dev *ca)
 {
+	struct bucket_mark m;
 	struct bucket *g;
 	size_t checked = 0;
 
@@ -768,8 +777,9 @@ static void invalidate_buckets_random(struct bch_dev *ca)
 			ca->mi.first_bucket;
 
 		g = ca->buckets + n;
+		m = READ_ONCE(g->mark);
 
-		if (bch2_can_invalidate_bucket(ca, g))
+		if (bch2_can_invalidate_bucket(ca, g, m))
 			bch2_invalidate_one_bucket(ca, g);
 
 		if (++checked >= ca->mi.nbuckets / 2)

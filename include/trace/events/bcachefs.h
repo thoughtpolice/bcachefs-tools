@@ -90,8 +90,7 @@ DECLARE_EVENT_CLASS(bio,
 		__entry->dev		= bio->bi_bdev->bd_dev;
 		__entry->sector		= bio->bi_iter.bi_sector;
 		__entry->nr_sector	= bio->bi_iter.bi_size >> 9;
-		blk_fill_rwbs(__entry->rwbs, bio_op(bio), bio->bi_opf,
-			      bio->bi_iter.bi_size);
+		blk_fill_rwbs(__entry->rwbs, bio->bi_opf, bio->bi_iter.bi_size);
 	),
 
 	TP_printk("%d,%d  %s %llu + %u",
@@ -156,8 +155,7 @@ TRACE_EVENT(write_throttle,
 		__entry->inode		= inode;
 		__entry->sector		= bio->bi_iter.bi_sector;
 		__entry->nr_sector	= bio->bi_iter.bi_size >> 9;
-		blk_fill_rwbs(__entry->rwbs, bio_op(bio), bio->bi_opf,
-			      bio->bi_iter.bi_size);
+		blk_fill_rwbs(__entry->rwbs, bio->bi_opf, bio->bi_iter.bi_size);
 		__entry->delay		= delay;
 	),
 

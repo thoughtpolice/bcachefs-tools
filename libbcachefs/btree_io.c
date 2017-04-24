@@ -1196,6 +1196,8 @@ void bch2_btree_node_read_done(struct bch_fs *c, struct btree *b,
 
 	btree_node_reset_sib_u64s(b);
 out:
+	clear_btree_node_read_in_flight(b);
+	wake_up_bit(&b->flags, BTREE_NODE_read_in_flight);
 	mempool_free(iter, &c->fill_iter);
 	return;
 err:
@@ -1206,13 +1208,48 @@ fsck_err:
 	goto out;
 }
 
-void bch2_btree_node_read(struct bch_fs *c, struct btree *b)
+static void btree_node_read_work(struct work_struct *work)
+{
+	struct btree_read_bio *rb =
+		container_of(work, struct btree_read_bio, work);
+
+	bch2_btree_node_read_done(rb->c, rb->bio.bi_private,
+				  rb->pick.ca, &rb->pick.ptr);
+
+	percpu_ref_put(&rb->pick.ca->io_ref);
+	bio_put(&rb->bio);
+}
+
+static void btree_node_read_endio(struct bio *bio)
+{
+	struct btree *b = bio->bi_private;
+	struct btree_read_bio *rb =
+		container_of(bio, struct btree_read_bio, bio);
+
+	if (bch2_dev_fatal_io_err_on(bio->bi_error,
+			rb->pick.ca, "IO error reading bucket %zu",
+			PTR_BUCKET_NR(rb->pick.ca, &rb->pick.ptr)) ||
+	    bch2_meta_read_fault("btree")) {
+		set_btree_node_read_error(b);
+		percpu_ref_put(&rb->pick.ca->io_ref);
+		bio_put(bio);
+		return;
+	}
+
+	INIT_WORK(&rb->work, btree_node_read_work);
+	schedule_work(&rb->work);
+}
+
+void bch2_btree_node_read(struct bch_fs *c, struct btree *b,
+			  bool sync)
 {
 	uint64_t start_time = local_clock();
-	struct bio *bio;
 	struct extent_pick_ptr pick;
+	struct btree_read_bio *rb;
+	struct bio *bio;
 
 	trace_btree_read(c, b);
+	set_btree_node_read_in_flight(b);
 
 	pick = bch2_btree_pick_ptr(c, b);
 	if (bch2_fs_fatal_err_on(!pick.ca, c,
@@ -1222,27 +1259,36 @@ void bch2_btree_node_read(struct bch_fs *c, struct btree *b)
 	}
 
 	bio = bio_alloc_bioset(GFP_NOIO, btree_pages(c), &c->btree_read_bio);
+	rb = container_of(bio, struct btree_read_bio, bio);
+	rb->c			= c;
+	rb->pick		= pick;
+	bio->bi_opf		= REQ_OP_READ|REQ_SYNC|REQ_META;
 	bio->bi_bdev		= pick.ca->disk_sb.bdev;
 	bio->bi_iter.bi_sector	= pick.ptr.offset;
 	bio->bi_iter.bi_size	= btree_bytes(c);
-	bio_set_op_attrs(bio, REQ_OP_READ, REQ_META|READ_SYNC);
 	bch2_bio_map(bio, b->data);
 
-	submit_bio_wait(bio);
+	if (sync) {
+		submit_bio_wait(bio);
 
-	if (bch2_dev_fatal_io_err_on(bio->bi_error,
-				  pick.ca, "IO error reading bucket %zu",
-				  PTR_BUCKET_NR(pick.ca, &pick.ptr)) ||
-	    bch2_meta_read_fault("btree")) {
-		set_btree_node_read_error(b);
-		goto out;
-	}
+		if (bch2_dev_fatal_io_err_on(bio->bi_error,
+				pick.ca, "IO error reading bucket %zu",
+				PTR_BUCKET_NR(pick.ca, &pick.ptr)) ||
+		    bch2_meta_read_fault("btree")) {
+			set_btree_node_read_error(b);
+			goto out;
+		}
 
-	bch2_btree_node_read_done(c, b, pick.ca, &pick.ptr);
-	bch2_time_stats_update(&c->btree_read_time, start_time);
+		bch2_btree_node_read_done(c, b, pick.ca, &pick.ptr);
+		bch2_time_stats_update(&c->btree_read_time, start_time);
 out:
-	bio_put(bio);
-	percpu_ref_put(&pick.ca->io_ref);
+		bio_put(bio);
+		percpu_ref_put(&pick.ca->io_ref);
+	} else {
+		bio->bi_end_io	= btree_node_read_endio;
+		bio->bi_private	= b;
+		submit_bio(bio);
+	}
 }
 
 int bch2_btree_root_read(struct bch_fs *c, enum btree_id id,
@@ -1267,7 +1313,7 @@ int bch2_btree_root_read(struct bch_fs *c, enum btree_id id,
 	bkey_copy(&b->key, k);
 	BUG_ON(bch2_btree_node_hash_insert(c, b, level, id));
 
-	bch2_btree_node_read(c, b);
+	bch2_btree_node_read(c, b, true);
 	six_unlock_write(&b->lock);
 
 	if (btree_node_read_error(b)) {
@@ -1557,10 +1603,10 @@ void __bch2_btree_node_write(struct bch_fs *c, struct btree *b,
 	wbio->put_bio		= true;
 	wbio->order		= order;
 	wbio->used_mempool	= used_mempool;
+	bio->bi_opf		= REQ_OP_WRITE|REQ_META|REQ_FUA;
 	bio->bi_iter.bi_size	= sectors_to_write << 9;
 	bio->bi_end_io		= btree_node_write_endio;
 	bio->bi_private		= b;
-	bio_set_op_attrs(bio, REQ_OP_WRITE, REQ_META|WRITE_SYNC|REQ_FUA);
 
 	if (parent)
 		closure_get(parent);

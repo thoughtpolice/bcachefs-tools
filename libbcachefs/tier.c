@@ -118,7 +118,8 @@ static s64 read_tiering(struct bch_fs *c, struct bch_tier *tier)
 
 	bch2_move_ctxt_init(&ctxt, &tier->pd.rate,
 			   nr_devices * SECTORS_IN_FLIGHT_PER_DEVICE);
-	bch2_btree_iter_init(&iter, c, BTREE_ID_EXTENTS, POS_MIN);
+	bch2_btree_iter_init(&iter, c, BTREE_ID_EXTENTS, POS_MIN,
+			     BTREE_ITER_PREFETCH);
 
 	while (!kthread_should_stop() &&
 	       !bch2_move_ctxt_wait(&ctxt) &&

@@ -317,7 +317,6 @@ void bch2_invalidate_bucket(struct bch_dev *ca, struct bucket *g)
 		new.data_type		= 0;
 		new.cached_sectors	= 0;
 		new.dirty_sectors	= 0;
-		new.copygc		= 0;
 		new.gen++;
 	}));
 

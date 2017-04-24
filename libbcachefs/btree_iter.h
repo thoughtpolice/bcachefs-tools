@@ -3,37 +3,38 @@
 
 #include "btree_types.h"
 
+
+#define BTREE_ITER_INTENT		(1 << 0)
+#define BTREE_ITER_WITH_HOLES		(1 << 1)
+#define BTREE_ITER_PREFETCH		(1 << 2)
+/*
+ * Used in bch2_btree_iter_traverse(), to indicate whether we're searching for
+ * @pos or the first key strictly greater than @pos
+ */
+#define BTREE_ITER_IS_EXTENTS		(1 << 3)
+/*
+ * indicates we need to call bch2_btree_iter_traverse() to revalidate iterator:
+ */
+#define BTREE_ITER_AT_END_OF_LEAF	(1 << 4)
+#define BTREE_ITER_ERROR		(1 << 5)
+
+/*
+ * @pos			- iterator's current position
+ * @level		- current btree depth
+ * @locks_want		- btree level below which we start taking intent locks
+ * @nodes_locked	- bitmask indicating which nodes in @nodes are locked
+ * @nodes_intent_locked	- bitmask indicating which locks are intent locks
+ */
 struct btree_iter {
-	/* Current btree depth */
-	u8			level;
-
-	/*
-	 * Used in bch2_btree_iter_traverse(), to indicate whether we're
-	 * searching for @pos or the first key strictly greater than @pos
-	 */
-	u8			is_extents;
-
-	/* Bitmasks for read/intent locks held per level */
-	u8			nodes_locked;
-	u8			nodes_intent_locked;
-
-	/* Btree level below which we start taking intent locks */
-	u8			locks_want;
-
-	enum btree_id		btree_id:8;
-
-	/*
-	 * indicates we need to call bch2_btree_iter_traverse() to revalidate
-	 * iterator:
-	 */
-	u8			at_end_of_leaf;
-
-	s8			error;
-
-	struct bch_fs	*c;
-
-	/* Current position of the iterator */
+	struct bch_fs		*c;
 	struct bpos		pos;
+
+	u8			flags;
+	enum btree_id		btree_id:8;
+	unsigned		level:4,
+				locks_want:4,
+				nodes_locked:4,
+				nodes_intent_locked:4;
 
 	u32			lock_seq[BTREE_MAX_DEPTH];
 
@@ -166,22 +167,17 @@ void bch2_btree_iter_advance_pos(struct btree_iter *);
 void bch2_btree_iter_rewind(struct btree_iter *, struct bpos);
 
 void __bch2_btree_iter_init(struct btree_iter *, struct bch_fs *,
-			   enum btree_id, struct bpos, unsigned , unsigned);
+			   enum btree_id, struct bpos,
+			   unsigned , unsigned, unsigned);
 
 static inline void bch2_btree_iter_init(struct btree_iter *iter,
-				       struct bch_fs *c,
-				       enum btree_id btree_id,
-				       struct bpos pos)
+			struct bch_fs *c, enum btree_id btree_id,
+			struct bpos pos, unsigned flags)
 {
-	__bch2_btree_iter_init(iter, c, btree_id, pos, 0, 0);
-}
-
-static inline void bch2_btree_iter_init_intent(struct btree_iter *iter,
-					      struct bch_fs *c,
-					      enum btree_id btree_id,
-					      struct bpos pos)
-{
-	__bch2_btree_iter_init(iter, c, btree_id, pos, 1, 0);
+	__bch2_btree_iter_init(iter, c, btree_id, pos,
+			       flags & BTREE_ITER_INTENT ? 1 : 0, 0,
+			       btree_id == BTREE_ID_EXTENTS
+			       ?  BTREE_ITER_IS_EXTENTS : 0);
 }
 
 void bch2_btree_iter_link(struct btree_iter *, struct btree_iter *);
@@ -216,44 +212,24 @@ static inline int btree_iter_cmp(const struct btree_iter *l,
 	return __btree_iter_cmp(l->btree_id, l->pos, r);
 }
 
-#define __for_each_btree_node(_iter, _c, _btree_id, _start, _depth,	\
-			      _b, _locks_want)				\
-	for (__bch2_btree_iter_init((_iter), (_c), (_btree_id),		\
-				   _start, _locks_want, _depth),	\
-	     (_iter)->is_extents = false,				\
+#define __for_each_btree_node(_iter, _c, _btree_id, _start,		\
+			      _locks_want, _depth, _flags, _b)		\
+	for (__bch2_btree_iter_init((_iter), (_c), (_btree_id), _start,	\
+				    _locks_want, _depth, _flags),	\
 	     _b = bch2_btree_iter_peek_node(_iter);			\
 	     (_b);							\
 	     (_b) = bch2_btree_iter_next_node(_iter, _depth))
 
-#define for_each_btree_node(_iter, _c, _btree_id, _start, _depth, _b)	\
-	__for_each_btree_node(_iter, _c, _btree_id, _start, _depth, _b, 0)
+#define for_each_btree_node(_iter, _c, _btree_id, _start, _flags, _b)	\
+	__for_each_btree_node(_iter, _c, _btree_id, _start, 0, 0, _flags, _b)
 
-#define __for_each_btree_key(_iter, _c, _btree_id,  _start,		\
-			     _k, _locks_want)				\
-	for (__bch2_btree_iter_init((_iter), (_c), (_btree_id),		\
-				   _start, _locks_want, 0);		\
-	     !IS_ERR_OR_NULL(((_k) = bch2_btree_iter_peek(_iter)).k);	\
+#define for_each_btree_key(_iter, _c, _btree_id,  _start, _flags, _k)	\
+	for (bch2_btree_iter_init((_iter), (_c), (_btree_id),	\
+				  (_start), (_flags));		\
+	     !IS_ERR_OR_NULL(((_k) = (((_flags) & BTREE_ITER_WITH_HOLES)\
+				? bch2_btree_iter_peek_with_holes(_iter)\
+				: bch2_btree_iter_peek(_iter))).k);	\
 	     bch2_btree_iter_advance_pos(_iter))
-
-#define for_each_btree_key(_iter, _c, _btree_id,  _start, _k)		\
-	__for_each_btree_key(_iter, _c, _btree_id, _start, _k, 0)
-
-#define for_each_btree_key_intent(_iter, _c, _btree_id,  _start, _k)	\
-	__for_each_btree_key(_iter, _c, _btree_id, _start, _k, 1)
-
-#define __for_each_btree_key_with_holes(_iter, _c, _btree_id,		\
-					_start, _k, _locks_want)	\
-	for (__bch2_btree_iter_init((_iter), (_c), (_btree_id),		\
-				   _start, _locks_want, 0);		\
-	     !IS_ERR_OR_NULL(((_k) = bch2_btree_iter_peek_with_holes(_iter)).k);\
-	     bch2_btree_iter_advance_pos(_iter))
-
-#define for_each_btree_key_with_holes(_iter, _c, _btree_id, _start, _k)	\
-	__for_each_btree_key_with_holes(_iter, _c, _btree_id, _start, _k, 0)
-
-#define for_each_btree_key_with_holes_intent(_iter, _c, _btree_id,	\
-					     _start, _k)		\
-	__for_each_btree_key_with_holes(_iter, _c, _btree_id, _start, _k, 1)
 
 static inline int btree_iter_err(struct bkey_s_c k)
 {

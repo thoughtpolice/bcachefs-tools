@@ -276,7 +276,8 @@ int bch2_inode_create(struct bch_fs *c, struct bkey_i *inode,
 	if (*hint == min)
 		searched_from_start = true;
 again:
-	bch2_btree_iter_init_intent(&iter, c, BTREE_ID_INODES, POS(*hint, 0));
+	bch2_btree_iter_init(&iter, c, BTREE_ID_INODES, POS(*hint, 0),
+			     BTREE_ITER_INTENT);
 
 	while (1) {
 		struct bkey_s_c k = bch2_btree_iter_peek_with_holes(&iter);
@@ -376,8 +377,9 @@ int bch2_inode_find_by_inum(struct bch_fs *c, u64 inode_nr,
 	struct bkey_s_c k;
 	int ret = -ENOENT;
 
-	for_each_btree_key_with_holes(&iter, c, BTREE_ID_INODES,
-				      POS(inode_nr, 0), k) {
+	for_each_btree_key(&iter, c, BTREE_ID_INODES,
+			   POS(inode_nr, 0),
+			   BTREE_ITER_WITH_HOLES, k) {
 		switch (k.k->type) {
 		case BCH_INODE_FS:
 			ret = bch2_inode_unpack(bkey_s_c_to_inode(k), inode);
@@ -400,7 +402,7 @@ int bch2_cached_dev_inode_find_by_uuid(struct bch_fs *c, uuid_le *uuid,
 	struct btree_iter iter;
 	struct bkey_s_c k;
 
-	for_each_btree_key(&iter, c, BTREE_ID_INODES, POS(0, 0), k) {
+	for_each_btree_key(&iter, c, BTREE_ID_INODES, POS(0, 0), 0, k) {
 		if (k.k->p.inode >= BLOCKDEV_INODE_MAX)
 			break;
 

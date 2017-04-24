@@ -163,9 +163,13 @@ static int __btree_node_reclaim(struct bch_fs *c, struct btree *b, bool flush)
 		goto out_unlock;
 
 	if (btree_node_dirty(b) ||
-	    btree_node_write_in_flight(b)) {
+	    btree_node_write_in_flight(b) ||
+	    btree_node_read_in_flight(b)) {
 		if (!flush)
 			goto out_unlock;
+
+		wait_on_bit_io(&b->flags, BTREE_NODE_read_in_flight,
+			       TASK_UNINTERRUPTIBLE);
 
 		/*
 		 * Using the underscore version because we don't want to compact
@@ -582,7 +586,7 @@ static noinline struct btree *bch2_btree_node_fill(struct btree_iter *iter,
 	if (btree_node_read_locked(iter, level + 1))
 		btree_node_unlock(iter, level + 1);
 
-	bch2_btree_node_read(c, b);
+	bch2_btree_node_read(c, b, true);
 	six_unlock_write(&b->lock);
 
 	if (lock_type == SIX_LOCK_read)
@@ -673,6 +677,9 @@ retry:
 		}
 	}
 
+	wait_on_bit_io(&b->flags, BTREE_NODE_read_in_flight,
+		       TASK_UNINTERRUPTIBLE);
+
 	prefetch(b->aux_data);
 
 	for_each_bset(b, t) {
@@ -698,6 +705,44 @@ retry:
 		bkey_cmp(b->data->max_key, k->k.p));
 
 	return b;
+}
+
+void bch2_btree_node_prefetch(struct btree_iter *iter,
+			      const struct bkey_i *k, unsigned level)
+{
+	struct bch_fs *c = iter->c;
+	struct btree *b;
+
+	BUG_ON(level >= BTREE_MAX_DEPTH);
+
+	rcu_read_lock();
+	b = mca_find(c, k);
+	rcu_read_unlock();
+
+	if (b)
+		return;
+
+	b = bch2_btree_node_mem_alloc(c);
+	if (IS_ERR(b))
+		return;
+
+	bkey_copy(&b->key, k);
+	if (bch2_btree_node_hash_insert(c, b, level, iter->btree_id)) {
+		/* raced with another fill: */
+
+		/* mark as unhashed... */
+		bkey_i_to_extent(&b->key)->v._data[0] = 0;
+
+		mutex_lock(&c->btree_cache_lock);
+		list_add(&b->list, &c->btree_cache_freeable);
+		mutex_unlock(&c->btree_cache_lock);
+		goto out;
+	}
+
+	bch2_btree_node_read(c, b, false);
+out:
+	six_unlock_write(&b->lock);
+	six_unlock_intent(&b->lock);
 }
 
 int bch2_print_btree_node(struct bch_fs *c, struct btree *b,

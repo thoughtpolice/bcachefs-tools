@@ -9,6 +9,7 @@
 #include "buckets.h"
 #include "clock.h"
 #include "extents.h"
+#include "eytzinger.h"
 #include "io.h"
 #include "keylist.h"
 #include "move.h"
@@ -18,20 +19,43 @@
 #include <linux/freezer.h>
 #include <linux/kthread.h>
 #include <linux/math64.h>
+#include <linux/sort.h>
 #include <linux/wait.h>
 
 /* Moving GC - IO loop */
 
+static int bucket_idx_cmp(const void *_l, const void *_r, size_t size)
+{
+	const struct bucket_heap_entry *l = _l;
+	const struct bucket_heap_entry *r = _r;
+
+	if (l->bucket < r->bucket)
+		return -1;
+	if (l->bucket > r->bucket)
+		return 1;
+	return 0;
+}
+
 static const struct bch_extent_ptr *moving_pred(struct bch_dev *ca,
 						struct bkey_s_c k)
 {
+	bucket_heap *h = &ca->copygc_heap;
 	const struct bch_extent_ptr *ptr;
 
 	if (bkey_extent_is_data(k.k) &&
 	    (ptr = bch2_extent_has_device(bkey_s_c_to_extent(k),
-					 ca->dev_idx)) &&
-	    PTR_BUCKET(ca, ptr)->mark.copygc)
-		return ptr;
+					  ca->dev_idx))) {
+		struct bucket_heap_entry search = {
+			.bucket = PTR_BUCKET_NR(ca, ptr)
+		};
+
+		size_t i = eytzinger0_find(h->data, h->used,
+					   sizeof(h->data[0]),
+					   bucket_idx_cmp, &search);
+
+		if (i < h->used)
+			return ptr;
+	}
 
 	return NULL;
 }
@@ -60,17 +84,19 @@ static void read_moving(struct bch_dev *ca, size_t buckets_to_move,
 			u64 sectors_to_move)
 {
 	struct bch_fs *c = ca->fs;
-	struct bucket *g;
+	bucket_heap *h = &ca->copygc_heap;
 	struct moving_context ctxt;
 	struct btree_iter iter;
 	struct bkey_s_c k;
 	u64 sectors_not_moved = 0;
 	size_t buckets_not_moved = 0;
+	struct bucket_heap_entry *i;
 
 	bch2_ratelimit_reset(&ca->moving_gc_pd.rate);
 	bch2_move_ctxt_init(&ctxt, &ca->moving_gc_pd.rate,
 				SECTORS_IN_FLIGHT_PER_DEVICE);
-	bch2_btree_iter_init(&iter, c, BTREE_ID_EXTENTS, POS_MIN);
+	bch2_btree_iter_init(&iter, c, BTREE_ID_EXTENTS, POS_MIN,
+			     BTREE_ITER_PREFETCH);
 
 	while (1) {
 		if (kthread_should_stop())
@@ -108,11 +134,14 @@ next:
 				   buckets_to_move);
 
 	/* don't check this if we bailed out early: */
-	for_each_bucket(g, ca)
-		if (g->mark.copygc && bucket_sectors_used(g)) {
-			sectors_not_moved += bucket_sectors_used(g);
+	for (i = h->data; i < h->data + h->used; i++) {
+		struct bucket_mark m = READ_ONCE(ca->buckets[i->bucket].mark);
+
+		if (i->mark.gen == m.gen && bucket_sectors_used(m)) {
+			sectors_not_moved += bucket_sectors_used(m);
 			buckets_not_moved++;
 		}
+	}
 
 	if (sectors_not_moved)
 		bch_warn(c, "copygc finished but %llu/%llu sectors, %zu/%zu buckets not moved",
@@ -138,15 +167,20 @@ static bool have_copygc_reserve(struct bch_dev *ca)
 	return ret;
 }
 
+static inline int sectors_used_cmp(bucket_heap *heap,
+				   struct bucket_heap_entry l,
+				   struct bucket_heap_entry r)
+{
+	return bucket_sectors_used(l.mark) - bucket_sectors_used(r.mark);
+}
+
 static void bch2_moving_gc(struct bch_dev *ca)
 {
 	struct bch_fs *c = ca->fs;
 	struct bucket *g;
-	struct bucket_mark new;
-	u64 sectors_to_move;
+	u64 sectors_to_move = 0;
 	size_t buckets_to_move, buckets_unused = 0;
-	struct bucket_heap_entry e;
-	unsigned sectors_used, i;
+	struct bucket_heap_entry e, *i;
 	int reserve_sectors;
 
 	if (!have_copygc_reserve(ca)) {
@@ -174,52 +208,47 @@ static void bch2_moving_gc(struct bch_dev *ca)
 	 */
 
 	/*
-	 * We need bucket marks to be up to date, so gc can't be recalculating
-	 * them, and we don't want the allocator invalidating a bucket after
-	 * we've decided to evacuate it but before we set copygc:
+	 * We need bucket marks to be up to date - gc can't be recalculating
+	 * them:
 	 */
 	down_read(&c->gc_lock);
-	mutex_lock(&ca->heap_lock);
-	mutex_lock(&ca->fs->bucket_lock);
-
-	ca->heap.used = 0;
+	ca->copygc_heap.used = 0;
 	for_each_bucket(g, ca) {
-		bucket_cmpxchg(g, new, new.copygc = 0);
+		struct bucket_mark m = READ_ONCE(g->mark);
+		struct bucket_heap_entry e = { g - ca->buckets, m };
 
-		if (bucket_unused(g)) {
+		if (bucket_unused(m)) {
 			buckets_unused++;
 			continue;
 		}
 
-		if (g->mark.owned_by_allocator ||
-		    g->mark.data_type != BUCKET_DATA)
+		if (m.owned_by_allocator ||
+		    m.data_type != BUCKET_DATA)
 			continue;
 
-		sectors_used = bucket_sectors_used(g);
-
-		if (sectors_used >= ca->mi.bucket_size)
+		if (bucket_sectors_used(m) >= ca->mi.bucket_size)
 			continue;
 
-		bucket_heap_push(ca, g, sectors_used);
+		heap_add_or_replace(&ca->copygc_heap, e, -sectors_used_cmp);
 	}
+	up_read(&c->gc_lock);
 
-	sectors_to_move = 0;
-	for (i = 0; i < ca->heap.used; i++)
-		sectors_to_move += ca->heap.data[i].val;
+	for (i = ca->copygc_heap.data;
+	     i < ca->copygc_heap.data + ca->copygc_heap.used;
+	     i++)
+		sectors_to_move += bucket_sectors_used(i->mark);
 
 	while (sectors_to_move > COPYGC_SECTORS_PER_ITER(ca)) {
-		BUG_ON(!heap_pop(&ca->heap, e, bucket_min_cmp));
-		sectors_to_move -= e.val;
+		BUG_ON(!heap_pop(&ca->copygc_heap, e, -sectors_used_cmp));
+		sectors_to_move -= bucket_sectors_used(e.mark);
 	}
 
-	for (i = 0; i < ca->heap.used; i++)
-		bucket_cmpxchg(ca->heap.data[i].g, new, new.copygc = 1);
+	buckets_to_move = ca->copygc_heap.used;
 
-	buckets_to_move = ca->heap.used;
-
-	mutex_unlock(&ca->fs->bucket_lock);
-	mutex_unlock(&ca->heap_lock);
-	up_read(&c->gc_lock);
+	eytzinger0_sort(ca->copygc_heap.data,
+			ca->copygc_heap.used,
+			sizeof(ca->copygc_heap.data[0]),
+			bucket_idx_cmp, NULL);
 
 	read_moving(ca, buckets_to_move, sectors_to_move);
 }

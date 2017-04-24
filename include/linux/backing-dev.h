@@ -9,6 +9,7 @@ enum wb_congested_state {
 };
 
 struct backing_dev_info {
+	struct list_head bdi_list;
 	unsigned	ra_pages;
 	unsigned	capabilities;
 

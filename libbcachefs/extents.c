@@ -41,13 +41,13 @@ static void sort_key_next(struct btree_node_iter *iter,
  * Necessary for btree_sort_fixup() - if there are multiple keys that compare
  * equal in different sets, we have to process them newest to oldest.
  */
-#define key_sort_cmp(l, r)						\
+#define key_sort_cmp(h, l, r)						\
 ({									\
-	int _c = bkey_cmp_packed(b,					\
-				 __btree_node_offset_to_key(b, (l).k),	\
-				 __btree_node_offset_to_key(b, (r).k));	\
+	bkey_cmp_packed(b,						\
+			__btree_node_offset_to_key(b, (l).k),		\
+			__btree_node_offset_to_key(b, (r).k))		\
 									\
-	_c ? _c > 0 : (l).k > (r).k;					\
+	?: (l).k - (r).k;						\
 })
 
 static inline bool should_drop_next_key(struct btree_node_iter *iter,
@@ -63,7 +63,7 @@ static inline bool should_drop_next_key(struct btree_node_iter *iter,
 		return false;
 
 	if (iter->used > 2 &&
-	    key_sort_cmp(r[0], r[1]))
+	    key_sort_cmp(iter, r[0], r[1]) >= 0)
 		r++;
 
 	/*
@@ -98,7 +98,7 @@ struct btree_nr_keys bch2_key_sort_fix_overlapping(struct bset *dst,
 		}
 
 		sort_key_next(iter, b, iter->data);
-		heap_sift(iter, 0, key_sort_cmp);
+		heap_sift_down(iter, 0, key_sort_cmp);
 	}
 
 	dst->u64s = cpu_to_le16((u64 *) out - dst->_data);
@@ -754,27 +754,26 @@ static void extent_save(struct btree *b, struct btree_node_iter *iter,
 }
 
 /*
- * Returns true if l > r - unless l == r, in which case returns true if l is
- * older than r.
+ * If keys compare equal, compare by pointer order:
  *
  * Necessary for sort_fix_overlapping() - if there are multiple keys that
  * compare equal in different sets, we have to process them newest to oldest.
  */
-#define extent_sort_cmp(l, r)						\
+#define extent_sort_cmp(h, l, r)					\
 ({									\
 	struct bkey _ul = bkey_unpack_key(b,				\
 				__btree_node_offset_to_key(b, (l).k));	\
 	struct bkey _ur = bkey_unpack_key(b,				\
 				__btree_node_offset_to_key(b, (r).k));	\
 									\
-	int _c = bkey_cmp(bkey_start_pos(&_ul), bkey_start_pos(&_ur));	\
-	_c ? _c > 0 : (l).k < (r).k;					\
+	bkey_cmp(bkey_start_pos(&_ul),					\
+		 bkey_start_pos(&_ur)) ?: (r).k - (l).k;		\
 })
 
 static inline void extent_sort_sift(struct btree_node_iter *iter,
 				    struct btree *b, size_t i)
 {
-	heap_sift(iter, i, extent_sort_cmp);
+	heap_sift_down(iter, i, extent_sort_cmp);
 }
 
 static inline void extent_sort_next(struct btree_node_iter *iter,
@@ -782,7 +781,7 @@ static inline void extent_sort_next(struct btree_node_iter *iter,
 				    struct btree_node_iter_set *i)
 {
 	sort_key_next(iter, b, i);
-	heap_sift(iter, i - iter->data, extent_sort_cmp);
+	heap_sift_down(iter, i - iter->data, extent_sort_cmp);
 }
 
 static void extent_sort_append(struct bch_fs *c,
@@ -843,7 +842,7 @@ struct btree_nr_keys bch2_extent_sort_fix_overlapping(struct bch_fs *c,
 
 		_r = iter->data + 1;
 		if (iter->used > 2 &&
-		    extent_sort_cmp(_r[0], _r[1]))
+		    extent_sort_cmp(iter, _r[0], _r[1]) >= 0)
 			_r++;
 
 		rk = __btree_node_offset_to_key(b, _r->k);
@@ -1433,11 +1432,12 @@ stop:
 			   gc_pos_btree_node(b));
 
 	EBUG_ON(bkey_cmp(iter->pos, s->committed));
-	EBUG_ON((bkey_cmp(iter->pos, b->key.k.p) == 0) != iter->at_end_of_leaf);
+	EBUG_ON((bkey_cmp(iter->pos, b->key.k.p) == 0) !=
+		!!(iter->flags & BTREE_ITER_AT_END_OF_LEAF));
 
 	bch2_cut_front(iter->pos, insert);
 
-	if (insert->k.size && iter->at_end_of_leaf)
+	if (insert->k.size && (iter->flags & BTREE_ITER_AT_END_OF_LEAF))
 		ret = BTREE_INSERT_NEED_TRAVERSE;
 
 	EBUG_ON(insert->k.size && ret == BTREE_INSERT_OK);
@@ -1596,9 +1596,10 @@ stop:
 
 	EBUG_ON(bkey_cmp(iter->pos, bkey_start_pos(&insert->k->k)));
 	EBUG_ON(bkey_cmp(iter->pos, s.committed));
-	EBUG_ON((bkey_cmp(iter->pos, b->key.k.p) == 0) != iter->at_end_of_leaf);
+	EBUG_ON((bkey_cmp(iter->pos, b->key.k.p) == 0) !=
+		!!(iter->flags & BTREE_ITER_AT_END_OF_LEAF));
 
-	if (insert->k->k.size && iter->at_end_of_leaf)
+	if (insert->k->k.size && (iter->flags & BTREE_ITER_AT_END_OF_LEAF))
 		ret = BTREE_INSERT_NEED_TRAVERSE;
 
 	EBUG_ON(insert->k->k.size && ret == BTREE_INSERT_OK);

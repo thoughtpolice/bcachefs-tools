@@ -2047,7 +2047,7 @@ unlock:
 	 * traversed again
 	 */
 	trans_for_each_entry(trans, i)
-		if (i->iter->at_end_of_leaf)
+		if (i->iter->flags & BTREE_ITER_AT_END_OF_LEAF)
 			goto out;
 
 	trans_for_each_entry(trans, i)
@@ -2161,7 +2161,8 @@ int bch2_btree_insert(struct bch_fs *c, enum btree_id id,
 	struct btree_iter iter;
 	int ret, ret2;
 
-	bch2_btree_iter_init_intent(&iter, c, id, bkey_start_pos(&k->k));
+	bch2_btree_iter_init(&iter, c, id, bkey_start_pos(&k->k),
+			     BTREE_ITER_INTENT);
 
 	ret = bch2_btree_iter_traverse(&iter);
 	if (unlikely(ret))
@@ -2187,7 +2188,8 @@ int bch2_btree_update(struct bch_fs *c, enum btree_id id,
 
 	EBUG_ON(id == BTREE_ID_EXTENTS);
 
-	bch2_btree_iter_init_intent(&iter, c, id, k->k.p);
+	bch2_btree_iter_init(&iter, c, id, k->k.p,
+			     BTREE_ITER_INTENT);
 
 	u = bch2_btree_iter_peek_with_holes(&iter);
 	ret = btree_iter_err(u);
@@ -2222,7 +2224,8 @@ int bch2_btree_delete_range(struct bch_fs *c, enum btree_id id,
 	struct bkey_s_c k;
 	int ret = 0;
 
-	bch2_btree_iter_init_intent(&iter, c, id, start);
+	bch2_btree_iter_init(&iter, c, id, start,
+			     BTREE_ITER_INTENT);
 
 	while ((k = bch2_btree_iter_peek(&iter)).k &&
 	       !(ret = btree_iter_err(k))) {
@@ -2248,7 +2251,7 @@ int bch2_btree_delete_range(struct bch_fs *c, enum btree_id id,
 		delete.k.p = iter.pos;
 		delete.k.version = version;
 
-		if (iter.is_extents) {
+		if (iter.flags & BTREE_ITER_IS_EXTENTS) {
 			/*
 			 * The extents btree is special - KEY_TYPE_DISCARD is
 			 * used for deletions, not KEY_TYPE_DELETED. This is an

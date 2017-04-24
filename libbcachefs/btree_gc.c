@@ -225,7 +225,8 @@ static int bch2_gc_btree(struct bch_fs *c, enum btree_id btree_id)
 
 	btree_node_range_checks_init(&r, depth);
 
-	for_each_btree_node(&iter, c, btree_id, POS_MIN, depth, b) {
+	__for_each_btree_node(&iter, c, btree_id, POS_MIN,
+			      0, depth, BTREE_ITER_PREFETCH, b) {
 		btree_node_range_checks(c, b, &r);
 
 		bch2_verify_btree_nr_keys(b);
@@ -779,7 +780,8 @@ static int bch2_coalesce_btree(struct bch_fs *c, enum btree_id btree_id)
 	 */
 	memset(merge, 0, sizeof(merge));
 
-	__for_each_btree_node(&iter, c, btree_id, POS_MIN, 0, b, U8_MAX) {
+	__for_each_btree_node(&iter, c, btree_id, POS_MIN,
+			      U8_MAX, 0, BTREE_ITER_PREFETCH, b) {
 		memmove(merge + 1, merge,
 			sizeof(merge) - sizeof(merge[0]));
 		memmove(lock_seq + 1, lock_seq,
@@ -952,7 +954,7 @@ static int bch2_initial_gc_btree(struct bch_fs *c, enum btree_id id)
 	 * We have to hit every btree node before starting journal replay, in
 	 * order for the journal seq blacklist machinery to work:
 	 */
-	for_each_btree_node(&iter, c, id, POS_MIN, 0, b) {
+	for_each_btree_node(&iter, c, id, POS_MIN, BTREE_ITER_PREFETCH, b) {
 		btree_node_range_checks(c, b, &r);
 
 		if (btree_node_has_ptrs(b)) {

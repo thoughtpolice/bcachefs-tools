@@ -1,5 +1,5 @@
-#ifndef _BCACHE_H
-#define _BCACHE_H
+#ifndef _BCACHEFS_H
+#define _BCACHEFS_H
 
 /*
  * SOME HIGH LEVEL CODE DOCUMENTATION:
@@ -418,8 +418,8 @@ struct bch_dev {
 	atomic_long_t		saturated_count;
 	size_t			inc_gen_needs_gc;
 
-	struct mutex		heap_lock;
-	DECLARE_HEAP(struct bucket_heap_entry, heap);
+	bucket_heap		alloc_heap;
+	bucket_heap		copygc_heap;
 
 	/* Moving GC: */
 	struct task_struct	*moving_gc_read;
@@ -803,4 +803,4 @@ static inline unsigned block_bytes(const struct bch_fs *c)
 	return c->sb.block_size << 9;
 }
 
-#endif /* _BCACHE_H */
+#endif /* _BCACHEFS_H */

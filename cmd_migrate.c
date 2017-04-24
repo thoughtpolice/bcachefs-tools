@@ -259,9 +259,7 @@ static void write_data(struct bch_fs *c,
 
 	closure_init_stack(&cl);
 
-	bio_init(&bio.bio);
-	bio.bio.bi_max_vecs	= 1;
-	bio.bio.bi_io_vec	= &bv;
+	bio_init(&bio.bio, &bv, 1);
 	bio.bio.bi_iter.bi_size	= len;
 	bch2_bio_map(&bio.bio, buf);
 

@@ -163,8 +163,7 @@ static void journal_seq_blacklist_flush(struct journal *j,
 		n = bl->entries[i];
 		mutex_unlock(&j->blacklist_lock);
 
-		bch2_btree_iter_init(&iter, c, n.btree_id, n.pos);
-		iter.is_extents = false;
+		__bch2_btree_iter_init(&iter, c, n.btree_id, n.pos, 0, 0, 0);
 redo_peek:
 		b = bch2_btree_iter_peek_node(&iter);
 
@@ -1921,6 +1920,9 @@ void bch2_journal_flush_pins(struct journal *j, u64 seq_to_flush)
 	struct journal_entry_pin *pin;
 	u64 pin_seq;
 
+	if (!test_bit(JOURNAL_STARTED, &j->flags))
+		return;
+
 	while ((pin = journal_get_next_pin(j, seq_to_flush, &pin_seq)))
 		pin->flush(j, pin, pin_seq);
 
@@ -2374,9 +2376,9 @@ static void journal_write(struct closure *cl)
 			bio = ca->journal.bio;
 			bio_reset(bio);
 			bio->bi_bdev		= ca->disk_sb.bdev;
+			bio->bi_opf		= REQ_OP_FLUSH;
 			bio->bi_end_io		= journal_write_endio;
 			bio->bi_private		= ca;
-			bio_set_op_attrs(bio, REQ_OP_WRITE, WRITE_FLUSH);
 			closure_bio_submit(bio, cl);
 		}
 

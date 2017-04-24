@@ -81,7 +81,8 @@ int __must_check __bch2_write_inode(struct bch_fs *c,
 
 	lockdep_assert_held(&ei->update_lock);
 
-	bch2_btree_iter_init_intent(&iter, c, BTREE_ID_INODES, POS(inum, 0));
+	bch2_btree_iter_init(&iter, c, BTREE_ID_INODES, POS(inum, 0),
+			     BTREE_ITER_INTENT);
 
 	do {
 		struct bkey_s_c k = bch2_btree_iter_peek_with_holes(&iter);
@@ -714,7 +715,7 @@ static int bch2_fiemap(struct inode *inode, struct fiemap_extent_info *info,
 		return -EINVAL;
 
 	for_each_btree_key(&iter, c, BTREE_ID_EXTENTS,
-			   POS(inode->i_ino, start >> 9), k)
+			   POS(inode->i_ino, start >> 9), 0, k)
 		if (bkey_extent_is_data(k.k) ||
 		    k.k->type == BCH_RESERVATION) {
 			if (bkey_cmp(bkey_start_pos(k.k),
@@ -990,7 +991,6 @@ static const struct file_operations bch_dir_file_operations = {
 };
 
 static const struct inode_operations bch_symlink_inode_operations = {
-	.readlink	= generic_readlink,
 	.get_link	= page_get_link,
 	.setattr	= bch2_setattr,
 	.listxattr	= bch2_xattr_list,
