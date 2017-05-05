@@ -559,10 +559,10 @@ static void btree_ptr_debugcheck(struct bch_fs *c, struct btree *b,
 	return;
 err:
 	bch2_bkey_val_to_text(c, btree_node_type(b), buf, sizeof(buf), k);
-	bch2_fs_bug(c, "%s btree pointer %s: bucket %zi prio %i "
+	bch2_fs_bug(c, "%s btree pointer %s: bucket %zi "
 		      "gen %i last_gc %i mark %08x",
 		      err, buf, PTR_BUCKET_NR(ca, ptr),
-		      g->read_prio, PTR_BUCKET(ca, ptr)->mark.gen,
+		      PTR_BUCKET(ca, ptr)->mark.gen,
 		      ca->oldest_gens[PTR_BUCKET_NR(ca, ptr)],
 		      (unsigned) g->mark.counter);
 }
@@ -1769,10 +1769,9 @@ static void bch2_extent_debugcheck_extent(struct bch_fs *c, struct btree *b,
 bad_ptr:
 	bch2_bkey_val_to_text(c, btree_node_type(b), buf,
 			     sizeof(buf), e.s_c);
-	bch2_fs_bug(c, "extent pointer bad gc mark: %s:\nbucket %zu prio %i "
+	bch2_fs_bug(c, "extent pointer bad gc mark: %s:\nbucket %zu "
 		   "gen %i last_gc %i mark 0x%08x",
-		   buf, PTR_BUCKET_NR(ca, ptr),
-		   g->read_prio, PTR_BUCKET(ca, ptr)->mark.gen,
+		   buf, PTR_BUCKET_NR(ca, ptr), PTR_BUCKET(ca, ptr)->mark.gen,
 		   ca->oldest_gens[PTR_BUCKET_NR(ca, ptr)],
 		   (unsigned) g->mark.counter);
 	return;

@@ -71,6 +71,8 @@
 #include <linux/math64.h>
 #include <linux/random.h>
 #include <linux/rcupdate.h>
+#include <linux/sched/task.h>
+#include <linux/sort.h>
 #include <trace/events/bcachefs.h>
 
 static void __bch2_bucket_free(struct bch_dev *, struct bucket *);
@@ -283,8 +285,8 @@ int bch2_prio_write(struct bch_dev *ca)
 		     r < ca->mi.nbuckets && d < end;
 		     r++, d++) {
 			g = ca->buckets + r;
-			d->read_prio = cpu_to_le16(g->read_prio);
-			d->write_prio = cpu_to_le16(g->write_prio);
+			d->prio[READ] = cpu_to_le16(g->prio[READ]);
+			d->prio[WRITE] = cpu_to_le16(g->prio[WRITE]);
 			d->gen = ca->buckets[r].mark.gen;
 		}
 
@@ -445,8 +447,8 @@ int bch2_prio_read(struct bch_dev *ca)
 			d = p->data;
 		}
 
-		ca->buckets[b].read_prio = le16_to_cpu(d->read_prio);
-		ca->buckets[b].write_prio = le16_to_cpu(d->write_prio);
+		ca->buckets[b].prio[READ] = le16_to_cpu(d->prio[READ]);
+		ca->buckets[b].prio[WRITE] = le16_to_cpu(d->prio[WRITE]);
 
 		bucket_cmpxchg(&ca->buckets[b], new, new.gen = d->gen);
 	}
@@ -469,9 +471,9 @@ fsck_err:
  * If there aren't enough available buckets to fill up free_inc, wait until
  * there are.
  */
-static int wait_buckets_available(struct bch_dev *ca)
+static int wait_buckets_available(struct bch_fs *c, struct bch_dev *ca)
 {
-	struct bch_fs *c = ca->fs;
+	unsigned long gc_count = c->gc_count;
 	int ret = 0;
 
 	while (1) {
@@ -481,27 +483,18 @@ static int wait_buckets_available(struct bch_dev *ca)
 			break;
 		}
 
-		if (ca->inc_gen_needs_gc >= fifo_free(&ca->free_inc)) {
-			if (c->gc_thread) {
-				trace_gc_cannot_inc_gens(ca->fs);
-				atomic_inc(&c->kick_gc);
-				wake_up_process(ca->fs->gc_thread);
-			}
+		if (gc_count != c->gc_count)
+			ca->inc_gen_really_needs_gc = 0;
 
-			/*
-			 * We are going to wait for GC to wake us up, even if
-			 * bucket counters tell us enough buckets are available,
-			 * because we are actually waiting for GC to rewrite
-			 * nodes with stale pointers
-			 */
-		} else if (dev_buckets_available(ca) >=
-			   fifo_free(&ca->free_inc))
+		if ((ssize_t) (dev_buckets_available(ca) -
+			       ca->inc_gen_really_needs_gc) >=
+		    (ssize_t) fifo_free(&ca->free_inc))
 			break;
 
-		up_read(&ca->fs->gc_lock);
+		up_read(&c->gc_lock);
 		schedule();
 		try_to_freeze();
-		down_read(&ca->fs->gc_lock);
+		down_read(&c->gc_lock);
 	}
 
 	__set_current_state(TASK_RUNNING);
@@ -639,8 +632,11 @@ static bool bch2_can_invalidate_bucket(struct bch_dev *ca, struct bucket *g,
 	if (!is_available_bucket(mark))
 		return false;
 
-	if (bucket_gc_gen(ca, g) >= BUCKET_GC_GEN_MAX - 1)
+	if (bucket_gc_gen(ca, g) >= BUCKET_GC_GEN_MAX / 2)
 		ca->inc_gen_needs_gc++;
+
+	if (bucket_gc_gen(ca, g) >= BUCKET_GC_GEN_MAX)
+		ca->inc_gen_really_needs_gc++;
 
 	return can_inc_bucket_gen(ca, g);
 }
@@ -651,8 +647,8 @@ static void bch2_invalidate_one_bucket(struct bch_dev *ca, struct bucket *g)
 
 	bch2_invalidate_bucket(ca, g);
 
-	g->read_prio = ca->fs->prio_clock[READ].hand;
-	g->write_prio = ca->fs->prio_clock[WRITE].hand;
+	g->prio[READ] = ca->fs->prio_clock[READ].hand;
+	g->prio[WRITE] = ca->fs->prio_clock[WRITE].hand;
 
 	verify_not_on_freelist(ca, g - ca->buckets);
 	BUG_ON(!fifo_push(&ca->free_inc, g - ca->buckets));
@@ -672,40 +668,34 @@ static void bch2_invalidate_one_bucket(struct bch_dev *ca, struct bucket *g)
  * - The number of sectors of cached data in the bucket, which gives us an
  *   indication of the cost in cache misses this eviction will cause.
  *
- * - The difference between the bucket's current gen and oldest gen of any
- *   pointer into it, which gives us an indication of the cost of an eventual
- *   btree GC to rewrite nodes with stale pointers.
+ * - If hotness * sectors used compares equal, we pick the bucket with the
+ *   smallest bucket_gc_gen() - since incrementing the same bucket's generation
+ *   number repeatedly forces us to run mark and sweep gc to avoid generation
+ *   number wraparound.
  */
 
-static unsigned long bucket_sort_key(bucket_heap *h,
-				     struct bucket_heap_entry e)
+static unsigned long bucket_sort_key(struct bch_dev *ca,
+				     struct bucket *g,
+				     struct bucket_mark m)
 {
-	struct bch_dev *ca = container_of(h, struct bch_dev, alloc_heap);
-	struct bucket *g = ca->buckets + e.bucket;
-	unsigned long prio = g->read_prio - ca->min_prio[READ];
-	prio = (prio * 7) / (ca->fs->prio_clock[READ].hand -
-			     ca->min_prio[READ]);
+	unsigned long hotness =
+		(g->prio[READ]			- ca->min_prio[READ]) * 7 /
+		(ca->fs->prio_clock[READ].hand	- ca->min_prio[READ]);
 
-	return (prio + 1) * bucket_sectors_used(e.mark);
+	return (((hotness + 1) * bucket_sectors_used(m)) << 8) |
+		bucket_gc_gen(ca, g);
 }
 
-static inline int bucket_alloc_cmp(bucket_heap *h,
-				   struct bucket_heap_entry l,
-				   struct bucket_heap_entry r)
+static inline int bucket_alloc_cmp(alloc_heap *h,
+				   struct alloc_heap_entry l,
+				   struct alloc_heap_entry r)
 {
-	return bucket_sort_key(h, l) - bucket_sort_key(h, r);
-}
-
-static inline long bucket_idx_cmp(bucket_heap *h,
-				  struct bucket_heap_entry l,
-				  struct bucket_heap_entry r)
-{
-	return l.bucket - r.bucket;
+	return (l.key > r.key) - (l.key < r.key);
 }
 
 static void invalidate_buckets_lru(struct bch_dev *ca)
 {
-	struct bucket_heap_entry e;
+	struct alloc_heap_entry e;
 	struct bucket *g;
 
 	ca->alloc_heap.used = 0;
@@ -721,23 +711,26 @@ static void invalidate_buckets_lru(struct bch_dev *ca)
 	 */
 	for_each_bucket(g, ca) {
 		struct bucket_mark m = READ_ONCE(g->mark);
-		struct bucket_heap_entry e = { g - ca->buckets, m };
 
 		if (!bch2_can_invalidate_bucket(ca, g, m))
 			continue;
 
+		e = (struct alloc_heap_entry) {
+			.bucket = g - ca->buckets,
+			.key	= bucket_sort_key(ca, g, m)
+		};
+
 		heap_add_or_replace(&ca->alloc_heap, e, -bucket_alloc_cmp);
 	}
 
-	/* Sort buckets by physical location on disk for better locality */
-	heap_resort(&ca->alloc_heap, bucket_idx_cmp);
+	heap_resort(&ca->alloc_heap, bucket_alloc_cmp);
 
 	/*
 	 * If we run out of buckets to invalidate, bch2_allocator_thread() will
 	 * kick stuff and retry us
 	 */
 	while (!fifo_full(&ca->free_inc) &&
-	       heap_pop(&ca->alloc_heap, e, bucket_idx_cmp))
+	       heap_pop(&ca->alloc_heap, e, bucket_alloc_cmp))
 		bch2_invalidate_one_bucket(ca, &ca->buckets[e.bucket]);
 
 	mutex_unlock(&ca->fs->bucket_lock);
@@ -790,6 +783,7 @@ static void invalidate_buckets_random(struct bch_dev *ca)
 static void invalidate_buckets(struct bch_dev *ca)
 {
 	ca->inc_gen_needs_gc = 0;
+	ca->inc_gen_really_needs_gc = 0;
 
 	switch (ca->mi.replacement) {
 	case CACHE_REPLACEMENT_LRU:
@@ -852,8 +846,8 @@ static void bch2_find_empty_buckets(struct bch_fs *c, struct bch_dev *ca)
 			spin_lock(&ca->freelist_lock);
 
 			bch2_mark_alloc_bucket(ca, g, true);
-			g->read_prio = c->prio_clock[READ].hand;
-			g->write_prio = c->prio_clock[WRITE].hand;
+			g->prio[READ] = c->prio_clock[READ].hand;
+			g->prio[WRITE] = c->prio_clock[WRITE].hand;
 
 			verify_not_on_freelist(ca, g - ca->buckets);
 			BUG_ON(!fifo_push(&ca->free_inc, g - ca->buckets));
@@ -864,6 +858,13 @@ static void bch2_find_empty_buckets(struct bch_fs *c, struct bch_dev *ca)
 				break;
 		}
 	}
+}
+
+static int size_t_cmp(const void *_l, const void *_r)
+{
+	const size_t *l = _l, *r = _r;
+
+	return (*l > *r) - (*l < *r);
 }
 
 /**
@@ -923,27 +924,13 @@ static int bch2_allocator_thread(void *arg)
 			__set_current_state(TASK_RUNNING);
 		}
 
-		down_read(&c->gc_lock);
-
-		/*
-		 * See if we have buckets we can reuse without invalidating them
-		 * or forcing a journal commit:
-		 */
-		//bch2_find_empty_buckets(c, ca);
-
-		if (fifo_used(&ca->free_inc) * 2 > ca->free_inc.size) {
-			up_read(&c->gc_lock);
-			continue;
-		}
-
 		/* We've run out of free buckets! */
 
-		while (!fifo_full(&ca->free_inc)) {
-			if (wait_buckets_available(ca)) {
-				up_read(&c->gc_lock);
-				goto out;
-			}
+		BUG_ON(fifo_used(&ca->free_inc));
+		ca->free_inc.front = ca->free_inc.back = 0;
 
+		down_read(&c->gc_lock);
+		while (1) {
 			/*
 			 * Find some buckets that we can invalidate, either
 			 * they're completely unused, or only contain clean data
@@ -952,11 +939,37 @@ static int bch2_allocator_thread(void *arg)
 			 */
 
 			invalidate_buckets(ca);
-			trace_alloc_batch(ca, fifo_used(&ca->free_inc),
-						 ca->free_inc.size);
-		}
 
+			trace_alloc_batch(ca, fifo_used(&ca->free_inc),
+					  ca->free_inc.size);
+
+			if ((ca->inc_gen_needs_gc >= ca->free_inc.size ||
+			     (!fifo_full(&ca->free_inc) &&
+			      ca->inc_gen_really_needs_gc >=
+			      fifo_free(&ca->free_inc))) &&
+			    c->gc_thread) {
+				atomic_inc(&c->kick_gc);
+				wake_up_process(c->gc_thread);
+			}
+
+			if (fifo_full(&ca->free_inc))
+				break;
+
+			if (wait_buckets_available(c, ca)) {
+				up_read(&c->gc_lock);
+				goto out;
+			}
+		}
 		up_read(&c->gc_lock);
+
+		BUG_ON(ca->free_inc.front);
+
+		spin_lock(&ca->freelist_lock);
+		sort(ca->free_inc.data,
+		     ca->free_inc.back,
+		     sizeof(ca->free_inc.data[0]),
+		     size_t_cmp, NULL);
+		spin_unlock(&ca->freelist_lock);
 
 		/*
 		 * free_inc is full of newly-invalidated buckets, must write out
@@ -1022,8 +1035,8 @@ out:
 
 	g = ca->buckets + r;
 
-	g->read_prio = ca->fs->prio_clock[READ].hand;
-	g->write_prio = ca->fs->prio_clock[WRITE].hand;
+	g->prio[READ] = ca->fs->prio_clock[READ].hand;
+	g->prio[WRITE] = ca->fs->prio_clock[WRITE].hand;
 
 	return r;
 }
@@ -1031,9 +1044,6 @@ out:
 static void __bch2_bucket_free(struct bch_dev *ca, struct bucket *g)
 {
 	bch2_mark_free_bucket(ca, g);
-
-	g->read_prio = ca->fs->prio_clock[READ].hand;
-	g->write_prio = ca->fs->prio_clock[WRITE].hand;
 }
 
 enum bucket_alloc_ret {
@@ -1614,8 +1624,7 @@ void bch2_recalc_capacity(struct bch_fs *c)
 	unsigned i, j;
 
 	for_each_online_member(ca, c, i) {
-		struct backing_dev_info *bdi =
-			blk_get_backing_dev_info(ca->disk_sb.bdev);
+		struct backing_dev_info *bdi = ca->disk_sb.bdev->bd_bdi;
 
 		ra_pages += bdi->ra_pages;
 	}

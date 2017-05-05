@@ -50,13 +50,7 @@ struct bucket_mark {
 };
 
 struct bucket {
-	union {
-		struct {
-			u16	read_prio;
-			u16	write_prio;
-		};
-		u16		prio[2];
-	};
+	u16				prio[2];
 
 	union {
 		struct bucket_mark	_mark;

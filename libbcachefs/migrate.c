@@ -156,9 +156,9 @@ next:
  * This walks the btree, and for any node on the relevant device it moves the
  * node elsewhere.
  */
-static int bch2_move_btree_off(struct bch_dev *ca, enum btree_id id)
+static int bch2_move_btree_off(struct bch_fs *c, struct bch_dev *ca,
+			       enum btree_id id)
 {
-	struct bch_fs *c = ca->fs;
 	struct btree_iter iter;
 	struct closure cl;
 	struct btree *b;
@@ -170,22 +170,11 @@ static int bch2_move_btree_off(struct bch_dev *ca, enum btree_id id)
 
 	for_each_btree_node(&iter, c, id, POS_MIN, BTREE_ITER_PREFETCH, b) {
 		struct bkey_s_c_extent e = bkey_i_to_s_c_extent(&b->key);
-retry:
+
 		if (!bch2_extent_has_device(e, ca->dev_idx))
 			continue;
 
-		ret = bch2_btree_node_rewrite(&iter, b, &cl);
-		if (ret == -EINTR || ret == -ENOSPC) {
-			/*
-			 * Drop locks to upgrade locks or wait on
-			 * reserve: after retaking, recheck in case we
-			 * raced.
-			 */
-			bch2_btree_iter_unlock(&iter);
-			closure_sync(&cl);
-			b = bch2_btree_iter_peek_node(&iter);
-			goto retry;
-		}
+		ret = bch2_btree_node_rewrite(c, &iter, b->data->keys.seq, 0);
 		if (ret) {
 			bch2_btree_iter_unlock(&iter);
 			return ret;
@@ -268,7 +257,7 @@ int bch2_move_metadata_off_device(struct bch_dev *ca)
 	/* 1st, Move the btree nodes off the device */
 
 	for (i = 0; i < BTREE_ID_NR; i++) {
-		ret = bch2_move_btree_off(ca, i);
+		ret = bch2_move_btree_off(c, ca, i);
 		if (ret)
 			return ret;
 	}

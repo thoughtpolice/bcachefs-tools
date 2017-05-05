@@ -1300,11 +1300,11 @@ static void bch2_read_iter(struct bch_fs *c, struct bch_read_bio *rbio,
 			flags |= BCH_READ_IS_LAST;
 
 		if (pick.ca) {
-			PTR_BUCKET(pick.ca, &pick.ptr)->read_prio =
+			PTR_BUCKET(pick.ca, &pick.ptr)->prio[READ] =
 				c->prio_clock[READ].hand;
 
 			bch2_read_extent_iter(c, rbio, bvec_iter,
-					     k, &pick, flags);
+					      k, &pick, flags);
 
 			flags &= ~BCH_READ_MAY_REUSE_BIO;
 		} else {

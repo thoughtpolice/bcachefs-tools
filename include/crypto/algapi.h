@@ -13,6 +13,7 @@
 #define _CRYPTO_ALGAPI_H
 
 #include <linux/crypto.h>
+#include <crypto/skcipher.h>
 
 struct crypto_type {
 	unsigned int (*ctxsize)(struct crypto_alg *alg, u32 type, u32 mask);

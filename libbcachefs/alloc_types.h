@@ -99,4 +99,11 @@ struct write_point {
 	 */
 };
 
+struct alloc_heap_entry {
+	size_t			bucket;
+	unsigned long		key;
+};
+
+typedef HEAP(struct alloc_heap_entry) alloc_heap;
+
 #endif /* _BCACHE_ALLOC_TYPES_H */

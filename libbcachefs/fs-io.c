@@ -757,7 +757,7 @@ static void bchfs_read(struct bch_fs *c, struct btree_iter *iter,
 			flags |= BCH_READ_IS_LAST;
 
 		if (pick.ca) {
-			PTR_BUCKET(pick.ca, &pick.ptr)->read_prio =
+			PTR_BUCKET(pick.ca, &pick.ptr)->prio[READ] =
 				c->prio_clock[READ].hand;
 
 			bch2_read_extent(c, rbio, k, &pick, flags);
@@ -1775,16 +1775,17 @@ ssize_t bch2_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	return ret;
 }
 
-int bch2_page_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf)
+int bch2_page_mkwrite(struct vm_fault *vmf)
 {
 	struct page *page = vmf->page;
-	struct inode *inode = file_inode(vma->vm_file);
+	struct file *file = vmf->vma->vm_file;
+	struct inode *inode = file_inode(file);
 	struct address_space *mapping = inode->i_mapping;
 	struct bch_fs *c = inode->i_sb->s_fs_info;
 	int ret = VM_FAULT_LOCKED;
 
 	sb_start_pagefault(inode->i_sb);
-	file_update_time(vma->vm_file);
+	file_update_time(file);
 
 	/*
 	 * Not strictly necessary, but helps avoid dio writes livelocking in

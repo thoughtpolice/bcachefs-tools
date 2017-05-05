@@ -148,7 +148,7 @@ int bch2_congested(struct bch_fs *c, int bdi_bits)
 	if (bdi_bits & (1 << WB_sync_congested)) {
 		/* Reads - check all devices: */
 		for_each_readable_member(ca, c, i) {
-			bdi = blk_get_backing_dev_info(ca->disk_sb.bdev);
+			bdi = ca->disk_sb.bdev->bd_bdi;
 
 			if (bdi_congested(bdi, bdi_bits)) {
 				ret = 1;
@@ -162,7 +162,7 @@ int bch2_congested(struct bch_fs *c, int bdi_bits)
 
 		rcu_read_lock();
 		group_for_each_dev(ca, grp, i) {
-			bdi = blk_get_backing_dev_info(ca->disk_sb.bdev);
+			bdi = ca->disk_sb.bdev->bd_bdi;
 
 			if (bdi_congested(bdi, bdi_bits)) {
 				ret = 1;
@@ -1144,7 +1144,7 @@ static int bch2_dev_alloc(struct bch_fs *c, unsigned dev_idx)
 		       movinggc_reserve, GFP_KERNEL) ||
 	    !init_fifo(&ca->free[RESERVE_NONE], reserve_none, GFP_KERNEL) ||
 	    !init_fifo(&ca->free_inc,	free_inc_reserve, GFP_KERNEL) ||
-	    !init_heap(&ca->alloc_heap,	heap_size, GFP_KERNEL) ||
+	    !init_heap(&ca->alloc_heap,	free_inc_reserve, GFP_KERNEL) ||
 	    !init_heap(&ca->copygc_heap,heap_size, GFP_KERNEL) ||
 	    !(ca->oldest_gens	= kvpmalloc(ca->mi.nbuckets *
 					    sizeof(u8),

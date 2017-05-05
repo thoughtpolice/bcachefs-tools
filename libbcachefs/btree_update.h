@@ -380,6 +380,10 @@ int __bch2_btree_insert_at(struct btree_insert *);
  */
 #define BTREE_INSERT_JOURNAL_REPLAY	(1 << 3)
 
+/* Don't block on allocation failure (for new btree nodes: */
+#define BTREE_INSERT_NOWAIT		(1 << 4)
+#define BTREE_INSERT_GC_LOCK_HELD	(1 << 5)
+
 int bch2_btree_delete_at(struct btree_iter *, unsigned);
 
 int bch2_btree_insert_list_at(struct btree_iter *, struct keylist *,
@@ -416,7 +420,8 @@ int bch2_btree_delete_range(struct bch_fs *, enum btree_id,
 			   struct disk_reservation *,
 			   struct extent_insert_hook *, u64 *);
 
-int bch2_btree_node_rewrite(struct btree_iter *, struct btree *, struct closure *);
+int bch2_btree_node_rewrite(struct bch_fs *c, struct btree_iter *,
+			    __le64, unsigned);
 
 #endif /* _BCACHE_BTREE_INSERT_H */
 

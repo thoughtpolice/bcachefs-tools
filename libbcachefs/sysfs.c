@@ -24,6 +24,7 @@
 
 #include <linux/blkdev.h>
 #include <linux/sort.h>
+#include <linux/sched/clock.h>
 
 #include "util.h"
 
@@ -124,6 +125,7 @@ write_attribute(trigger_journal_flush);
 write_attribute(trigger_btree_coalesce);
 write_attribute(trigger_gc);
 write_attribute(prune_cache);
+rw_attribute(btree_gc_periodic);
 
 read_attribute(uuid);
 read_attribute(minor);
@@ -319,6 +321,8 @@ SHOW(bch2_fs)
 	sysfs_print(read_realloc_races,
 		    atomic_long_read(&c->read_realloc_races));
 
+	sysfs_printf(btree_gc_periodic, "%u",	(int) c->btree_gc_periodic);
+
 	sysfs_printf(foreground_write_ratelimit_enabled, "%i",
 		     c->foreground_write_ratelimit_enabled);
 	sysfs_printf(copy_gc_enabled, "%i", c->copy_gc_enabled);
@@ -366,6 +370,14 @@ STORE(__bch2_fs)
 
 	sysfs_strtoul(foreground_write_ratelimit_enabled,
 		      c->foreground_write_ratelimit_enabled);
+
+	if (attr == &sysfs_btree_gc_periodic) {
+		ssize_t ret = strtoul_safe(buf, c->btree_gc_periodic)
+			?: (ssize_t) size;
+
+		wake_up_process(c->gc_thread);
+		return ret;
+	}
 
 	if (attr == &sysfs_copy_gc_enabled) {
 		struct bch_dev *ca;

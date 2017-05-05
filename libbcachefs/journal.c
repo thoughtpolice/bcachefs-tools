@@ -164,21 +164,15 @@ static void journal_seq_blacklist_flush(struct journal *j,
 		mutex_unlock(&j->blacklist_lock);
 
 		__bch2_btree_iter_init(&iter, c, n.btree_id, n.pos, 0, 0, 0);
-redo_peek:
+
 		b = bch2_btree_iter_peek_node(&iter);
 
 		/* The node might have already been rewritten: */
 
 		if (b->data->keys.seq == n.seq) {
-			ret = bch2_btree_node_rewrite(&iter, b, &cl);
+			ret = bch2_btree_node_rewrite(c, &iter, n.seq, 0);
 			if (ret) {
 				bch2_btree_iter_unlock(&iter);
-				closure_sync(&cl);
-
-				if (ret == -EAGAIN ||
-				    ret == -EINTR)
-					goto redo_peek;
-
 				bch2_fs_fatal_error(c,
 					"error %i rewriting btree node with blacklisted journal seq",
 					ret);
@@ -189,8 +183,6 @@ redo_peek:
 
 		bch2_btree_iter_unlock(&iter);
 	}
-
-	closure_sync(&cl);
 
 	for (i = 0;; i++) {
 		struct btree_interior_update *as;

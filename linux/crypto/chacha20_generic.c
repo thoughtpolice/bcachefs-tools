@@ -18,6 +18,7 @@
 #include <linux/crypto.h>
 #include <crypto/algapi.h>
 #include <crypto/chacha20.h>
+#include <crypto/skcipher.h>
 
 #include <sodium/crypto_stream_chacha20.h>
 
@@ -25,10 +26,10 @@ struct chacha20_ctx {
 	u32 key[8];
 };
 
-static int crypto_chacha20_setkey(struct crypto_tfm *tfm, const u8 *key,
+static int crypto_chacha20_setkey(struct crypto_skcipher *tfm, const u8 *key,
 				  unsigned int keysize)
 {
-	struct chacha20_ctx *ctx = crypto_tfm_ctx(tfm);
+	struct chacha20_ctx *ctx = crypto_skcipher_ctx(tfm);
 	int i;
 
 	if (keysize != CHACHA20_KEY_SIZE)
@@ -40,19 +41,18 @@ static int crypto_chacha20_setkey(struct crypto_tfm *tfm, const u8 *key,
 	return 0;
 }
 
-static int crypto_chacha20_crypt(struct blkcipher_desc *desc,
-				 struct scatterlist *dst,
-				 struct scatterlist *src,
-				 unsigned nbytes)
+static int crypto_chacha20_crypt(struct skcipher_request *req)
 {
-	struct chacha20_ctx *ctx = crypto_blkcipher_ctx(desc->tfm);
-	struct scatterlist *sg = src;
+	struct crypto_skcipher *tfm = crypto_skcipher_reqtfm(req);
+	struct chacha20_ctx *ctx = crypto_skcipher_ctx(tfm);
+	struct scatterlist *sg = req->src;
+	unsigned nbytes = req->cryptlen;
 	u32 iv[4];
 	int ret;
 
-	BUG_ON(src != dst);
+	BUG_ON(req->src != req->dst);
 
-	memcpy(iv, desc->info, sizeof(iv));
+	memcpy(iv, req->iv, sizeof(iv));
 
 	while (1) {
 		ret = crypto_stream_chacha20_xor_ic(sg_virt(sg),
@@ -78,22 +78,21 @@ static int crypto_chacha20_crypt(struct blkcipher_desc *desc,
 	return 0;
 }
 
-static struct crypto_alg alg = {
-	.cra_name		= "chacha20",
-	.cra_flags		= CRYPTO_ALG_TYPE_BLKCIPHER,
-	.cra_type		= &crypto_blkcipher_type,
-	.cra_ctxsize		= sizeof(struct chacha20_ctx),
-	.cra_u			= {
-		.blkcipher = {
-			.setkey		= crypto_chacha20_setkey,
-			.encrypt	= crypto_chacha20_crypt,
-			.decrypt	= crypto_chacha20_crypt,
-		},
-	},
+static struct skcipher_alg alg = {
+	.base.cra_name		= "chacha20",
+	.base.cra_ctxsize	= sizeof(struct chacha20_ctx),
+
+	.min_keysize		= CHACHA20_KEY_SIZE,
+	.max_keysize		= CHACHA20_KEY_SIZE,
+	.ivsize			= CHACHA20_IV_SIZE,
+	.chunksize		= CHACHA20_BLOCK_SIZE,
+	.setkey			= crypto_chacha20_setkey,
+	.encrypt		= crypto_chacha20_crypt,
+	.decrypt		= crypto_chacha20_crypt,
 };
 
 __attribute__((constructor(110)))
 static int chacha20_generic_mod_init(void)
 {
-	return crypto_register_alg(&alg);
+	return crypto_register_alg(&alg.base);
 }

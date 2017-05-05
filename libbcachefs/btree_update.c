@@ -533,6 +533,9 @@ static struct btree_reserve *__bch2_btree_reserve_get(struct bch_fs *c,
 	if (flags & BTREE_INSERT_NOFAIL)
 		disk_res_flags |= BCH_DISK_RESERVATION_NOFAIL;
 
+	if (flags & BTREE_INSERT_NOWAIT)
+		cl = NULL;
+
 	/*
 	 * This check isn't necessary for correctness - it's just to potentially
 	 * prevent us from doing a lot of work that'll end up being wasted:
@@ -2279,30 +2282,13 @@ int bch2_btree_delete_range(struct bch_fs *c, enum btree_id id,
 	return ret;
 }
 
-/**
- * bch_btree_node_rewrite - Rewrite/move a btree node
- *
- * Returns 0 on success, -EINTR or -EAGAIN on failure (i.e.
- * btree_check_reserve() has to wait)
- */
-int bch2_btree_node_rewrite(struct btree_iter *iter, struct btree *b,
-			   struct closure *cl)
+static int __btree_node_rewrite(struct bch_fs *c, struct btree_iter *iter,
+				struct btree *b, unsigned flags,
+				struct closure *cl)
 {
-	struct bch_fs *c = iter->c;
 	struct btree *n, *parent = iter->nodes[b->level + 1];
 	struct btree_reserve *reserve;
 	struct btree_interior_update *as;
-	unsigned flags = BTREE_INSERT_NOFAIL;
-
-	/*
-	 * if caller is going to wait if allocating reserve fails, then this is
-	 * a rewrite that must succeed:
-	 */
-	if (cl)
-		flags |= BTREE_INSERT_USE_RESERVE;
-
-	if (!bch2_btree_iter_set_locks_want(iter, U8_MAX))
-		return -EINTR;
 
 	reserve = bch2_btree_reserve_get(c, b, 0, flags, cl);
 	if (IS_ERR(reserve)) {
@@ -2340,4 +2326,58 @@ int bch2_btree_node_rewrite(struct btree_iter *iter, struct btree *b,
 
 	bch2_btree_reserve_put(c, reserve);
 	return 0;
+}
+
+/**
+ * bch_btree_node_rewrite - Rewrite/move a btree node
+ *
+ * Returns 0 on success, -EINTR or -EAGAIN on failure (i.e.
+ * btree_check_reserve() has to wait)
+ */
+int bch2_btree_node_rewrite(struct bch_fs *c, struct btree_iter *iter,
+			    __le64 seq, unsigned flags)
+{
+	unsigned locks_want = iter->locks_want;
+	struct closure cl;
+	struct btree *b;
+	int ret;
+
+	flags |= BTREE_INSERT_NOFAIL;
+
+	closure_init_stack(&cl);
+
+	bch2_btree_iter_set_locks_want(iter, U8_MAX);
+
+	if (!(flags & BTREE_INSERT_GC_LOCK_HELD)) {
+		if (!down_read_trylock(&c->gc_lock)) {
+			bch2_btree_iter_unlock(iter);
+			down_read(&c->gc_lock);
+		}
+	}
+
+	while (1) {
+		ret = bch2_btree_iter_traverse(iter);
+		if (ret)
+			break;
+
+		b = bch2_btree_iter_peek_node(iter);
+		if (!b || b->data->keys.seq != seq)
+			break;
+
+		ret = __btree_node_rewrite(c, iter, b, flags, &cl);
+		if (ret != -EAGAIN &&
+		    ret != -EINTR)
+			break;
+
+		bch2_btree_iter_unlock(iter);
+		closure_sync(&cl);
+	}
+
+	bch2_btree_iter_set_locks_want(iter, locks_want);
+
+	if (!(flags & BTREE_INSERT_GC_LOCK_HELD))
+		up_read(&c->gc_lock);
+
+	closure_sync(&cl);
+	return ret;
 }

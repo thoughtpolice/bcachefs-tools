@@ -60,7 +60,7 @@ static inline struct inode *file_inode(const struct file *f)
 #define BDEVNAME_SIZE	32
 
 struct request_queue {
-	struct backing_dev_info backing_dev_info;
+	struct backing_dev_info *backing_dev_info;
 };
 
 struct gendisk {
@@ -82,6 +82,9 @@ struct block_device {
 	struct gendisk		__bd_disk;
 	int			bd_fd;
 	int			bd_sync_fd;
+
+	struct backing_dev_info	*bd_bdi;
+	struct backing_dev_info	__bd_bdi;
 };
 
 void generic_make_request(struct bio *);
@@ -99,13 +102,6 @@ int blkdev_issue_discard(struct block_device *, sector_t,
 
 #define blk_queue_discard(q)		((void) (q), 0)
 #define blk_queue_nonrot(q)		((void) (q), 0)
-
-static inline struct backing_dev_info *blk_get_backing_dev_info(struct block_device *bdev)
-{
-	struct request_queue *q = bdev_get_queue(bdev);
-
-	return &q->backing_dev_info;
-}
 
 unsigned bdev_logical_block_size(struct block_device *bdev);
 sector_t get_capacity(struct gendisk *disk);

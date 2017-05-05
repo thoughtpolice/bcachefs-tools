@@ -166,14 +166,14 @@ fsck_err:
 	return ret;
 }
 
-static bool btree_gc_mark_node(struct bch_fs *c, struct btree *b)
+static unsigned btree_gc_mark_node(struct bch_fs *c, struct btree *b)
 {
-	if (btree_node_has_ptrs(b)) {
-		struct btree_node_iter iter;
-		struct bkey unpacked;
-		struct bkey_s_c k;
-		u8 stale = 0;
+	struct btree_node_iter iter;
+	struct bkey unpacked;
+	struct bkey_s_c k;
+	u8 stale = 0;
 
+	if (btree_node_has_ptrs(b))
 		for_each_btree_node_key_unpack(b, k, &iter,
 					       btree_node_is_extents(b),
 					       &unpacked) {
@@ -182,17 +182,7 @@ static bool btree_gc_mark_node(struct bch_fs *c, struct btree *b)
 							btree_node_type(b), k));
 		}
 
-		if (btree_gc_rewrite_disabled(c))
-			return false;
-
-		if (stale > 10)
-			return true;
-	}
-
-	if (btree_gc_always_rewrite(c))
-		return true;
-
-	return false;
+	return stale;
 }
 
 static inline void __gc_pos_set(struct bch_fs *c, struct gc_pos new_pos)
@@ -212,10 +202,10 @@ static int bch2_gc_btree(struct bch_fs *c, enum btree_id btree_id)
 {
 	struct btree_iter iter;
 	struct btree *b;
-	bool should_rewrite;
 	struct range_checks r;
 	unsigned depth = btree_id == BTREE_ID_EXTENTS ? 0 : 1;
-	int ret;
+	unsigned max_stale;
+	int ret = 0;
 
 	/*
 	 * if expensive_debug_checks is on, run range_checks on all leaf nodes:
@@ -231,12 +221,21 @@ static int bch2_gc_btree(struct bch_fs *c, enum btree_id btree_id)
 
 		bch2_verify_btree_nr_keys(b);
 
-		should_rewrite = btree_gc_mark_node(c, b);
+		max_stale = btree_gc_mark_node(c, b);
 
 		gc_pos_set(c, gc_pos_btree_node(b));
 
-		if (should_rewrite)
-			bch2_btree_node_rewrite(&iter, b, NULL);
+		if (max_stale > 32)
+			bch2_btree_node_rewrite(c, &iter,
+					b->data->keys.seq,
+					BTREE_INSERT_USE_RESERVE|
+					BTREE_INSERT_GC_LOCK_HELD);
+		else if (!btree_gc_rewrite_disabled(c) &&
+			 (btree_gc_always_rewrite(c) || max_stale > 16))
+			bch2_btree_node_rewrite(c, &iter,
+					b->data->keys.seq,
+					BTREE_INSERT_NOWAIT|
+					BTREE_INSERT_GC_LOCK_HELD);
 
 		bch2_btree_iter_cond_resched(&iter);
 	}
@@ -507,6 +506,7 @@ void bch2_gc(struct bch_fs *c)
 
 	/* Indicates that gc is no longer in progress: */
 	gc_pos_set(c, gc_phase(GC_PHASE_DONE));
+	c->gc_count++;
 
 	up_write(&c->gc_lock);
 	trace_gc_end(c);
@@ -835,7 +835,6 @@ static int bch2_coalesce_btree(struct bch_fs *c, enum btree_id btree_id)
  */
 void bch2_coalesce(struct bch_fs *c)
 {
-	u64 start_time;
 	enum btree_id id;
 
 	if (test_bit(BCH_FS_GC_FAILURE, &c->flags))
@@ -843,7 +842,6 @@ void bch2_coalesce(struct bch_fs *c)
 
 	down_read(&c->gc_lock);
 	trace_gc_coalesce_start(c);
-	start_time = local_clock();
 
 	for (id = 0; id < BTREE_ID_NR; id++) {
 		int ret = c->btree_roots[id].b
@@ -858,7 +856,6 @@ void bch2_coalesce(struct bch_fs *c)
 		}
 	}
 
-	bch2_time_stats_update(&c->btree_coalesce_time, start_time);
 	trace_gc_coalesce_end(c);
 	up_read(&c->gc_lock);
 }
@@ -873,9 +870,7 @@ static int bch2_gc_thread(void *arg)
 	set_freezable();
 
 	while (1) {
-		unsigned long next = last + c->capacity / 16;
-
-		while (atomic_long_read(&clock->now) < next) {
+		while (1) {
 			set_current_state(TASK_INTERRUPTIBLE);
 
 			if (kthread_should_stop()) {
@@ -883,21 +878,28 @@ static int bch2_gc_thread(void *arg)
 				return 0;
 			}
 
-			if (atomic_read(&c->kick_gc) != last_kick) {
-				__set_current_state(TASK_RUNNING);
+			if (atomic_read(&c->kick_gc) != last_kick)
 				break;
+
+			if (c->btree_gc_periodic) {
+				unsigned long next = last + c->capacity / 16;
+
+				if (atomic_long_read(&clock->now) >= next)
+					break;
+
+				bch2_io_clock_schedule_timeout(clock, next);
+			} else {
+				schedule();
 			}
 
-			bch2_io_clock_schedule_timeout(clock, next);
 			try_to_freeze();
 		}
+		__set_current_state(TASK_RUNNING);
 
 		last = atomic_long_read(&clock->now);
 		last_kick = atomic_read(&c->kick_gc);
 
 		bch2_gc(c);
-		if (!btree_gc_coalesce_disabled(c))
-			bch2_coalesce(c);
 
 		debug_check_no_locks_held();
 	}

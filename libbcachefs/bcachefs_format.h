@@ -1208,8 +1208,7 @@ struct prio_set {
 	__le64			next_bucket;
 
 	struct bucket_disk {
-		__le16		read_prio;
-		__le16		write_prio;
+		__le16		prio[2];
 		__u8		gen;
 	} __attribute__((packed)) data[];
 } __attribute__((packed, aligned(8)));

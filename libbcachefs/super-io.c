@@ -442,7 +442,7 @@ static const char *bch2_blkdev_open(const char *path, fmode_t mode,
 		return "failed to open device";
 
 	if (mode & FMODE_WRITE)
-		bdev_get_queue(bdev)->backing_dev_info.capabilities
+		bdev_get_queue(bdev)->backing_dev_info->capabilities
 			|= BDI_CAP_STABLE_WRITES;
 
 	*ret = bdev;

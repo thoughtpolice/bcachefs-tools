@@ -201,3 +201,36 @@ int crypto_register_alg(struct crypto_alg *alg)
 
 	return 0;
 }
+
+/* skcipher: */
+
+static int crypto_skcipher_init_tfm(struct crypto_tfm *tfm)
+{
+	struct crypto_skcipher *skcipher = __crypto_skcipher_cast(tfm);
+	struct skcipher_alg *alg = crypto_skcipher_alg(skcipher);
+
+	skcipher->setkey = alg->setkey;
+	skcipher->encrypt = alg->encrypt;
+	skcipher->decrypt = alg->decrypt;
+	skcipher->ivsize = alg->ivsize;
+	skcipher->keysize = alg->max_keysize;
+
+	if (alg->init)
+		return alg->init(skcipher);
+
+	return 0;
+}
+
+static const struct crypto_type crypto_skcipher_type2 = {
+	.extsize	= crypto_alg_extsize,
+	.init_tfm	= crypto_skcipher_init_tfm,
+	.maskclear	= ~CRYPTO_ALG_TYPE_MASK,
+	.maskset	= CRYPTO_ALG_TYPE_BLKCIPHER_MASK,
+	.tfmsize	= offsetof(struct crypto_skcipher, base),
+};
+
+struct crypto_skcipher *crypto_alloc_skcipher(const char *alg_name,
+					      u32 type, u32 mask)
+{
+	return crypto_alloc_tfm(alg_name, &crypto_skcipher_type2, type, mask);
+}

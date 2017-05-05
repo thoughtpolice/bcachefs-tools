@@ -134,5 +134,5 @@ update-bcachefs-sources:
 
 .PHONE: update-commit-bcachefs-sources
 update-commit-bcachefs-sources: update-bcachefs-sources
-	git commit -m "Update bcachefs sources to `cut -b1-10 .bcachefs_revision`"	\
+	git commit -m "Update bcachefs sources to `cd $(LINUX_DIR); git show --oneline --no-patch`"\
 		.bcachefs_revision libbcachefs/

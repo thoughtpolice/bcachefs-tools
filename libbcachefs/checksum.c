@@ -178,18 +178,21 @@ static u64 bch2_checksum_update(unsigned type, u64 crc, const void *data, size_t
 	}
 }
 
-static inline void do_encrypt_sg(struct crypto_blkcipher *tfm,
+static inline void do_encrypt_sg(struct crypto_skcipher *tfm,
 				 struct nonce nonce,
 				 struct scatterlist *sg, size_t len)
 {
-	struct blkcipher_desc desc = { .tfm = tfm, .info = nonce.d };
+	SKCIPHER_REQUEST_ON_STACK(req, tfm);
 	int ret;
 
-	ret = crypto_blkcipher_encrypt_iv(&desc, sg, sg, len);
+	skcipher_request_set_tfm(req, tfm);
+	skcipher_request_set_crypt(req, sg, sg, len, nonce.d);
+
+	ret = crypto_skcipher_encrypt(req);
 	BUG_ON(ret);
 }
 
-static inline void do_encrypt(struct crypto_blkcipher *tfm,
+static inline void do_encrypt(struct crypto_skcipher *tfm,
 			      struct nonce nonce,
 			      void *buf, size_t len)
 {
@@ -202,20 +205,20 @@ static inline void do_encrypt(struct crypto_blkcipher *tfm,
 int bch2_chacha_encrypt_key(struct bch_key *key, struct nonce nonce,
 			   void *buf, size_t len)
 {
-	struct crypto_blkcipher *chacha20 =
-		crypto_alloc_blkcipher("chacha20", 0, CRYPTO_ALG_ASYNC);
+	struct crypto_skcipher *chacha20 =
+		crypto_alloc_skcipher("chacha20", 0, 0);
 	int ret;
 
 	if (!chacha20)
 		return PTR_ERR(chacha20);
 
-	ret = crypto_blkcipher_setkey(chacha20, (void *) key, sizeof(*key));
+	ret = crypto_skcipher_setkey(chacha20, (void *) key, sizeof(*key));
 	if (ret)
 		goto err;
 
 	do_encrypt(chacha20, nonce, buf, len);
 err:
-	crypto_free_blkcipher(chacha20);
+	crypto_free_skcipher(chacha20);
 	return ret;
 }
 
@@ -377,7 +380,7 @@ int bch2_request_key(struct bch_sb *sb, struct bch_key *key)
 		return PTR_ERR(keyring_key);
 
 	down_read(&keyring_key->sem);
-	ukp = user_key_payload(keyring_key);
+	ukp = dereference_key_locked(keyring_key);
 	if (ukp->datalen == sizeof(*key)) {
 		memcpy(key, ukp->data, ukp->datalen);
 		ret = 0;
@@ -454,8 +457,7 @@ err:
 static int bch2_alloc_ciphers(struct bch_fs *c)
 {
 	if (!c->chacha20)
-		c->chacha20 = crypto_alloc_blkcipher("chacha20", 0,
-						     CRYPTO_ALG_ASYNC);
+		c->chacha20 = crypto_alloc_skcipher("chacha20", 0, 0);
 	if (IS_ERR(c->chacha20))
 		return PTR_ERR(c->chacha20);
 
@@ -532,7 +534,7 @@ int bch2_enable_encryption(struct bch_fs *c, bool keyed)
 			goto err;
 	}
 
-	ret = crypto_blkcipher_setkey(c->chacha20,
+	ret = crypto_skcipher_setkey(c->chacha20,
 			(void *) &key.key, sizeof(key.key));
 	if (ret)
 		goto err;
@@ -560,7 +562,7 @@ void bch2_fs_encryption_exit(struct bch_fs *c)
 	if (!IS_ERR_OR_NULL(c->poly1305))
 		crypto_free_shash(c->poly1305);
 	if (!IS_ERR_OR_NULL(c->chacha20))
-		crypto_free_blkcipher(c->chacha20);
+		crypto_free_skcipher(c->chacha20);
 	if (!IS_ERR_OR_NULL(c->sha256))
 		crypto_free_shash(c->sha256);
 }
@@ -587,7 +589,7 @@ int bch2_fs_encryption_init(struct bch_fs *c)
 	if (ret)
 		goto err;
 
-	ret = crypto_blkcipher_setkey(c->chacha20,
+	ret = crypto_skcipher_setkey(c->chacha20,
 			(void *) &key.key, sizeof(key.key));
 err:
 	memzero_explicit(&key, sizeof(key));
