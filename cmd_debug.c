@@ -129,10 +129,10 @@ int cmd_dump(int argc, char *argv[])
 	BUG_ON(!nr_devices);
 
 	for_each_online_member(ca, c, i) {
-		int mode = O_WRONLY|O_CREAT|O_TRUNC;
+		int flags = O_WRONLY|O_CREAT|O_TRUNC;
 
 		if (!force)
-			mode |= O_EXCL;
+			flags |= O_EXCL;
 
 		if (!c->devs[i])
 			continue;
@@ -140,7 +140,7 @@ int cmd_dump(int argc, char *argv[])
 		char *path = nr_devices > 1
 			? mprintf("%s.%u", out, i)
 			: strdup(out);
-		fd = xopen(path, mode, 0600);
+		fd = xopen(path, flags, 0600);
 		free(path);
 
 		dump_one_device(c, ca, fd);

@@ -167,15 +167,19 @@ struct block_device *blkdev_get_by_path(const char *path, fmode_t mode,
 	else if (mode & FMODE_WRITE)
 		flags = O_WRONLY;
 
+#if 0
+	/* using O_EXCL doesn't work with opening twice for an O_SYNC fd: */
 	if (mode & FMODE_EXCL)
 		flags |= O_EXCL;
+#endif
 
 	fd = open(path, flags);
 	if (fd < 0)
 		return ERR_PTR(-errno);
 
 	sync_fd = open(path, flags|O_SYNC);
-	if (fd < 0) {
+	if (sync_fd < 0) {
+		assert(0);
 		close(fd);
 		return ERR_PTR(-errno);
 	}

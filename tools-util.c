@@ -23,6 +23,87 @@
 #include "tools-util.h"
 #include "util.h"
 
+void die(const char *fmt, ...)
+{
+	va_list args;
+
+	va_start(args, fmt);
+	vfprintf(stderr, fmt, args);
+	va_end(args);
+	fputc('\n', stderr);
+
+	exit(EXIT_FAILURE);
+}
+
+char *mprintf(const char *fmt, ...)
+{
+	va_list args;
+	char *str;
+	int ret;
+
+	va_start(args, fmt);
+	ret = vasprintf(&str, fmt, args);
+	va_end(args);
+
+	if (ret < 0)
+		die("insufficient memory");
+
+	return str;
+}
+
+void *xcalloc(size_t count, size_t size)
+{
+	void *p = calloc(count, size);
+
+	if (!p)
+		die("insufficient memory");
+
+	return p;
+}
+
+void *xmalloc(size_t size)
+{
+	void *p = malloc(size);
+
+	if (!p)
+		die("insufficient memory");
+
+	memset(p, 0, size);
+	return p;
+}
+
+void xpread(int fd, void *buf, size_t count, off_t offset)
+{
+	ssize_t r = pread(fd, buf, count, offset);
+
+	if (r != count)
+		die("read error (ret %zi)", r);
+}
+
+void xpwrite(int fd, const void *buf, size_t count, off_t offset)
+{
+	ssize_t r = pwrite(fd, buf, count, offset);
+
+	if (r != count)
+		die("write error (ret %zi err %m)", r);
+}
+
+struct stat xfstatat(int dirfd, const char *path, int flags)
+{
+	struct stat stat;
+	if (fstatat(dirfd, path, &stat, flags))
+		die("stat error: %m");
+	return stat;
+}
+
+struct stat xfstat(int fd)
+{
+	struct stat stat;
+	if (fstat(fd, &stat))
+		die("stat error: %m");
+	return stat;
+}
+
 /* Integer stuff: */
 
 struct units_buf __pr_units(u64 v, enum units units)

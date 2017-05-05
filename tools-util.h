@@ -17,57 +17,14 @@
 #include <linux/types.h>
 #include "ccan/darray/darray.h"
 
-#define die(arg, ...)							\
-do {									\
-	fprintf(stderr, arg "\n", ##__VA_ARGS__);			\
-	exit(EXIT_FAILURE);						\
-} while (0)
-
-#define mprintf(...)							\
-({									\
-	char *_str;							\
-	int ret = asprintf(&_str, __VA_ARGS__);				\
-	if (ret < 0)							\
-		die("insufficient memory");				\
-	_str;								\
-})
-
-static inline void *xcalloc(size_t count, size_t size)
-{
-	void *p = calloc(count, size);
-
-	if (!p)
-		die("insufficient memory");
-
-	return p;
-}
-
-static inline void *xmalloc(size_t size)
-{
-	void *p = malloc(size);
-
-	if (!p)
-		die("insufficient memory");
-
-	memset(p, 0, size);
-	return p;
-}
-
-static inline void xpread(int fd, void *buf, size_t count, off_t offset)
-{
-	ssize_t r = pread(fd, buf, count, offset);
-
-	if (r != count)
-		die("read error (ret %zi)", r);
-}
-
-static inline void xpwrite(int fd, const void *buf, size_t count, off_t offset)
-{
-	ssize_t r = pwrite(fd, buf, count, offset);
-
-	if (r != count)
-		die("write error (ret %zi err %m)", r);
-}
+void die(const char *, ...);
+char *mprintf(const char *, ...);
+void *xcalloc(size_t, size_t);
+void *xmalloc(size_t);
+void xpread(int, void *, size_t, off_t);
+void xpwrite(int, const void *, size_t, off_t);
+struct stat xfstatat(int, const char *, int);
+struct stat xfstat(int);
 
 #define xopenat(_dirfd, _path, ...)					\
 ({									\
@@ -78,22 +35,6 @@ static inline void xpwrite(int fd, const void *buf, size_t count, off_t offset)
 })
 
 #define xopen(...)	xopenat(AT_FDCWD, __VA_ARGS__)
-
-static inline struct stat xfstatat(int dirfd, const char *path, int flags)
-{
-	struct stat stat;
-	if (fstatat(dirfd, path, &stat, flags))
-		die("stat error: %m");
-	return stat;
-}
-
-static inline struct stat xfstat(int fd)
-{
-	struct stat stat;
-	if (fstat(fd, &stat))
-		die("stat error: %m");
-	return stat;
-}
 
 #define xioctl(_fd, _nr, ...)						\
 do {									\

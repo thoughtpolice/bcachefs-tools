@@ -79,7 +79,7 @@ static void usage(void)
 	     "      --no_passphrase         Don't encrypt master encryption key\n"
 	     "      --error_action=(continue|readonly|panic)\n"
 	     "                              Action to take on filesystem error\n"
-	     "  -l, --label=label\n"
+	     "  -L, --label=label\n"
 	     "      --uuid=uuid\n"
 	     "  -f, --force\n"
 	     "\n"
