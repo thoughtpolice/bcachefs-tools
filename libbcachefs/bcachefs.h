@@ -373,8 +373,6 @@ struct bch_dev {
 
 	struct task_struct	*alloc_thread;
 
-	bool			need_alloc_write;
-
 	/*
 	 * free: Buckets that are ready to be used
 	 *
@@ -387,7 +385,9 @@ struct bch_dev {
 	DECLARE_FIFO(long, free)[RESERVE_NR];
 	DECLARE_FIFO(long, free_inc);
 	spinlock_t		freelist_lock;
+	unsigned		nr_invalidated;
 	bool			alloc_thread_started;
+	bool			need_alloc_write;
 
 	size_t			fifo_last_bucket;
 

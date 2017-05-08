@@ -853,7 +853,6 @@ static void discard_invalidated_bucket(struct bch_dev *ca, long bucket)
 				     bucket_to_sector(ca, bucket),
 				     ca->mi.bucket_size, GFP_NOIO, 0);
 
-
 	while (1) {
 		bool pushed = false;
 		unsigned i;
@@ -877,10 +876,9 @@ static void discard_invalidated_bucket(struct bch_dev *ca, long bucket)
 		if (pushed)
 			break;
 
-		if (kthread_should_stop()) {
-			__set_current_state(TASK_RUNNING);
+		if (kthread_should_stop())
 			break;
-		}
+
 		schedule();
 		try_to_freeze();
 	}
@@ -900,16 +898,45 @@ static int bch2_allocator_thread(void *arg)
 {
 	struct bch_dev *ca = arg;
 	struct bch_fs *c = ca->fs;
+	u64 journal_seq;
 	size_t bucket;
 	int ret;
 
 	set_freezable();
 
-	while (!kthread_should_stop()) {
-		u64 journal_seq = 0;
+	while (1) {
+		while (1) {
+			while (ca->nr_invalidated) {
+				BUG_ON(fifo_empty(&ca->free_inc));
+
+				bucket = fifo_peek(&ca->free_inc);
+				discard_invalidated_bucket(ca, bucket);
+				if (kthread_should_stop())
+					goto out;
+				--ca->nr_invalidated;
+			}
+
+			if (fifo_empty(&ca->free_inc))
+				break;
+
+			journal_seq = 0;
+			ret = bch2_invalidate_free_inc(c, ca, &journal_seq);
+			if (ret < 0)
+				goto out;
+
+			ca->nr_invalidated = ret;
+
+			if (ca->nr_invalidated == fifo_used(&ca->free_inc))
+				ca->alloc_thread_started = true;
+
+			if (ca->allocator_invalidating_data)
+				bch2_journal_flush_seq(&c->journal, journal_seq);
+			else if (ca->allocator_journal_seq_flush)
+				bch2_journal_flush_seq(&c->journal,
+						       ca->allocator_journal_seq_flush);
+		}
 
 		/* Reset front/back so we can easily sort fifo entries later: */
-		BUG_ON(fifo_used(&ca->free_inc));
 		ca->free_inc.front = ca->free_inc.back	= 0;
 		ca->allocator_journal_seq_flush		= 0;
 		ca->allocator_invalidating_data		= false;
@@ -964,29 +991,6 @@ static int bch2_allocator_thread(void *arg)
 		 * free_inc is now full of newly-invalidated buckets: next,
 		 * write out the new bucket gens:
 		 */
-
-		while (!fifo_empty(&ca->free_inc) && !kthread_should_stop()) {
-			ret = bch2_invalidate_free_inc(c, ca, &journal_seq);
-			if (bch2_fs_fatal_err_on(ret < 0, c,
-					"error invalidating buckets: %i", ret))
-				goto err;
-
-			if (ca->allocator_invalidating_data)
-				bch2_journal_flush_seq(&c->journal, journal_seq);
-			else if (ca->allocator_journal_seq_flush)
-				bch2_journal_flush_seq(&c->journal,
-						       ca->allocator_journal_seq_flush);
-
-			while (ret && !kthread_should_stop()) {
-				BUG_ON(fifo_empty(&ca->free_inc));
-
-				bucket = fifo_peek(&ca->free_inc);
-				discard_invalidated_bucket(ca, bucket);
-				--ret;
-			}
-		}
-
-		ca->alloc_thread_started = true;
 	}
 out:
 	/*
@@ -995,21 +999,6 @@ out:
 	 */
 	synchronize_rcu();
 	return 0;
-err:
-	/*
-	 * Emergency read only - allocator thread has to shutdown.
-	 *
-	 * N.B. we better be going into RO mode, else allocations would hang
-	 * indefinitely - whatever generated the error will have sent us into RO
-	 * mode.
-	 *
-	 * Clear out the free_inc freelist so things are consistent-ish:
-	 */
-	spin_lock(&ca->freelist_lock);
-	while (fifo_pop(&ca->free_inc, bucket))
-		bch2_mark_free_bucket(ca, ca->buckets + bucket);
-	spin_unlock(&ca->freelist_lock);
-	goto out;
 }
 
 /* Allocation */
