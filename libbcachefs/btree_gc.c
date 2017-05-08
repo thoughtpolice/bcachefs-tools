@@ -142,14 +142,25 @@ int bch2_btree_mark_key_initial(struct bch_fs *c, enum bkey_type type,
 			struct bucket *g = PTR_BUCKET(ca, ptr);
 			struct bucket_mark new;
 
+			if (!g->mark.gen_valid) {
+				bucket_cmpxchg(g, new, ({
+					new.gen = ptr->gen;
+					new.gen_valid = 1;
+				}));
+				ca->need_prio_write = true;
+			}
+
 			if (fsck_err_on(gen_cmp(ptr->gen, g->mark.gen) > 0, c,
 					"%s ptr gen in the future: %u > %u",
 					type == BKEY_TYPE_BTREE
 					? "btree" : "data",
 					ptr->gen, g->mark.gen)) {
-				bucket_cmpxchg(g, new, new.gen = ptr->gen);
-				set_bit(BCH_FS_FIXED_GENS, &c->flags);
+				bucket_cmpxchg(g, new, ({
+					new.gen = ptr->gen;
+					new.gen_valid = 1;
+				}));
 				ca->need_prio_write = true;
+				set_bit(BCH_FS_FIXED_GENS, &c->flags);
 			}
 
 		}

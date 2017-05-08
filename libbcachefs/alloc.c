@@ -403,39 +403,44 @@ int bch2_prio_read(struct bch_dev *ca)
 	if (!bucket)
 		return 0;
 
-	unfixable_fsck_err_on(bucket < ca->mi.first_bucket ||
-			      bucket >= ca->mi.nbuckets, c,
-			      "bad prio bucket %llu", bucket);
+	if (mustfix_fsck_err_on(bucket < ca->mi.first_bucket ||
+				bucket >= ca->mi.nbuckets, c,
+				"bad prio bucket %llu", bucket))
+		return 0;
 
 	for (b = 0; b < ca->mi.nbuckets; b++, d++) {
 		if (d == end) {
 			ca->prio_last_buckets[bucket_nr] = bucket;
 			bucket_nr++;
 
-			ret = prio_io(ca, bucket, REQ_OP_READ);
-			if (bch2_dev_fatal_io_err_on(ret, ca,
-					"prior read from bucket %llu",
-					bucket) ||
-			    bch2_meta_read_fault("prio"))
-				return -EIO;
+			ret = prio_io(ca, bucket, REQ_OP_READ) ||
+				bch2_meta_read_fault("prio");
+
+			if (mustfix_fsck_err_on(ret, c,
+					"IO error reading bucket gens (%i)",
+					ret))
+				return 0;
 
 			got = le64_to_cpu(p->magic);
 			expect = pset_magic(c);
-			unfixable_fsck_err_on(got != expect, c,
-				"bad magic (got %llu expect %llu) while reading prios from bucket %llu",
-				got, expect, bucket);
+			if (mustfix_fsck_err_on(got != expect, c,
+					"bad magic (got %llu expect %llu) while reading prios from bucket %llu",
+					got, expect, bucket))
+				return 0;
 
-			unfixable_fsck_err_on(PSET_CSUM_TYPE(p) >= BCH_CSUM_NR, c,
-				"prio bucket with unknown csum type %llu bucket %lluu",
-				PSET_CSUM_TYPE(p), bucket);
+			if (mustfix_fsck_err_on(PSET_CSUM_TYPE(p) >= BCH_CSUM_NR, c,
+					"prio bucket with unknown csum type %llu bucket %lluu",
+					PSET_CSUM_TYPE(p), bucket))
+				return 0;
 
 			csum = bch2_checksum(c, PSET_CSUM_TYPE(p),
 					    prio_nonce(p),
 					    (void *) p + sizeof(p->csum),
 					    bucket_bytes(ca) - sizeof(p->csum));
-			unfixable_fsck_err_on(bch2_crc_cmp(csum, p->csum), c,
-				"bad checksum reading prios from bucket %llu",
-				bucket);
+			if (fsck_err_on(bch2_crc_cmp(csum, p->csum), c,
+					"bad checksum reading prios from bucket %llu",
+					bucket))
+				return 0;
 
 			bch2_encrypt(c, PSET_CSUM_TYPE(p),
 				    prio_nonce(p),
@@ -450,7 +455,10 @@ int bch2_prio_read(struct bch_dev *ca)
 		ca->buckets[b].prio[READ] = le16_to_cpu(d->prio[READ]);
 		ca->buckets[b].prio[WRITE] = le16_to_cpu(d->prio[WRITE]);
 
-		bucket_cmpxchg(&ca->buckets[b], new, new.gen = d->gen);
+		bucket_cmpxchg(&ca->buckets[b], new, ({
+			new.gen = d->gen;
+			new.gen_valid = 1;
+		}));
 	}
 
 	mutex_lock(&c->bucket_lock);

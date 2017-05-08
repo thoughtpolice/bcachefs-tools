@@ -83,6 +83,8 @@ SRCS=bcachefs.c				\
      libbcachefs/io.c			\
      libbcachefs/journal.c		\
      libbcachefs/keylist.c		\
+     libbcachefs/lz4_compress.c		\
+     libbcachefs/lz4_decompress.c	\
      libbcachefs/migrate.c		\
      libbcachefs/move.c			\
      libbcachefs/movinggc.c		\

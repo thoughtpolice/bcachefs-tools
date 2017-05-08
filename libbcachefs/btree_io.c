@@ -1025,6 +1025,17 @@ static bool extent_contains_ptr(struct bkey_s_c_extent e,
 	return false;
 }
 
+static void bch2_btree_node_read_complete(struct btree_read_bio *rb,
+					  struct btree *b)
+{
+	struct bch_dev *ca = rb->pick.ca;
+
+	bio_put(&rb->bio);
+	percpu_ref_put(&ca->io_ref);
+	clear_btree_node_read_in_flight(b);
+	wake_up_bit(&b->flags, BTREE_NODE_read_in_flight);
+}
+
 void bch2_btree_node_read_done(struct bch_fs *c, struct btree *b,
 			      struct bch_dev *ca,
 			      const struct bch_extent_ptr *ptr)
@@ -1196,8 +1207,6 @@ void bch2_btree_node_read_done(struct bch_fs *c, struct btree *b,
 
 	btree_node_reset_sib_u64s(b);
 out:
-	clear_btree_node_read_in_flight(b);
-	wake_up_bit(&b->flags, BTREE_NODE_read_in_flight);
 	mempool_free(iter, &c->fill_iter);
 	return;
 err:
@@ -1215,9 +1224,7 @@ static void btree_node_read_work(struct work_struct *work)
 
 	bch2_btree_node_read_done(rb->c, rb->bio.bi_private,
 				  rb->pick.ca, &rb->pick.ptr);
-
-	percpu_ref_put(&rb->pick.ca->io_ref);
-	bio_put(&rb->bio);
+	bch2_btree_node_read_complete(rb, rb->bio.bi_private);
 }
 
 static void btree_node_read_endio(struct bio *bio)
@@ -1231,8 +1238,7 @@ static void btree_node_read_endio(struct bio *bio)
 			PTR_BUCKET_NR(rb->pick.ca, &rb->pick.ptr)) ||
 	    bch2_meta_read_fault("btree")) {
 		set_btree_node_read_error(b);
-		percpu_ref_put(&rb->pick.ca->io_ref);
-		bio_put(bio);
+		bch2_btree_node_read_complete(rb, rb->bio.bi_private);
 		return;
 	}
 
@@ -1249,7 +1255,6 @@ void bch2_btree_node_read(struct bch_fs *c, struct btree *b,
 	struct bio *bio;
 
 	trace_btree_read(c, b);
-	set_btree_node_read_in_flight(b);
 
 	pick = bch2_btree_pick_ptr(c, b);
 	if (bch2_fs_fatal_err_on(!pick.ca, c,
@@ -1268,6 +1273,8 @@ void bch2_btree_node_read(struct bch_fs *c, struct btree *b,
 	bio->bi_iter.bi_size	= btree_bytes(c);
 	bch2_bio_map(bio, b->data);
 
+	set_btree_node_read_in_flight(b);
+
 	if (sync) {
 		submit_bio_wait(bio);
 
@@ -1282,8 +1289,7 @@ void bch2_btree_node_read(struct bch_fs *c, struct btree *b,
 		bch2_btree_node_read_done(c, b, pick.ca, &pick.ptr);
 		bch2_time_stats_update(&c->btree_read_time, start_time);
 out:
-		bio_put(bio);
-		percpu_ref_put(&pick.ca->io_ref);
+		bch2_btree_node_read_complete(rb, b);
 	} else {
 		bio->bi_end_io	= btree_node_read_endio;
 		bio->bi_private	= b;

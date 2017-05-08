@@ -20,6 +20,7 @@ struct bucket_mark {
 	struct {
 		u8		gen;
 
+		unsigned	gen_valid:1;
 		unsigned	journal_seq_valid:1;
 
 		/*

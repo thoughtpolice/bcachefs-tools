@@ -4,7 +4,7 @@
 #include "io.h"
 #include "super-io.h"
 
-#include <linux/lz4.h>
+#include "lz4.h"
 #include <linux/zlib.h>
 
 enum bounced {
@@ -148,10 +148,9 @@ static int __bio_uncompress(struct bch_fs *c, struct bio *src,
 
 	switch (crc.compression_type) {
 	case BCH_COMPRESSION_LZ4:
-		ret = LZ4_decompress_safe(src_data, dst_data,
-					  src_len, dst_len);
-
-		if (ret != dst_len) {
+		ret = lz4_decompress(src_data, &src_len,
+				     dst_data, dst_len);
+		if (ret) {
 			ret = -EIO;
 			goto err;
 		}
@@ -287,27 +286,32 @@ static int __bio_compress(struct bch_fs *c,
 	switch (compression_type) {
 	case BCH_COMPRESSION_LZ4: {
 		void *workspace;
-		int srclen = src->bi_iter.bi_size;
-		ret = 0;
+
+		*dst_len = dst->bi_iter.bi_size;
+		*src_len = src->bi_iter.bi_size;
 
 		workspace = mempool_alloc(&c->lz4_workspace_pool, GFP_NOIO);
 
-		while (srclen > block_bytes(c) &&
-		       (ret = LZ4_compress_destSize(src_data, dst_data,
-						    &srclen, dst->bi_iter.bi_size,
-						    workspace)) &&
-		       (srclen & (block_bytes(c) - 1))) {
-			/* Round down to nearest block and try again: */
-			srclen = round_down(srclen, block_bytes(c));
+		while (*src_len > block_bytes(c) &&
+		       (ret = lz4_compress(src_data, *src_len,
+					   dst_data, dst_len,
+					   workspace))) {
+			/*
+			 * On error, the compressed data was bigger than
+			 * dst_len, and -ret is the amount of data we were able
+			 * to compress - round down to nearest block and try
+			 * again:
+			 */
+			BUG_ON(ret > 0);
+			BUG_ON(-ret >= *src_len);
+
+			*src_len = round_down(-ret, block_bytes(c));
 		}
 
 		mempool_free(workspace, &c->lz4_workspace_pool);
 
-		if (!ret)
+		if (ret)
 			goto err;
-
-		*src_len = srclen;
-		*dst_len = ret;
 		break;
 	}
 	case BCH_COMPRESSION_GZIP: {
