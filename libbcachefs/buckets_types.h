@@ -3,6 +3,7 @@
 
 #include "util.h"
 
+/* kill, switch to bch_data_types */
 enum bucket_data_type {
 	BUCKET_DATA	= 0,
 	BUCKET_BTREE,
@@ -19,23 +20,12 @@ struct bucket_mark {
 
 	struct {
 		u8		gen;
-
-		unsigned	gen_valid:1;
-		unsigned	journal_seq_valid:1;
-
-		/*
-		 * If this bucket had metadata while at the current generation
-		 * number, the allocator must increment its gen before we reuse
-		 * it:
-		 */
-		unsigned	had_metadata:1;
-
-		unsigned	owned_by_allocator:1;
-
-		unsigned	data_type:3;
-
-		unsigned	nouse:1;
-
+		u8		data_type:3,
+				gen_valid:1,
+				owned_by_allocator:1,
+				nouse:1,
+				journal_seq_valid:1,
+				touched_this_mount:1;
 		u16		dirty_sectors;
 		u16		cached_sectors;
 

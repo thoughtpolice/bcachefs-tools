@@ -233,17 +233,29 @@ void bch2_btree_open_bucket_put(struct bch_fs *c, struct btree *b)
 }
 
 static struct btree *__bch2_btree_node_alloc(struct bch_fs *c,
-					    bool use_reserve,
-					    struct disk_reservation *res,
-					    struct closure *cl)
+					     struct disk_reservation *res,
+					     struct closure *cl,
+					     unsigned flags)
 {
 	BKEY_PADDED(k) tmp;
 	struct open_bucket *ob;
 	struct btree *b;
-	unsigned reserve = use_reserve ? 0 : BTREE_NODE_RESERVE;
+	unsigned nr_reserve;
+	enum alloc_reserve alloc_reserve;
+
+	if (flags & BTREE_INSERT_USE_ALLOC_RESERVE) {
+		nr_reserve	= 0;
+		alloc_reserve	= RESERVE_ALLOC;
+	} else if (flags & BTREE_INSERT_USE_RESERVE) {
+		nr_reserve	= BTREE_NODE_RESERVE / 2;
+		alloc_reserve	= RESERVE_BTREE;
+	} else {
+		nr_reserve	= BTREE_NODE_RESERVE;
+		alloc_reserve	= RESERVE_NONE;
+	}
 
 	mutex_lock(&c->btree_reserve_cache_lock);
-	if (c->btree_reserve_cache_nr > reserve) {
+	if (c->btree_reserve_cache_nr > nr_reserve) {
 		struct btree_alloc *a =
 			&c->btree_reserve_cache[--c->btree_reserve_cache_nr];
 
@@ -263,8 +275,7 @@ retry:
 			       bkey_i_to_extent(&tmp.k),
 			       res->nr_replicas,
 			       c->opts.metadata_replicas_required,
-			       use_reserve ? RESERVE_BTREE : RESERVE_NONE,
-			       cl);
+			       alloc_reserve, cl);
 	if (IS_ERR(ob))
 		return ERR_CAST(ob);
 
@@ -311,7 +322,7 @@ static struct btree *bch2_btree_node_alloc(struct bch_fs *c,
 
 	bch2_btree_build_aux_trees(b);
 
-	bch2_check_mark_super(c, &b->key, true);
+	bch2_check_mark_super(c, bkey_i_to_s_c_extent(&b->key), BCH_DATA_BTREE);
 
 	trace_btree_node_alloc(c, b);
 	return b;
@@ -533,9 +544,6 @@ static struct btree_reserve *__bch2_btree_reserve_get(struct bch_fs *c,
 	if (flags & BTREE_INSERT_NOFAIL)
 		disk_res_flags |= BCH_DISK_RESERVATION_NOFAIL;
 
-	if (flags & BTREE_INSERT_NOWAIT)
-		cl = NULL;
-
 	/*
 	 * This check isn't necessary for correctness - it's just to potentially
 	 * prevent us from doing a lot of work that'll end up being wasted:
@@ -565,8 +573,9 @@ static struct btree_reserve *__bch2_btree_reserve_get(struct bch_fs *c,
 	reserve->nr = 0;
 
 	while (reserve->nr < nr_nodes) {
-		b = __bch2_btree_node_alloc(c, flags & BTREE_INSERT_USE_RESERVE,
-					   &disk_res, cl);
+		b = __bch2_btree_node_alloc(c, &disk_res,
+					    flags & BTREE_INSERT_NOWAIT
+					    ? NULL : cl, flags);
 		if (IS_ERR(b)) {
 			ret = PTR_ERR(b);
 			goto err_free;
@@ -793,8 +802,8 @@ void bch2_btree_journal_key(struct btree_insert *trans,
 	struct btree_write *w = btree_current_write(b);
 
 	EBUG_ON(iter->level || b->level);
-	EBUG_ON(!trans->journal_res.ref &&
-		test_bit(JOURNAL_REPLAY_DONE, &j->flags));
+	EBUG_ON(trans->journal_res.ref !=
+		!(trans->flags & BTREE_INSERT_JOURNAL_REPLAY));
 
 	if (!journal_pin_active(&w->journal))
 		bch2_journal_pin_add(j, &trans->journal_res,
@@ -1026,6 +1035,27 @@ retry:
 		 */
 		six_unlock_read(&b->lock);
 		mutex_unlock(&c->btree_interior_update_lock);
+
+		/*
+		 * Bit of funny circularity going on here we have to break:
+		 *
+		 * We have to drop our journal pin before writing the journal
+		 * entry that points to the new btree root: else, we could
+		 * deadlock if the journal currently happens to be full.
+		 *
+		 * This mean we're dropping the journal pin _before_ the new
+		 * nodes are technically reachable - but this is safe, because
+		 * after the bch2_btree_set_root_ondisk() call above they will
+		 * be reachable as of the very next journal write:
+		 */
+		bch2_journal_pin_drop(&c->journal, &as->journal);
+
+		/*
+		 * And, do a journal write to write the pointer to the new root,
+		 * then wait for it to complete before freeing the nodes we
+		 * replaced:
+		 */
+		bch2_journal_meta_async(&c->journal, cl);
 		break;
 	}
 
@@ -1051,19 +1081,70 @@ static void btree_interior_update_updated_btree(struct bch_fs *c,
 
 	mutex_unlock(&c->btree_interior_update_lock);
 
+	/*
+	 * In general, when you're staging things in a journal that will later
+	 * be written elsewhere, and you also want to guarantee ordering: that
+	 * is, if you have updates a, b, c, after a crash you should never see c
+	 * and not a or b - there's a problem:
+	 *
+	 * If the final destination of the update(s) (i.e. btree node) can be
+	 * written/flushed _before_ the relevant journal entry - oops, that
+	 * breaks ordering, since the various leaf nodes can be written in any
+	 * order.
+	 *
+	 * Normally we use bset->journal_seq to deal with this - if during
+	 * recovery we find a btree node write that's newer than the newest
+	 * journal entry, we just ignore it - we don't need it, anything we're
+	 * supposed to have (that we reported as completed via fsync()) will
+	 * still be in the journal, and as far as the state of the journal is
+	 * concerned that btree node write never happened.
+	 *
+	 * That breaks when we're rewriting/splitting/merging nodes, since we're
+	 * mixing btree node writes that haven't happened yet with previously
+	 * written data that has been reported as completed to the journal.
+	 *
+	 * Thus, before making the new nodes reachable, we have to wait the
+	 * newest journal sequence number we have data for to be written (if it
+	 * hasn't been yet).
+	 */
 	bch2_journal_wait_on_seq(&c->journal, as->journal_seq, &as->cl);
 
 	continue_at(&as->cl, btree_interior_update_nodes_written,
 		    system_freezable_wq);
 }
 
-static void btree_interior_update_reparent(struct btree_interior_update *as,
+static void interior_update_flush(struct journal *j,
+			struct journal_entry_pin *pin, u64 seq)
+{
+	struct btree_interior_update *as =
+		container_of(pin, struct btree_interior_update, journal);
+
+	bch2_journal_flush_seq_async(j, as->journal_seq, NULL);
+}
+
+static void btree_interior_update_reparent(struct bch_fs *c,
+					   struct btree_interior_update *as,
 					   struct btree_interior_update *child)
 {
 	child->b = NULL;
 	child->mode = BTREE_INTERIOR_UPDATING_AS;
 	child->parent_as = as;
 	closure_get(&as->cl);
+
+	/*
+	 * When we write a new btree root, we have to drop our journal pin
+	 * _before_ the new nodes are technically reachable; see
+	 * btree_interior_update_nodes_written().
+	 *
+	 * This goes for journal pins that are recursively blocked on us - so,
+	 * just transfer the journal pin to the new interior update so
+	 * btree_interior_update_nodes_written() can drop it.
+	 */
+	bch2_journal_pin_add_if_older(&c->journal, &child->journal,
+				      &as->journal, interior_update_flush);
+	bch2_journal_pin_drop(&c->journal, &child->journal);
+
+	as->journal_seq = max(as->journal_seq, child->journal_seq);
 }
 
 static void btree_interior_update_updated_root(struct bch_fs *c,
@@ -1081,7 +1162,7 @@ static void btree_interior_update_updated_root(struct bch_fs *c,
 	 * btree_interior_update operation to point to us:
 	 */
 	if (r->as)
-		btree_interior_update_reparent(as, r->as);
+		btree_interior_update_reparent(c, as, r->as);
 
 	as->mode = BTREE_INTERIOR_UPDATING_ROOT;
 	as->b = r->b;
@@ -1089,17 +1170,19 @@ static void btree_interior_update_updated_root(struct bch_fs *c,
 
 	mutex_unlock(&c->btree_interior_update_lock);
 
+	/*
+	 * When we're rewriting nodes and updating interior nodes, there's an
+	 * issue with updates that haven't been written in the journal getting
+	 * mixed together with older data - see * btree_interior_update_updated_btree()
+	 * for the explanation.
+	 *
+	 * However, this doesn't affect us when we're writing a new btree root -
+	 * because to make that new root reachable we have to write out a new
+	 * journal entry, which must necessarily be newer than as->journal_seq.
+	 */
+
 	continue_at(&as->cl, btree_interior_update_nodes_written,
 		    system_freezable_wq);
-}
-
-static void interior_update_flush(struct journal *j,
-			struct journal_entry_pin *pin, u64 seq)
-{
-	struct btree_interior_update *as =
-		container_of(pin, struct btree_interior_update, journal);
-
-	bch2_journal_flush_seq_async(j, as->journal_seq, NULL);
 }
 
 /*
@@ -1150,7 +1233,7 @@ void bch2_btree_interior_update_will_free_node(struct bch_fs *c,
 	 */
 	list_for_each_entry_safe(p, n, &b->write_blocked, write_blocked_list) {
 		list_del(&p->write_blocked_list);
-		btree_interior_update_reparent(as, p);
+		btree_interior_update_reparent(c, as, p);
 	}
 
 	clear_btree_node_dirty(b);

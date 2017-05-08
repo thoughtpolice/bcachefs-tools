@@ -1402,7 +1402,7 @@ static int validate_bset_for_write(struct bch_fs *c, struct btree *b,
 
 	ret = validate_bset(c, b, ptr, i, sectors, &whiteout_u64s, WRITE);
 	if (ret)
-		bch2_fatal_error(c);
+		bch2_inconsistent_error(c);
 
 	return ret;
 }

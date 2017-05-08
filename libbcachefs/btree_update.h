@@ -373,16 +373,20 @@ int __bch2_btree_insert_at(struct btree_insert *);
 
 /* for copygc, or when merging btree nodes */
 #define BTREE_INSERT_USE_RESERVE	(1 << 2)
+#define BTREE_INSERT_USE_ALLOC_RESERVE	(1 << 3)
 
 /*
  * Insert is for journal replay: don't get journal reservations, or mark extents
  * (bch_mark_key)
  */
-#define BTREE_INSERT_JOURNAL_REPLAY	(1 << 3)
+#define BTREE_INSERT_JOURNAL_REPLAY	(1 << 4)
 
 /* Don't block on allocation failure (for new btree nodes: */
-#define BTREE_INSERT_NOWAIT		(1 << 4)
-#define BTREE_INSERT_GC_LOCK_HELD	(1 << 5)
+#define BTREE_INSERT_NOWAIT		(1 << 5)
+#define BTREE_INSERT_GC_LOCK_HELD	(1 << 6)
+
+#define BCH_HASH_SET_MUST_CREATE	(1 << 7)
+#define BCH_HASH_SET_MUST_REPLACE	(1 << 8)
 
 int bch2_btree_delete_at(struct btree_iter *, unsigned);
 

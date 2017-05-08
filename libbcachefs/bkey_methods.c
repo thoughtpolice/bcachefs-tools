@@ -2,6 +2,7 @@
 #include "bcachefs.h"
 #include "bkey_methods.h"
 #include "btree_types.h"
+#include "alloc.h"
 #include "dirent.h"
 #include "error.h"
 #include "extents.h"
@@ -13,6 +14,7 @@ const struct bkey_ops *bch2_bkey_ops[] = {
 	[BKEY_TYPE_INODES]	= &bch2_bkey_inode_ops,
 	[BKEY_TYPE_DIRENTS]	= &bch2_bkey_dirent_ops,
 	[BKEY_TYPE_XATTRS]	= &bch2_bkey_xattr_ops,
+	[BKEY_TYPE_ALLOC]	= &bch2_bkey_alloc_ops,
 	[BKEY_TYPE_BTREE]	= &bch2_bkey_btree_ops,
 };
 

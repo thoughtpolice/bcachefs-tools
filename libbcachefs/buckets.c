@@ -306,14 +306,18 @@ static void bch2_dev_usage_update(struct bch_dev *ca,
 	_old;							\
 })
 
-void bch2_invalidate_bucket(struct bch_dev *ca, struct bucket *g)
+bool bch2_invalidate_bucket(struct bch_dev *ca, struct bucket *g,
+			    struct bucket_mark *old)
 {
 	struct bch_fs_usage stats = { 0 };
-	struct bucket_mark old, new;
+	struct bucket_mark new;
 
-	old = bucket_data_cmpxchg(ca, g, new, ({
+	*old = bucket_data_cmpxchg(ca, g, new, ({
+		if (!is_available_bucket(new))
+			return false;
+
 		new.owned_by_allocator	= 1;
-		new.had_metadata	= 0;
+		new.touched_this_mount	= 1;
 		new.data_type		= 0;
 		new.cached_sectors	= 0;
 		new.dirty_sectors	= 0;
@@ -321,11 +325,28 @@ void bch2_invalidate_bucket(struct bch_dev *ca, struct bucket *g)
 	}));
 
 	/* XXX: we're not actually updating fs usage's cached sectors... */
-	bch2_fs_usage_update(&stats, old, new);
+	bch2_fs_usage_update(&stats, *old, new);
 
-	if (!old.owned_by_allocator && old.cached_sectors)
+	if (!old->owned_by_allocator && old->cached_sectors)
 		trace_invalidate(ca, g - ca->buckets,
-					old.cached_sectors);
+					old->cached_sectors);
+	return true;
+}
+
+bool bch2_mark_alloc_bucket_startup(struct bch_dev *ca, struct bucket *g)
+{
+	struct bucket_mark new, old;
+
+	old = bucket_data_cmpxchg(ca, g, new, ({
+		if (new.touched_this_mount ||
+		    !is_available_bucket(new))
+			return false;
+
+		new.owned_by_allocator	= 1;
+		new.touched_this_mount	= 1;
+	}));
+
+	return true;
 }
 
 void bch2_mark_free_bucket(struct bch_dev *ca, struct bucket *g)
@@ -333,6 +354,7 @@ void bch2_mark_free_bucket(struct bch_dev *ca, struct bucket *g)
 	struct bucket_mark old, new;
 
 	old = bucket_data_cmpxchg(ca, g, new, ({
+		new.touched_this_mount	= 1;
 		new.owned_by_allocator	= 0;
 		new.data_type		= 0;
 		new.cached_sectors	= 0;
@@ -348,7 +370,8 @@ void bch2_mark_alloc_bucket(struct bch_dev *ca, struct bucket *g,
 	struct bucket_mark new;
 
 	bucket_data_cmpxchg(ca, g, new, ({
-		new.owned_by_allocator = owned_by_allocator;
+		new.touched_this_mount	= 1;
+		new.owned_by_allocator	= owned_by_allocator;
 	}));
 }
 
@@ -376,8 +399,8 @@ void bch2_mark_metadata_bucket(struct bch_dev *ca, struct bucket *g,
 	old = bucket_data_cmpxchg(ca, g, new, ({
 		saturated_add(ca, new.dirty_sectors, ca->mi.bucket_size,
 			      GC_MAX_SECTORS_USED);
-		new.data_type = type;
-		new.had_metadata = 1;
+		new.data_type		= type;
+		new.touched_this_mount	= 1;
 	}));
 
 	if (old.data_type != type &&
@@ -458,8 +481,9 @@ static void bch2_mark_pointer(struct bch_fs *c,
 	if (gc_will_visit) {
 		if (journal_seq)
 			bucket_cmpxchg(g, new, ({
-				new.journal_seq_valid = 1;
-				new.journal_seq = journal_seq;
+				new.touched_this_mount	= 1;
+				new.journal_seq_valid	= 1;
+				new.journal_seq		= journal_seq;
 			}));
 
 		goto out;
@@ -478,11 +502,6 @@ static void bch2_mark_pointer(struct bch_fs *c,
 				test_bit(JOURNAL_REPLAY_DONE, &c->journal.flags));
 			return;
 		}
-
-		EBUG_ON(type != S_CACHED &&
-			!may_make_unavailable &&
-			is_available_bucket(new) &&
-			test_bit(JOURNAL_REPLAY_DONE, &c->journal.flags));
 
 		if (type != S_CACHED &&
 		    new.dirty_sectors == GC_MAX_SECTORS_USED &&
@@ -508,7 +527,7 @@ static void bch2_mark_pointer(struct bch_fs *c,
 			new.data_type = data_type;
 		}
 
-		new.had_metadata |= is_meta_bucket(new);
+		new.touched_this_mount	= 1;
 	}));
 
 	if (old.data_type != data_type &&

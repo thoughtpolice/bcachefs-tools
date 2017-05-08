@@ -176,10 +176,8 @@ struct bch_sb *bch2_format(struct format_opts opts,
 	SET_BCH_SB_BTREE_NODE_SIZE(sb,		opts.btree_node_size);
 	SET_BCH_SB_GC_RESERVE(sb,		8);
 	SET_BCH_SB_META_REPLICAS_WANT(sb,	opts.meta_replicas);
-	SET_BCH_SB_META_REPLICAS_HAVE(sb,	opts.meta_replicas);
 	SET_BCH_SB_META_REPLICAS_REQ(sb,	opts.meta_replicas_required);
 	SET_BCH_SB_DATA_REPLICAS_WANT(sb,	opts.data_replicas);
-	SET_BCH_SB_DATA_REPLICAS_HAVE(sb,	opts.data_replicas);
 	SET_BCH_SB_DATA_REPLICAS_REQ(sb,	opts.data_replicas_required);
 	SET_BCH_SB_ERROR_ACTION(sb,		opts.on_error_action);
 	SET_BCH_SB_STR_HASH_TYPE(sb,		BCH_STR_HASH_SIPHASH);
@@ -339,9 +337,9 @@ void bch2_super_print(struct bch_sb *sb, int units)
 
 	       BCH_SB_CLEAN(sb),
 
-	       BCH_SB_META_REPLICAS_HAVE(sb),
+	       0LLU, //BCH_SB_META_REPLICAS_HAVE(sb),
 	       BCH_SB_META_REPLICAS_WANT(sb),
-	       BCH_SB_DATA_REPLICAS_HAVE(sb),
+	       0LLU, //BCH_SB_DATA_REPLICAS_HAVE(sb),
 	       BCH_SB_DATA_REPLICAS_WANT(sb),
 
 	       BCH_SB_META_CSUM_TYPE(sb) < BCH_CSUM_NR
@@ -405,8 +403,8 @@ void bch2_super_print(struct bch_sb *sb, int units)
 		       : "unknown",
 
 		       BCH_MEMBER_TIER(m),
-		       BCH_MEMBER_HAS_METADATA(m),
-		       BCH_MEMBER_HAS_DATA(m),
+		       0LLU, //BCH_MEMBER_HAS_METADATA(m),
+		       0LLU, //BCH_MEMBER_HAS_DATA(m),
 
 		       BCH_MEMBER_REPLACEMENT(m) < CACHE_REPLACEMENT_NR
 		       ? bch2_cache_replacement_policies[BCH_MEMBER_REPLACEMENT(m)]

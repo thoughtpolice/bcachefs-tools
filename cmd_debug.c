@@ -55,12 +55,6 @@ static void dump_one_device(struct bch_fs *c, struct bch_dev *ca, int fd)
 				  bucket_bytes(ca));
 		}
 
-	/* Prios/gens: */
-	for (i = 0; i < prio_buckets(ca); i++)
-		range_add(&data,
-			  bucket_bytes(ca) * ca->prio_last_buckets[i],
-			  bucket_bytes(ca));
-
 	/* Btree: */
 	for (i = 0; i < BTREE_ID_NR; i++) {
 		const struct bch_extent_ptr *ptr;
@@ -97,6 +91,7 @@ int cmd_dump(int argc, char *argv[])
 	opts.nochanges	= true;
 	opts.noreplay	= true;
 	opts.errors	= BCH_ON_ERROR_CONTINUE;
+	opts.degraded	= true;
 
 	while ((opt = getopt(argc, argv, "o:fh")) != -1)
 		switch (opt) {
@@ -273,6 +268,7 @@ int cmd_list(int argc, char *argv[])
 	opts.nochanges	= true;
 	opts.norecovery	= true;
 	opts.errors	= BCH_ON_ERROR_CONTINUE;
+	opts.degraded	= true;
 
 	while ((opt = getopt(argc, argv, "b:s:e:i:m:fvh")) != -1)
 		switch (opt) {

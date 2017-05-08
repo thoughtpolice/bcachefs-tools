@@ -53,28 +53,6 @@ static inline u64 journal_pin_seq(struct journal *j,
 	return last_seq(j) + fifo_entry_idx(&j->pin, pin_list);
 }
 
-static inline struct jset_entry *__jset_entry_type_next(struct jset *jset,
-					struct jset_entry *entry, unsigned type)
-{
-	while (entry < vstruct_last(jset)) {
-		if (JOURNAL_ENTRY_TYPE(entry) == type)
-			return entry;
-
-		entry = vstruct_next(entry);
-	}
-
-	return NULL;
-}
-
-#define for_each_jset_entry_type(entry, jset, type)			\
-	for (entry = (jset)->start;					\
-	     (entry = __jset_entry_type_next(jset, entry, type));	\
-	     entry = vstruct_next(entry))
-
-#define for_each_jset_key(k, _n, entry, jset)				\
-	for_each_jset_entry_type(entry, jset, JOURNAL_ENTRY_BTREE_KEYS)	\
-		vstruct_for_each_safe(entry, k, _n)
-
 static inline void bch2_journal_add_entry(struct journal_buf *buf,
 					 const void *data, size_t u64s,
 					 unsigned type, enum btree_id id,
@@ -121,20 +99,6 @@ static void bch2_journal_add_btree_root(struct journal_buf *buf,
 {
 	bch2_journal_add_entry(buf, k, k->k.u64s,
 			      JOURNAL_ENTRY_BTREE_ROOT, id, level);
-}
-
-static inline void bch2_journal_add_prios(struct journal *j,
-					 struct journal_buf *buf)
-{
-	/*
-	 * no prio bucket ptrs yet... XXX should change the allocator so this
-	 * can't happen:
-	 */
-	if (!buf->nr_prio_buckets)
-		return;
-
-	bch2_journal_add_entry(buf, j->prio_buckets, buf->nr_prio_buckets,
-			      JOURNAL_ENTRY_PRIO_PTRS, 0, 0);
 }
 
 static void journal_seq_blacklist_flush(struct journal *j,
@@ -986,7 +950,6 @@ static inline bool journal_has_keys(struct list_head *list)
 int bch2_journal_read(struct bch_fs *c, struct list_head *list)
 {
 	struct journal *j = &c->journal;
-	struct jset_entry *prio_ptrs;
 	struct journal_list jlist;
 	struct journal_replay *i;
 	struct journal_entry_pin_list *p;
@@ -1094,15 +1057,6 @@ int bch2_journal_read(struct bch_fs *c, struct list_head *list)
 
 	bch_info(c, "journal read done, %i keys in %i entries, seq %llu",
 		 keys, entries, (u64) atomic64_read(&j->seq));
-
-	i = list_last_entry(list, struct journal_replay, list);
-	prio_ptrs = bch2_journal_find_entry(&i->j, JOURNAL_ENTRY_PRIO_PTRS, 0);
-	if (prio_ptrs) {
-		memcpy_u64s(j->prio_buckets,
-			    prio_ptrs->_data,
-			    le16_to_cpu(prio_ptrs->u64s));
-		j->nr_prio_buckets = le16_to_cpu(prio_ptrs->u64s);
-	}
 fsck_err:
 	return ret;
 }
@@ -1189,12 +1143,7 @@ static void __bch2_journal_next_entry(struct journal *j)
 
 static inline size_t journal_entry_u64s_reserve(struct journal_buf *buf)
 {
-	unsigned ret = BTREE_ID_NR * (JSET_KEYS_U64s + BKEY_EXTENT_U64s_MAX);
-
-	if (buf->nr_prio_buckets)
-		ret += JSET_KEYS_U64s + buf->nr_prio_buckets;
-
-	return ret;
+	return BTREE_ID_NR * (JSET_KEYS_U64s + BKEY_EXTENT_U64s_MAX);
 }
 
 static enum {
@@ -1395,9 +1344,7 @@ static int journal_entry_open(struct journal *j)
 	buf->disk_sectors	= sectors;
 
 	sectors = min_t(unsigned, sectors, buf->size >> 9);
-
 	j->cur_buf_sectors	= sectors;
-	buf->nr_prio_buckets	= j->nr_prio_buckets;
 
 	u64s = (sectors << 9) / sizeof(u64);
 
@@ -1510,17 +1457,27 @@ int bch2_journal_replay(struct bch_fs *c, struct list_head *list)
 		for_each_jset_key(k, _n, entry, &i->j) {
 			struct disk_reservation disk_res;
 
-			/*
-			 * We might cause compressed extents to be split, so we
-			 * need to pass in a disk_reservation:
-			 */
-			BUG_ON(bch2_disk_reservation_get(c, &disk_res, 0, 0));
+			if (entry->btree_id == BTREE_ID_ALLOC) {
+				/*
+				 * allocation code handles replay for
+				 * BTREE_ID_ALLOC keys:
+				 */
+				ret = bch2_alloc_replay_key(c, k->k.p);
+			} else {
 
-			ret = bch2_btree_insert(c, entry->btree_id, k,
-					       &disk_res, NULL, NULL,
-					       BTREE_INSERT_NOFAIL|
-					       BTREE_INSERT_JOURNAL_REPLAY);
-			bch2_disk_reservation_put(c, &disk_res);
+				/*
+				 * We might cause compressed extents to be
+				 * split, so we need to pass in a
+				 * disk_reservation:
+				 */
+				BUG_ON(bch2_disk_reservation_get(c, &disk_res, 0, 0));
+
+				ret = bch2_btree_insert(c, entry->btree_id, k,
+							&disk_res, NULL, NULL,
+							BTREE_INSERT_NOFAIL|
+							BTREE_INSERT_JOURNAL_REPLAY);
+				bch2_disk_reservation_put(c, &disk_res);
+			}
 
 			if (ret) {
 				bch_err(c, "journal replay: error %d while replaying key",
@@ -1560,13 +1517,12 @@ err:
 	return ret;
 }
 
-#if 0
 /*
  * Allocate more journal space at runtime - not currently making use if it, but
  * the code works:
  */
 static int bch2_set_nr_journal_buckets(struct bch_fs *c, struct bch_dev *ca,
-				      unsigned nr)
+				       unsigned nr)
 {
 	struct journal *j = &c->journal;
 	struct journal_device *ja = &ca->journal;
@@ -1614,8 +1570,8 @@ static int bch2_set_nr_journal_buckets(struct bch_fs *c, struct bch_dev *ca,
 
 	while (ja->nr < nr) {
 		/* must happen under journal lock, to avoid racing with gc: */
-		u64 b = bch2_bucket_alloc(ca, RESERVE_NONE);
-		if (!b) {
+		long b = bch2_bucket_alloc(c, ca, RESERVE_NONE);
+		if (b < 0) {
 			if (!closure_wait(&c->freelist_wait, &cl)) {
 				spin_unlock(&j->lock);
 				closure_sync(&cl);
@@ -1651,7 +1607,7 @@ static int bch2_set_nr_journal_buckets(struct bch_fs *c, struct bch_dev *ca,
 	}
 	spin_unlock(&j->lock);
 
-	BUG_ON(bch2_validate_journal_layout(ca->disk_sb.sb, ca->mi));
+	BUG_ON(bch2_sb_validate_journal(ca->disk_sb.sb, ca->mi));
 
 	bch2_write_super(c);
 
@@ -1663,16 +1619,15 @@ err:
 	kfree(new_buckets);
 	bch2_disk_reservation_put(c, &disk_res);
 
+	if (!ret)
+		bch2_dev_allocator_add(c, ca);
+
 	return ret;
 }
-#endif
 
 int bch2_dev_journal_alloc(struct bch_dev *ca)
 {
-	struct journal_device *ja = &ca->journal;
-	struct bch_sb_field_journal *journal_buckets;
-	unsigned i, nr;
-	u64 b, *p;
+	unsigned nr;
 
 	if (dynamic_fault("bcachefs:add:journal_alloc"))
 		return -ENOMEM;
@@ -1686,45 +1641,7 @@ int bch2_dev_journal_alloc(struct bch_dev *ca)
 		     min(1 << 10,
 			 (1 << 20) / ca->mi.bucket_size));
 
-	p = krealloc(ja->bucket_seq, nr * sizeof(u64),
-		     GFP_KERNEL|__GFP_ZERO);
-	if (!p)
-		return -ENOMEM;
-
-	ja->bucket_seq = p;
-
-	p = krealloc(ja->buckets, nr * sizeof(u64),
-		     GFP_KERNEL|__GFP_ZERO);
-	if (!p)
-		return -ENOMEM;
-
-	ja->buckets = p;
-
-	journal_buckets = bch2_sb_resize_journal(&ca->disk_sb,
-				nr + sizeof(*journal_buckets) / sizeof(u64));
-	if (!journal_buckets)
-		return -ENOMEM;
-
-	for (i = 0, b = ca->mi.first_bucket;
-	     i < nr && b < ca->mi.nbuckets; b++) {
-		if (!is_available_bucket(ca->buckets[b].mark))
-			continue;
-
-		bch2_mark_metadata_bucket(ca, &ca->buckets[b],
-					 BUCKET_JOURNAL, true);
-		ja->buckets[i] = b;
-		journal_buckets->buckets[i] = cpu_to_le64(b);
-		i++;
-	}
-
-	if (i < nr)
-		return -ENOSPC;
-
-	BUG_ON(bch2_validate_journal_layout(ca->disk_sb.sb, ca->mi));
-
-	ja->nr = nr;
-
-	return 0;
+	return bch2_set_nr_journal_buckets(ca->fs, ca, nr);
 }
 
 /* Journalling */
@@ -2274,9 +2191,6 @@ static void journal_write(struct closure *cl)
 	jset = w->data;
 
 	j->write_start_time = local_clock();
-
-	bch2_journal_add_prios(j, w);
-
 	mutex_lock(&c->btree_root_lock);
 	for (i = 0; i < BTREE_ID_NR; i++) {
 		struct btree_root *r = &c->btree_roots[i];
@@ -2324,7 +2238,8 @@ static void journal_write(struct closure *cl)
 		closure_return_with_destructor(cl, journal_write_done);
 	}
 
-	bch2_check_mark_super(c, &j->key, true);
+	bch2_check_mark_super(c, bkey_i_to_s_c_extent(&j->key),
+			      BCH_DATA_JOURNAL);
 
 	/*
 	 * XXX: we really should just disable the entire journal in nochanges
@@ -2380,7 +2295,7 @@ no_io:
 
 	closure_return_with_destructor(cl, journal_write_done);
 err:
-	bch2_fatal_error(c);
+	bch2_inconsistent_error(c);
 	closure_return_with_destructor(cl, journal_write_done);
 }
 

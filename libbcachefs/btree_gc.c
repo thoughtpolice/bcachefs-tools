@@ -129,6 +129,8 @@ static u8 bch2_btree_mark_key(struct bch_fs *c, enum bkey_type type,
 int bch2_btree_mark_key_initial(struct bch_fs *c, enum bkey_type type,
 				struct bkey_s_c k)
 {
+	enum bch_data_types data_type = type == BKEY_TYPE_BTREE
+		? BCH_DATA_BTREE : BCH_DATA_USER;
 	int ret = 0;
 
 	switch (k.k->type) {
@@ -136,6 +138,15 @@ int bch2_btree_mark_key_initial(struct bch_fs *c, enum bkey_type type,
 	case BCH_EXTENT_CACHED: {
 		struct bkey_s_c_extent e = bkey_s_c_to_extent(k);
 		const struct bch_extent_ptr *ptr;
+
+		if (test_bit(BCH_FS_REBUILD_REPLICAS, &c->flags) ||
+		    (!c->opts.nofsck &&
+		     fsck_err_on(!bch2_sb_has_replicas(c, e, data_type), c,
+				 "superblock not marked as containing replicas"))) {
+			ret = bch2_check_mark_super(c, e, data_type);
+			if (ret)
+				return ret;
+		}
 
 		extent_for_each_ptr(e, ptr) {
 			struct bch_dev *ca = c->devs[ptr->dev];
@@ -147,7 +158,7 @@ int bch2_btree_mark_key_initial(struct bch_fs *c, enum bkey_type type,
 					new.gen = ptr->gen;
 					new.gen_valid = 1;
 				}));
-				ca->need_prio_write = true;
+				ca->need_alloc_write = true;
 			}
 
 			if (fsck_err_on(gen_cmp(ptr->gen, g->mark.gen) > 0, c,
@@ -159,7 +170,7 @@ int bch2_btree_mark_key_initial(struct bch_fs *c, enum bkey_type type,
 					new.gen = ptr->gen;
 					new.gen_valid = 1;
 				}));
-				ca->need_prio_write = true;
+				ca->need_alloc_write = true;
 				set_bit(BCH_FS_FIXED_GENS, &c->flags);
 			}
 
@@ -167,6 +178,7 @@ int bch2_btree_mark_key_initial(struct bch_fs *c, enum bkey_type type,
 		break;
 	}
 	}
+
 
 	atomic64_set(&c->key_version,
 		     max_t(u64, k.k->version.lo,
@@ -348,17 +360,6 @@ void bch2_mark_dev_metadata(struct bch_fs *c, struct bch_dev *ca)
 	}
 
 	spin_unlock(&c->journal.lock);
-
-	spin_lock(&ca->prio_buckets_lock);
-
-	for (i = 0; i < prio_buckets(ca) * 2; i++) {
-		b = ca->prio_buckets[i];
-		if (b)
-			bch2_mark_metadata_bucket(ca, ca->buckets + b,
-						 BUCKET_PRIOS, true);
-	}
-
-	spin_unlock(&ca->prio_buckets_lock);
 }
 
 static void bch2_mark_metadata(struct bch_fs *c)
@@ -474,10 +475,6 @@ void bch2_gc(struct bch_fs *c)
 	 *    move around - if references move backwards in the ordering GC
 	 *    uses, GC could skip past them
 	 */
-
-	if (test_bit(BCH_FS_GC_FAILURE, &c->flags))
-		return;
-
 	trace_gc_start(c);
 
 	/*
@@ -487,6 +484,8 @@ void bch2_gc(struct bch_fs *c)
 	bch2_recalc_sectors_available(c);
 
 	down_write(&c->gc_lock);
+	if (test_bit(BCH_FS_GC_FAILURE, &c->flags))
+		goto out;
 
 	bch2_gc_start(c);
 
@@ -502,8 +501,7 @@ void bch2_gc(struct bch_fs *c)
 		if (ret) {
 			bch_err(c, "btree gc failed: %d", ret);
 			set_bit(BCH_FS_GC_FAILURE, &c->flags);
-			up_write(&c->gc_lock);
-			return;
+			goto out;
 		}
 
 		gc_pos_set(c, gc_phase(c->gc_pos.phase + 1));
@@ -518,7 +516,7 @@ void bch2_gc(struct bch_fs *c)
 	/* Indicates that gc is no longer in progress: */
 	gc_pos_set(c, gc_phase(GC_PHASE_DONE));
 	c->gc_count++;
-
+out:
 	up_write(&c->gc_lock);
 	trace_gc_end(c);
 	bch2_time_stats_update(&c->btree_gc_time, start_time);
@@ -529,6 +527,12 @@ void bch2_gc(struct bch_fs *c)
 	 */
 	for_each_member_device(ca, c, i)
 		bch2_wake_allocator(ca);
+
+	/*
+	 * At startup, allocations can happen directly instead of via the
+	 * allocator thread - issue wakeup in case they blocked on gc_lock:
+	 */
+	closure_wake_up(&c->freelist_wait);
 }
 
 /* Btree coalescing */
@@ -997,6 +1001,14 @@ int bch2_initial_gc(struct bch_fs *c, struct list_head *journal)
 	unsigned iter = 0;
 	enum btree_id id;
 	int ret;
+
+	mutex_lock(&c->sb_lock);
+	if (!bch2_sb_get_replicas(c->disk_sb)) {
+		if (BCH_SB_INITIALIZED(c->disk_sb))
+			bch_info(c, "building replicas info");
+		set_bit(BCH_FS_REBUILD_REPLICAS, &c->flags);
+	}
+	mutex_unlock(&c->sb_lock);
 again:
 	bch2_gc_start(c);
 
@@ -1006,11 +1018,9 @@ again:
 			return ret;
 	}
 
-	if (journal) {
-		ret = bch2_journal_mark(c, journal);
-		if (ret)
-			return ret;
-	}
+	ret = bch2_journal_mark(c, journal);
+	if (ret)
+	return ret;
 
 	bch2_mark_metadata(c);
 

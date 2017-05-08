@@ -1,12 +1,8 @@
-#ifndef _LINUX_BCACHE_IOCTL_H
-#define _LINUX_BCACHE_IOCTL_H
+#ifndef _BCACHEFS_IOCTL_H
+#define _BCACHEFS_IOCTL_H
 
 #include <linux/uuid.h>
 #include "bcachefs_format.h"
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 #define BCH_FORCE_IF_DATA_LOST		(1 << 0)
 #define BCH_FORCE_IF_METADATA_LOST	(1 << 1)
@@ -97,8 +93,4 @@ struct bch_ioctl_data {
 	__u64			end_offset;
 };
 
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* _LINUX_BCACHE_IOCTL_H */
+#endif /* _BCACHEFS_IOCTL_H */

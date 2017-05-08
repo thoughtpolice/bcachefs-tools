@@ -121,6 +121,28 @@ struct journal_replay {
 	struct jset		j;
 };
 
+static inline struct jset_entry *__jset_entry_type_next(struct jset *jset,
+					struct jset_entry *entry, unsigned type)
+{
+	while (entry < vstruct_last(jset)) {
+		if (JOURNAL_ENTRY_TYPE(entry) == type)
+			return entry;
+
+		entry = vstruct_next(entry);
+	}
+
+	return NULL;
+}
+
+#define for_each_jset_entry_type(entry, jset, type)			\
+	for (entry = (jset)->start;					\
+	     (entry = __jset_entry_type_next(jset, entry, type));	\
+	     entry = vstruct_next(entry))
+
+#define for_each_jset_key(k, _n, entry, jset)				\
+	for_each_jset_entry_type(entry, jset, JOURNAL_ENTRY_BTREE_KEYS)	\
+		vstruct_for_each_safe(entry, k, _n)
+
 #define JOURNAL_PIN	(32 * 1024)
 
 static inline bool journal_pin_active(struct journal_entry_pin *pin)

@@ -337,8 +337,8 @@ SHOW(bch2_fs)
 
 	sysfs_pd_controller_show(tiering,	&c->tiers[1].pd); /* XXX */
 
-	sysfs_printf(meta_replicas_have, "%u",	c->sb.meta_replicas_have);
-	sysfs_printf(data_replicas_have, "%u",	c->sb.data_replicas_have);
+	sysfs_printf(meta_replicas_have, "%u",	bch2_replicas_online(c, true));
+	sysfs_printf(data_replicas_have, "%u",	bch2_replicas_online(c, false));
 
 	/* Debugging: */
 
@@ -693,7 +693,6 @@ static ssize_t show_dev_alloc_debug(struct bch_dev *ca, char *buf)
 
 	return scnprintf(buf, PAGE_SIZE,
 		"free_inc:               %zu/%zu\n"
-		"free[RESERVE_PRIO]:     %zu/%zu\n"
 		"free[RESERVE_BTREE]:    %zu/%zu\n"
 		"free[RESERVE_MOVINGGC]: %zu/%zu\n"
 		"free[RESERVE_NONE]:     %zu/%zu\n"
@@ -705,7 +704,6 @@ static ssize_t show_dev_alloc_debug(struct bch_dev *ca, char *buf)
 		"open buckets:           %u/%u (reserved %u)\n"
 		"open_buckets_wait:      %s\n",
 		fifo_used(&ca->free_inc),		ca->free_inc.size,
-		fifo_used(&ca->free[RESERVE_PRIO]),	ca->free[RESERVE_PRIO].size,
 		fifo_used(&ca->free[RESERVE_BTREE]),	ca->free[RESERVE_BTREE].size,
 		fifo_used(&ca->free[RESERVE_MOVINGGC]),	ca->free[RESERVE_MOVINGGC].size,
 		fifo_used(&ca->free[RESERVE_NONE]),	ca->free[RESERVE_NONE].size,
@@ -759,8 +757,11 @@ SHOW(bch2_dev)
 	sysfs_print(alloc_buckets,	stats.buckets_alloc);
 	sysfs_print(available_buckets,	dev_buckets_available(ca));
 	sysfs_print(free_buckets,	dev_buckets_free(ca));
-	sysfs_print(has_data,		ca->mi.has_data);
-	sysfs_print(has_metadata,	ca->mi.has_metadata);
+	sysfs_print(has_data,		bch2_dev_has_data(c, ca) &
+		    (1 << BCH_DATA_USER));
+	sysfs_print(has_metadata,	bch2_dev_has_data(c, ca) &
+		    ((1 << BCH_DATA_JOURNAL)|
+		     (1 << BCH_DATA_BTREE)));
 
 	sysfs_pd_controller_show(copy_gc, &ca->moving_gc_pd);
 

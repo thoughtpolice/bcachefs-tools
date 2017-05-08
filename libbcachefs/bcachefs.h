@@ -305,7 +305,7 @@ do {									\
 	(btree_reserve_required_nodes(BTREE_MAX_DEPTH) + GC_MERGE_NODES)
 
 /* Size of the freelist we allocate btree nodes from: */
-#define BTREE_NODE_RESERVE		(BTREE_RESERVE_MAX * 2)
+#define BTREE_NODE_RESERVE		(BTREE_RESERVE_MAX * 4)
 
 struct btree;
 struct crypto_blkcipher;
@@ -329,11 +329,21 @@ struct bch_member_cpu {
 	u16			bucket_size;	/* sectors */
 	u8			state;
 	u8			tier;
-	u8			has_metadata;
-	u8			has_data;
 	u8			replacement;
 	u8			discard;
 	u8			valid;
+};
+
+struct bch_replicas_cpu_entry {
+	u8			data_type;
+	u8			devs[BCH_SB_MEMBERS_MAX / 8];
+};
+
+struct bch_replicas_cpu {
+	struct rcu_head		rcu;
+	unsigned		nr;
+	unsigned		entry_size;
+	struct bch_replicas_cpu_entry entries[];
 };
 
 struct bch_dev {
@@ -363,21 +373,7 @@ struct bch_dev {
 
 	struct task_struct	*alloc_thread;
 
-	struct prio_set		*disk_buckets;
-
-	/*
-	 * When allocating new buckets, prio_write() gets first dibs - since we
-	 * may not be allocate at all without writing priorities and gens.
-	 * prio_last_buckets[] contains the last buckets we wrote priorities to
-	 * (so gc can mark them as metadata).
-	 */
-	u64			*prio_buckets;
-	u64			*prio_last_buckets;
-	spinlock_t		prio_buckets_lock;
-	struct bio		*bio_prio;
-	bool			prio_read_done;
-	bool			need_prio_write;
-	struct mutex		prio_write_lock;
+	bool			need_alloc_write;
 
 	/*
 	 * free: Buckets that are ready to be used
@@ -391,6 +387,7 @@ struct bch_dev {
 	DECLARE_FIFO(long, free)[RESERVE_NR];
 	DECLARE_FIFO(long, free_inc);
 	spinlock_t		freelist_lock;
+	bool			alloc_thread_started;
 
 	size_t			fifo_last_bucket;
 
@@ -415,6 +412,8 @@ struct bch_dev {
 	atomic_long_t		saturated_count;
 	size_t			inc_gen_needs_gc;
 	size_t			inc_gen_really_needs_gc;
+	u64			allocator_journal_seq_flush;
+	bool			allocator_invalidating_data;
 
 	alloc_heap		alloc_heap;
 	bucket_heap		copygc_heap;
@@ -458,6 +457,7 @@ enum {
 	BCH_FS_FSCK_FIXED_ERRORS,
 	BCH_FS_FSCK_DONE,
 	BCH_FS_FIXED_GENS,
+	BCH_FS_REBUILD_REPLICAS,
 };
 
 struct btree_debug {
@@ -507,6 +507,10 @@ struct bch_fs {
 
 	struct bch_dev __rcu	*devs[BCH_SB_MEMBERS_MAX];
 
+	struct bch_replicas_cpu __rcu *replicas;
+	struct bch_replicas_cpu __rcu *replicas_gc;
+	struct mutex		replicas_gc_lock;
+
 	struct bch_opts		opts;
 
 	/* Updated by bch2_sb_update():*/
@@ -519,9 +523,6 @@ struct bch_fs {
 
 		u8		nr_devices;
 		u8		clean;
-
-		u8		meta_replicas_have;
-		u8		data_replicas_have;
 
 		u8		str_hash_type;
 		u8		encryption_type;

@@ -191,7 +191,9 @@ static inline bool bucket_needs_journal_commit(struct bucket_mark m,
 
 void bch2_bucket_seq_cleanup(struct bch_fs *);
 
-void bch2_invalidate_bucket(struct bch_dev *, struct bucket *);
+bool bch2_invalidate_bucket(struct bch_dev *, struct bucket *,
+			    struct bucket_mark *);
+bool bch2_mark_alloc_bucket_startup(struct bch_dev *, struct bucket *);
 void bch2_mark_free_bucket(struct bch_dev *, struct bucket *);
 void bch2_mark_alloc_bucket(struct bch_dev *, struct bucket *, bool);
 void bch2_mark_metadata_bucket(struct bch_dev *, struct bucket *,

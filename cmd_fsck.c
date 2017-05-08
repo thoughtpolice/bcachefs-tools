@@ -27,6 +27,8 @@ int cmd_fsck(int argc, char *argv[])
 	const char *err;
 	int opt;
 
+	opts.degraded = true;
+
 	while ((opt = getopt(argc, argv, "pynfvh")) != -1)
 		switch (opt) {
 		case 'p':

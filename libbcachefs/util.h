@@ -763,4 +763,8 @@ static inline struct bio_vec next_contig_bvec(struct bio *bio,
 
 size_t bch_scnmemcpy(char *, size_t, const char *, size_t);
 
+void sort_cmp_size(void *base, size_t num, size_t size,
+	  int (*cmp_func)(const void *, const void *, size_t),
+	  void (*swap_func)(void *, void *, size_t));
+
 #endif /* _BCACHE_UTIL_H */

@@ -267,9 +267,6 @@ static inline int bch2_hash_needs_whiteout(const struct bch_hash_desc desc,
 	}
 }
 
-#define BCH_HASH_SET_MUST_CREATE	(1 << 4)
-#define BCH_HASH_SET_MUST_REPLACE	(1 << 5)
-
 static inline int bch2_hash_set(const struct bch_hash_desc desc,
 			       const struct bch_hash_info *info,
 			       struct bch_fs *c, u64 inode,

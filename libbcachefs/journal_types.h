@@ -20,13 +20,6 @@ struct journal_buf {
 
 	unsigned		size;
 	unsigned		disk_sectors;
-
-	/*
-	 * ugh, prio_buckets are stupid - need to convert them to new
-	 * transaction machinery when it arrives
-	 */
-	unsigned		nr_prio_buckets;
-
 	/* bloom filter: */
 	unsigned long		has_inode[1024 / sizeof(unsigned long)];
 };
@@ -189,14 +182,6 @@ struct journal {
 
 	/* protects advancing ja->last_idx: */
 	struct mutex		reclaim_lock;
-
-	/*
-	 * ugh: need to get prio_buckets converted over to the eventual new
-	 * transaction machinery
-	 */
-	__le64			prio_buckets[BCH_SB_MEMBERS_MAX];
-	unsigned		nr_prio_buckets;
-
 	unsigned		write_delay_ms;
 	unsigned		reclaim_delay_ms;
 

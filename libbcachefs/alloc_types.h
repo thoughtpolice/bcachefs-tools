@@ -35,19 +35,12 @@ struct prio_clock {
 /* There is one reserve for each type of btree, one for prios and gens
  * and one for moving GC */
 enum alloc_reserve {
-	RESERVE_PRIO,
-	RESERVE_BTREE,
-	RESERVE_METADATA_LAST = RESERVE_BTREE,
-	RESERVE_MOVINGGC,
-
-	RESERVE_NONE,
-	RESERVE_NR,
+	RESERVE_ALLOC		= -1,
+	RESERVE_BTREE		= 0,
+	RESERVE_MOVINGGC	= 1,
+	RESERVE_NONE		= 2,
+	RESERVE_NR		= 3,
 };
-
-static inline bool allocation_is_metadata(enum alloc_reserve id)
-{
-	return id <= RESERVE_METADATA_LAST;
-}
 
 struct dev_group {
 	spinlock_t		lock;

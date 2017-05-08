@@ -59,15 +59,17 @@ int bch2_move_data_off_device(struct bch_dev *ca)
 {
 	struct moving_context ctxt;
 	struct bch_fs *c = ca->fs;
-	struct bch_sb_field_members *mi;
 	unsigned pass = 0;
 	u64 seen_key_count;
 	int ret = 0;
 
 	BUG_ON(ca->mi.state == BCH_MEMBER_STATE_RW);
 
-	if (!ca->mi.has_data)
+	if (!(bch2_dev_has_data(c, ca) & (1 << BCH_DATA_USER)))
 		return 0;
+
+	mutex_lock(&c->replicas_gc_lock);
+	bch2_replicas_gc_start(c, 1 << BCH_DATA_USER);
 
 	bch2_move_ctxt_init(&ctxt, NULL, SECTORS_IN_FLIGHT_PER_DEVICE);
 	ctxt.avoid = ca;
@@ -124,7 +126,11 @@ int bch2_move_data_off_device(struct bch_dev *ca)
 			BUG_ON(ret);
 
 			seen_key_count++;
+			continue;
 next:
+			if (bkey_extent_is_data(k.k))
+				bch2_check_mark_super(c, bkey_s_c_to_extent(k),
+						      BCH_DATA_USER);
 			bch2_btree_iter_advance_pos(&iter);
 			bch2_btree_iter_cond_resched(&iter);
 
@@ -133,23 +139,20 @@ next:
 		bch2_move_ctxt_exit(&ctxt);
 
 		if (ret)
-			return ret;
+			goto err;
 	} while (seen_key_count && pass++ < MAX_DATA_OFF_ITER);
 
 	if (seen_key_count) {
 		pr_err("Unable to migrate all data in %d iterations.",
 		       MAX_DATA_OFF_ITER);
-		return -1;
+		ret = -1;
+		goto err;
 	}
 
-	mutex_lock(&c->sb_lock);
-	mi = bch2_sb_get_members(c->disk_sb);
-	SET_BCH_MEMBER_HAS_DATA(&mi->members[ca->dev_idx], false);
-
-	bch2_write_super(c);
-	mutex_unlock(&c->sb_lock);
-
-	return 0;
+err:
+	bch2_replicas_gc_end(c, ret);
+	mutex_unlock(&c->replicas_gc_lock);
+	return ret;
 }
 
 /*
@@ -245,21 +248,27 @@ static int bch2_move_btree_off(struct bch_fs *c, struct bch_dev *ca,
 int bch2_move_metadata_off_device(struct bch_dev *ca)
 {
 	struct bch_fs *c = ca->fs;
-	struct bch_sb_field_members *mi;
 	unsigned i;
-	int ret;
+	int ret = 0;
 
 	BUG_ON(ca->mi.state == BCH_MEMBER_STATE_RW);
 
-	if (!ca->mi.has_metadata)
+	if (!(bch2_dev_has_data(c, ca) &
+	      ((1 << BCH_DATA_JOURNAL)|
+	       (1 << BCH_DATA_BTREE))))
 		return 0;
+
+	mutex_lock(&c->replicas_gc_lock);
+	bch2_replicas_gc_start(c,
+			       (1 << BCH_DATA_JOURNAL)|
+			       (1 << BCH_DATA_BTREE));
 
 	/* 1st, Move the btree nodes off the device */
 
 	for (i = 0; i < BTREE_ID_NR; i++) {
 		ret = bch2_move_btree_off(c, ca, i);
 		if (ret)
-			return ret;
+			goto err;
 	}
 
 	/* There are no prios/gens to move -- they are already in the device. */
@@ -268,16 +277,12 @@ int bch2_move_metadata_off_device(struct bch_dev *ca)
 
 	ret = bch2_journal_move(ca);
 	if (ret)
-		return ret;
+		goto err;
 
-	mutex_lock(&c->sb_lock);
-	mi = bch2_sb_get_members(c->disk_sb);
-	SET_BCH_MEMBER_HAS_METADATA(&mi->members[ca->dev_idx], false);
-
-	bch2_write_super(c);
-	mutex_unlock(&c->sb_lock);
-
-	return 0;
+err:
+	bch2_replicas_gc_end(c, ret);
+	mutex_unlock(&c->replicas_gc_lock);
+	return ret;
 }
 
 /*
@@ -326,12 +331,16 @@ static int bch2_flag_key_bad(struct btree_iter *iter,
  */
 int bch2_flag_data_bad(struct bch_dev *ca)
 {
-	int ret = 0;
+	struct bch_fs *c = ca->fs;
 	struct bkey_s_c k;
 	struct bkey_s_c_extent e;
 	struct btree_iter iter;
+	int ret = 0;
 
-	bch2_btree_iter_init(&iter, ca->fs, BTREE_ID_EXTENTS,
+	mutex_lock(&c->replicas_gc_lock);
+	bch2_replicas_gc_start(c, 1 << BCH_DATA_USER);
+
+	bch2_btree_iter_init(&iter, c, BTREE_ID_EXTENTS,
 			     POS_MIN, BTREE_ITER_PREFETCH);
 
 	while ((k = bch2_btree_iter_peek(&iter)).k &&
@@ -377,10 +386,16 @@ int bch2_flag_data_bad(struct bch_dev *ca)
 		 */
 		continue;
 advance:
+		if (bkey_extent_is_data(k.k))
+			bch2_check_mark_super(c, bkey_s_c_to_extent(k),
+					      BCH_DATA_USER);
 		bch2_btree_iter_advance_pos(&iter);
 	}
 
 	bch2_btree_iter_unlock(&iter);
+
+	bch2_replicas_gc_end(c, ret);
+	mutex_unlock(&c->replicas_gc_lock);
 
 	return ret;
 }

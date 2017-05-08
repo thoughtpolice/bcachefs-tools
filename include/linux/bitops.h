@@ -112,6 +112,11 @@ static inline unsigned long hweight_long(unsigned long w)
 	return __builtin_popcountl(w);
 }
 
+static inline unsigned long hweight8(unsigned long w)
+{
+	return __builtin_popcountl(w);
+}
+
 /**
  * rol64 - rotate a 64-bit value left
  * @word: value to rotate

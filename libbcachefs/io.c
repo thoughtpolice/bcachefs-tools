@@ -531,7 +531,8 @@ static int bch2_write_extent(struct bch_write_op *op,
 
 	key_to_write = (void *) (op->insert_keys.keys_p + key_to_write_offset);
 
-	bch2_check_mark_super(c, key_to_write, false);
+	bch2_check_mark_super(c, bkey_i_to_s_c_extent(key_to_write),
+			      BCH_DATA_USER);
 
 	bch2_submit_wbio_replicas(to_wbio(bio), c, key_to_write);
 	return ret;

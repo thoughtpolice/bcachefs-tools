@@ -412,9 +412,6 @@ static const char *extent_ptr_invalid(const struct bch_fs *c,
 	    size_ondisk > ca->mi.bucket_size)
 		return "spans multiple buckets";
 
-	if (!(metadata ? ca->mi.has_metadata : ca->mi.has_data))
-		return "device not marked as containing data";
-
 	return NULL;
 }
 
@@ -547,12 +544,12 @@ static void btree_ptr_debugcheck(struct bch_fs *c, struct btree *b,
 			goto err;
 	}
 
-	if (replicas < c->sb.meta_replicas_have) {
+	if (!bch2_sb_has_replicas(c, e, BCH_DATA_BTREE)) {
 		bch2_bkey_val_to_text(c, btree_node_type(b),
 				     buf, sizeof(buf), k);
 		bch2_fs_bug(c,
-			"btree key bad (too few replicas, %u < %u): %s",
-			replicas, c->sb.meta_replicas_have, buf);
+			"btree key bad (replicas not marked in superblock):\n%s",
+			buf);
 		return;
 	}
 
@@ -1755,12 +1752,12 @@ static void bch2_extent_debugcheck_extent(struct bch_fs *c, struct btree *b,
 	}
 
 	if (!bkey_extent_is_cached(e.k) &&
-	    replicas < c->sb.data_replicas_have) {
-		bch2_bkey_val_to_text(c, btree_node_type(b), buf,
-				     sizeof(buf), e.s_c);
+	    !bch2_sb_has_replicas(c, e, BCH_DATA_USER)) {
+		bch2_bkey_val_to_text(c, btree_node_type(b),
+				     buf, sizeof(buf), e.s_c);
 		bch2_fs_bug(c,
-			"extent key bad (too few replicas, %u < %u): %s",
-			replicas, c->sb.data_replicas_have, buf);
+			"extent key bad (replicas not marked in superblock):\n%s",
+			buf);
 		return;
 	}
 
