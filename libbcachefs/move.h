@@ -19,7 +19,6 @@ struct migrate_write {
 	bool			move;
 	struct bch_extent_ptr	move_ptr;
 	struct bch_write_op	op;
-	struct bch_write_bio	wbio;
 };
 
 void bch2_migrate_write_init(struct bch_fs *,

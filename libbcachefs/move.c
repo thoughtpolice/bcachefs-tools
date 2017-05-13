@@ -155,11 +155,8 @@ void bch2_migrate_write_init(struct bch_fs *c,
 	    (move_ptr && move_ptr->cached))
 		flags |= BCH_WRITE_CACHED;
 
-	bch2_write_op_init(&m->op, c, &m->wbio,
-			  (struct disk_reservation) { 0 },
-			  wp,
-			  bkey_start_pos(k.k),
-			  NULL, flags);
+	bch2_write_op_init(&m->op, c, (struct disk_reservation) { 0 }, wp,
+			  bkey_start_pos(k.k), NULL, flags);
 
 	if (m->move)
 		m->op.alloc_reserve = RESERVE_MOVINGGC;
@@ -194,7 +191,7 @@ static void moving_io_destructor(struct closure *cl)
 	atomic_sub(io->write.key.k.size, &ctxt->sectors_in_flight);
 	wake_up(&ctxt->wait);
 
-	bio_for_each_segment_all(bv, &io->write.wbio.bio, i)
+	bio_for_each_segment_all(bv, &io->write.op.wbio.bio, i)
 		if (bv->bv_page)
 			__free_page(bv->bv_page);
 
@@ -307,9 +304,7 @@ int bch2_data_move(struct bch_fs *c,
 		return -ENOMEM;
 	}
 
-	migrate_bio_init(io, &io->write.wbio.bio, k.k->size);
-	bio_get(&io->write.wbio.bio);
-	io->write.wbio.bio.bi_iter.bi_sector = bkey_start_offset(k.k);
+	migrate_bio_init(io, &io->write.op.wbio.bio, k.k->size);
 
 	bch2_migrate_write_init(c, &io->write, wp, k, move_ptr, 0);
 

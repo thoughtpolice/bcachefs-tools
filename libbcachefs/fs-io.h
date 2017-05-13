@@ -46,16 +46,16 @@ struct bchfs_write_op {
 	s64			sectors_added;
 	bool			is_dio;
 	u64			new_i_size;
+
+	/* must be last: */
 	struct bch_write_op	op;
 };
 
 struct bch_writepage_io {
 	struct closure		cl;
 
+	/* must be last: */
 	struct bchfs_write_op	op;
-
-	/* must come last: */
-	struct bch_write_bio	bio;
 };
 
 extern struct bio_set *bch2_writepage_bioset;
@@ -76,10 +76,8 @@ struct dio_write {
 
 	struct mm_struct	*mm;
 
-	struct bchfs_write_op	iop;
-
 	/* must be last: */
-	struct bch_write_bio	bio;
+	struct bchfs_write_op	iop;
 };
 
 extern struct bio_set *bch2_dio_write_bioset;

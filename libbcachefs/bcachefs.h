@@ -725,6 +725,10 @@ struct bch_fs {
 	struct work_struct	read_retry_work;
 	spinlock_t		read_retry_lock;
 
+	struct bio_list		btree_write_error_list;
+	struct work_struct	btree_write_error_work;
+	spinlock_t		btree_write_error_lock;
+
 	/* ERRORS */
 	struct list_head	fsck_errors;
 	struct mutex		fsck_error_lock;

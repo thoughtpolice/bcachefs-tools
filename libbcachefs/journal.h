@@ -125,7 +125,7 @@ static inline struct jset_entry *__jset_entry_type_next(struct jset *jset,
 					struct jset_entry *entry, unsigned type)
 {
 	while (entry < vstruct_last(jset)) {
-		if (JOURNAL_ENTRY_TYPE(entry) == type)
+		if (entry->type == type)
 			return entry;
 
 		entry = vstruct_next(entry);
@@ -187,8 +187,12 @@ static inline void journal_state_inc(union journal_res_state *s)
 	s->buf1_count += s->idx == 1;
 }
 
-static inline void bch2_journal_set_has_inode(struct journal_buf *buf, u64 inum)
+static inline void bch2_journal_set_has_inode(struct journal *j,
+					      struct journal_res *res,
+					      u64 inum)
 {
+	struct journal_buf *buf = &j->buf[res->idx];
+
 	set_bit(hash_64(inum, ilog2(sizeof(buf->has_inode) * 8)), buf->has_inode);
 }
 
@@ -202,38 +206,44 @@ static inline unsigned jset_u64s(unsigned u64s)
 }
 
 static inline void bch2_journal_add_entry_at(struct journal_buf *buf,
-					    const void *data, size_t u64s,
+					    unsigned offset,
 					    unsigned type, enum btree_id id,
-					    unsigned level, unsigned offset)
+					    unsigned level,
+					    const void *data, size_t u64s)
 {
 	struct jset_entry *entry = vstruct_idx(buf->data, offset);
 
-	entry->u64s = cpu_to_le16(u64s);
+	memset(entry, 0, sizeof(*entry));
+	entry->u64s	= cpu_to_le16(u64s);
 	entry->btree_id = id;
-	entry->level = level;
-	entry->flags = 0;
-	SET_JOURNAL_ENTRY_TYPE(entry, type);
+	entry->level	= level;
+	entry->type	= type;
 
 	memcpy_u64s(entry->_data, data, u64s);
+}
+
+static inline void bch2_journal_add_entry(struct journal *j, struct journal_res *res,
+					  unsigned type, enum btree_id id,
+					  unsigned level,
+					  const void *data, unsigned u64s)
+{
+	struct journal_buf *buf = &j->buf[res->idx];
+	unsigned actual = jset_u64s(u64s);
+
+	EBUG_ON(!res->ref);
+	BUG_ON(actual > res->u64s);
+
+	bch2_journal_add_entry_at(buf, res->offset, type,
+				  id, level, data, u64s);
+	res->offset	+= actual;
+	res->u64s	-= actual;
 }
 
 static inline void bch2_journal_add_keys(struct journal *j, struct journal_res *res,
 					enum btree_id id, const struct bkey_i *k)
 {
-	struct journal_buf *buf = &j->buf[res->idx];
-	unsigned actual = jset_u64s(k->k.u64s);
-
-	EBUG_ON(!res->ref);
-	BUG_ON(actual > res->u64s);
-
-	bch2_journal_set_has_inode(buf, k->k.p.inode);
-
-	bch2_journal_add_entry_at(buf, k, k->k.u64s,
-				 JOURNAL_ENTRY_BTREE_KEYS, id,
-				 0, res->offset);
-
-	res->offset	+= actual;
-	res->u64s	-= actual;
+	bch2_journal_add_entry(j, res, JOURNAL_ENTRY_BTREE_KEYS,
+			       id, 0, k, k->k.u64s);
 }
 
 void bch2_journal_buf_put_slowpath(struct journal *, bool);
@@ -272,13 +282,10 @@ static inline void bch2_journal_res_put(struct journal *j,
 
 	lock_release(&j->res_map, 0, _RET_IP_);
 
-	while (res->u64s) {
-		bch2_journal_add_entry_at(&j->buf[res->idx], NULL, 0,
-					 JOURNAL_ENTRY_BTREE_KEYS,
-					 0, 0, res->offset);
-		res->offset	+= jset_u64s(0);
-		res->u64s	-= jset_u64s(0);
-	}
+	while (res->u64s)
+		bch2_journal_add_entry(j, res,
+				       JOURNAL_ENTRY_BTREE_KEYS,
+				       0, 0, NULL, 0);
 
 	bch2_journal_buf_put(j, res->idx, false);
 

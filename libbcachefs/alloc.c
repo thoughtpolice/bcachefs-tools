@@ -361,7 +361,7 @@ static int __bch2_alloc_write_key(struct bch_fs *c, struct bch_dev *ca,
 				  struct bucket *g, struct btree_iter *iter,
 				  u64 *journal_seq)
 {
-	struct bucket_mark m = READ_ONCE(g->mark);
+	struct bucket_mark m;
 	__BKEY_PADDED(k, DIV_ROUND_UP(sizeof(struct bch_alloc), 8)) alloc_key;
 	struct bkey_i_alloc *a;
 	u8 *d;
@@ -374,6 +374,8 @@ static int __bch2_alloc_write_key(struct bch_fs *c, struct bch_dev *ca,
 		if (ret)
 			break;
 
+		/* read mark under btree node lock: */
+		m = READ_ONCE(g->mark);
 		a = bkey_alloc_init(&alloc_key.k);
 		a->k.p		= iter->pos;
 		a->v.fields	= 0;
@@ -406,8 +408,6 @@ int bch2_alloc_replay_key(struct bch_fs *c, struct bpos pos)
 	struct bucket *g;
 	struct btree_iter iter;
 	int ret;
-
-	lockdep_assert_held(&c->state_lock);
 
 	if (pos.inode >= c->sb.nr_devices || !c->devs[pos.inode])
 		return 0;

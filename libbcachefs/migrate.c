@@ -128,9 +128,12 @@ int bch2_move_data_off_device(struct bch_dev *ca)
 			seen_key_count++;
 			continue;
 next:
-			if (bkey_extent_is_data(k.k))
-				bch2_check_mark_super(c, bkey_s_c_to_extent(k),
-						      BCH_DATA_USER);
+			if (bkey_extent_is_data(k.k)) {
+				ret = bch2_check_mark_super(c, bkey_s_c_to_extent(k),
+							    BCH_DATA_USER);
+				if (ret)
+					break;
+			}
 			bch2_btree_iter_advance_pos(&iter);
 			bch2_btree_iter_cond_resched(&iter);
 
@@ -386,9 +389,12 @@ int bch2_flag_data_bad(struct bch_dev *ca)
 		 */
 		continue;
 advance:
-		if (bkey_extent_is_data(k.k))
-			bch2_check_mark_super(c, bkey_s_c_to_extent(k),
-					      BCH_DATA_USER);
+		if (bkey_extent_is_data(k.k)) {
+			ret = bch2_check_mark_super(c, bkey_s_c_to_extent(k),
+						    BCH_DATA_USER);
+			if (ret)
+				break;
+		}
 		bch2_btree_iter_advance_pos(&iter);
 	}
 

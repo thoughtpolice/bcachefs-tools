@@ -577,3 +577,17 @@ void sort_cmp_size(void *base, size_t num, size_t size,
 		}
 	}
 }
+
+void mempool_free_vp(void *element, void *pool_data)
+{
+	size_t size = (size_t) pool_data;
+
+	vpfree(element, size);
+}
+
+void *mempool_alloc_vp(gfp_t gfp_mask, void *pool_data)
+{
+	size_t size = (size_t) pool_data;
+
+	return vpmalloc(size, gfp_mask);
+}

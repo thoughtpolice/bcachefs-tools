@@ -4,19 +4,20 @@
 #include "btree_types.h"
 
 
-#define BTREE_ITER_INTENT		(1 << 0)
+#define BTREE_ITER_UPTODATE		(1 << 0)
 #define BTREE_ITER_WITH_HOLES		(1 << 1)
-#define BTREE_ITER_PREFETCH		(1 << 2)
+#define BTREE_ITER_INTENT		(1 << 2)
+#define BTREE_ITER_PREFETCH		(1 << 3)
 /*
  * Used in bch2_btree_iter_traverse(), to indicate whether we're searching for
  * @pos or the first key strictly greater than @pos
  */
-#define BTREE_ITER_IS_EXTENTS		(1 << 3)
+#define BTREE_ITER_IS_EXTENTS		(1 << 4)
 /*
  * indicates we need to call bch2_btree_iter_traverse() to revalidate iterator:
  */
-#define BTREE_ITER_AT_END_OF_LEAF	(1 << 4)
-#define BTREE_ITER_ERROR		(1 << 5)
+#define BTREE_ITER_AT_END_OF_LEAF	(1 << 5)
+#define BTREE_ITER_ERROR		(1 << 6)
 
 /*
  * @pos			- iterator's current position
@@ -223,17 +224,23 @@ static inline int btree_iter_cmp(const struct btree_iter *l,
 #define for_each_btree_node(_iter, _c, _btree_id, _start, _flags, _b)	\
 	__for_each_btree_node(_iter, _c, _btree_id, _start, 0, 0, _flags, _b)
 
+static inline struct bkey_s_c __bch2_btree_iter_peek(struct btree_iter *iter,
+						     unsigned flags)
+{
+	return flags & BTREE_ITER_WITH_HOLES
+		? bch2_btree_iter_peek_with_holes(iter)
+		: bch2_btree_iter_peek(iter);
+}
+
 #define for_each_btree_key(_iter, _c, _btree_id,  _start, _flags, _k)	\
-	for (bch2_btree_iter_init((_iter), (_c), (_btree_id),	\
-				  (_start), (_flags));		\
-	     !IS_ERR_OR_NULL(((_k) = (((_flags) & BTREE_ITER_WITH_HOLES)\
-				? bch2_btree_iter_peek_with_holes(_iter)\
-				: bch2_btree_iter_peek(_iter))).k);	\
+	for (bch2_btree_iter_init((_iter), (_c), (_btree_id),		\
+				  (_start), (_flags));			\
+	     !IS_ERR_OR_NULL(((_k) = __bch2_btree_iter_peek(_iter, _flags)).k);\
 	     bch2_btree_iter_advance_pos(_iter))
 
 static inline int btree_iter_err(struct bkey_s_c k)
 {
-	return IS_ERR(k.k) ? PTR_ERR(k.k) : 0;
+	return PTR_ERR_OR_ZERO(k.k);
 }
 
 /*

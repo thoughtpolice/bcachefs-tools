@@ -552,24 +552,9 @@ static inline unsigned extent_current_nonce(struct bkey_s_c_extent e)
 void bch2_extent_narrow_crcs(struct bkey_s_extent);
 void bch2_extent_drop_redundant_crcs(struct bkey_s_extent);
 
-/* Doesn't cleanup redundant crcs */
-static inline void __bch2_extent_drop_ptr(struct bkey_s_extent e,
-					 struct bch_extent_ptr *ptr)
-{
-	EBUG_ON(ptr < &e.v->start->ptr ||
-		ptr >= &extent_entry_last(e)->ptr);
-	EBUG_ON(ptr->type != 1 << BCH_EXTENT_ENTRY_ptr);
-	memmove_u64s_down(ptr, ptr + 1,
-			  (u64 *) extent_entry_last(e) - (u64 *) (ptr + 1));
-	e.k->u64s -= sizeof(*ptr) / sizeof(u64);
-}
-
-static inline void bch2_extent_drop_ptr(struct bkey_s_extent e,
-				       struct bch_extent_ptr *ptr)
-{
-	__bch2_extent_drop_ptr(e, ptr);
-	bch2_extent_drop_redundant_crcs(e);
-}
+void __bch2_extent_drop_ptr(struct bkey_s_extent, struct bch_extent_ptr *);
+void bch2_extent_drop_ptr(struct bkey_s_extent, struct bch_extent_ptr *);
+void bch2_extent_drop_ptr_idx(struct bkey_s_extent, unsigned);
 
 const struct bch_extent_ptr *
 bch2_extent_has_device(struct bkey_s_c_extent, unsigned);

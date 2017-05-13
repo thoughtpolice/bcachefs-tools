@@ -791,11 +791,9 @@ static u8 *compile_bkey_field(const struct bkey_format *format, u8 *out,
 			      unsigned dst_offset, unsigned dst_size,
 			      bool *eax_zeroed)
 {
-	unsigned byte = format->key_u64s * sizeof(u64);
 	unsigned bits = format->bits_per_field[field];
 	u64 offset = format->field_offset[field];
-	unsigned i, bit_offset = 0;
-	unsigned shl, shr;
+	unsigned i, byte, bit_offset, align, shl, shr;
 
 	if (!bits && !offset) {
 		if (!*eax_zeroed) {
@@ -842,11 +840,12 @@ static u8 *compile_bkey_field(const struct bkey_format *format, u8 *out,
 		return out;
 	}
 
+	bit_offset = format->key_u64s * 64;
 	for (i = 0; i <= field; i++)
-		bit_offset += format->bits_per_field[i];
+		bit_offset -= format->bits_per_field[i];
 
-	byte -= DIV_ROUND_UP(bit_offset, 8);
-	bit_offset = round_up(bit_offset, 8) - bit_offset;
+	byte = bit_offset / 8;
+	bit_offset -= byte * 8;
 
 	*eax_zeroed = false;
 
@@ -857,6 +856,12 @@ static u8 *compile_bkey_field(const struct bkey_format *format, u8 *out,
 		/* movzx eax, WORD PTR [rsi + imm8] */
 		I4(0x0f, 0xb7, 0x46, byte);
 	} else if (bit_offset + bits <= 32) {
+		align = min(4 - DIV_ROUND_UP(bit_offset + bits, 8), byte & 3);
+		byte -= align;
+		bit_offset += align * 8;
+
+		BUG_ON(bit_offset + bits > 32);
+
 		/* mov eax, [rsi + imm8] */
 		I3(0x8b, 0x46, byte);
 
@@ -874,6 +879,12 @@ static u8 *compile_bkey_field(const struct bkey_format *format, u8 *out,
 			out += 4;
 		}
 	} else if (bit_offset + bits <= 64) {
+		align = min(8 - DIV_ROUND_UP(bit_offset + bits, 8), byte & 7);
+		byte -= align;
+		bit_offset += align * 8;
+
+		BUG_ON(bit_offset + bits > 64);
+
 		/* mov rax, [rsi + imm8] */
 		I4(0x48, 0x8b, 0x46, byte);
 
@@ -890,6 +901,12 @@ static u8 *compile_bkey_field(const struct bkey_format *format, u8 *out,
 			I4(0x48, 0xc1, 0xe8, shr);
 		}
 	} else {
+		align = min(4 - DIV_ROUND_UP(bit_offset + bits, 8), byte & 3);
+		byte -= align;
+		bit_offset += align * 8;
+
+		BUG_ON(bit_offset + bits > 96);
+
 		/* mov rax, [rsi + byte] */
 		I4(0x48, 0x8b, 0x46, byte);
 

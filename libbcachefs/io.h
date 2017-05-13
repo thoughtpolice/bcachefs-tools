@@ -41,10 +41,17 @@ static inline struct write_point *foreground_write_point(struct bch_fs *c,
 }
 
 void bch2_write_op_init(struct bch_write_op *, struct bch_fs *,
-			struct bch_write_bio *,
 			struct disk_reservation, struct write_point *,
 			struct bpos, u64 *, unsigned);
 void bch2_write(struct closure *);
+
+static inline struct bch_write_bio *wbio_init(struct bio *bio)
+{
+	struct bch_write_bio *wbio = to_wbio(bio);
+
+	memset(wbio, 0, offsetof(struct bch_write_bio, bio));
+	return wbio;
+}
 
 struct cache_promote_op;
 

@@ -116,7 +116,7 @@ struct btree {
 	 * another write - because that write also won't yet be reachable and
 	 * marking it as completed before it's reachable would be incorrect:
 	 */
-	struct list_head	reachable;
+	struct btree_interior_update *will_make_reachable;
 
 	struct open_bucket	*ob;
 
@@ -143,7 +143,6 @@ static inline void clear_btree_node_ ## flag(struct btree *b)		\
 enum btree_flags {
 	BTREE_NODE_read_in_flight,
 	BTREE_NODE_read_error,
-	BTREE_NODE_write_error,
 	BTREE_NODE_dirty,
 	BTREE_NODE_need_write,
 	BTREE_NODE_noevict,
@@ -155,7 +154,6 @@ enum btree_flags {
 
 BTREE_FLAG(read_in_flight);
 BTREE_FLAG(read_error);
-BTREE_FLAG(write_error);
 BTREE_FLAG(dirty);
 BTREE_FLAG(need_write);
 BTREE_FLAG(noevict);

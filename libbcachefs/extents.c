@@ -153,6 +153,37 @@ unsigned bch2_extent_nr_dirty_ptrs(struct bkey_s_c k)
 	return nr_ptrs;
 }
 
+/* Doesn't cleanup redundant crcs */
+void __bch2_extent_drop_ptr(struct bkey_s_extent e, struct bch_extent_ptr *ptr)
+{
+	EBUG_ON(ptr < &e.v->start->ptr ||
+		ptr >= &extent_entry_last(e)->ptr);
+	EBUG_ON(ptr->type != 1 << BCH_EXTENT_ENTRY_ptr);
+	memmove_u64s_down(ptr, ptr + 1,
+			  (u64 *) extent_entry_last(e) - (u64 *) (ptr + 1));
+	e.k->u64s -= sizeof(*ptr) / sizeof(u64);
+}
+
+void bch2_extent_drop_ptr(struct bkey_s_extent e, struct bch_extent_ptr *ptr)
+{
+	__bch2_extent_drop_ptr(e, ptr);
+	bch2_extent_drop_redundant_crcs(e);
+}
+
+void bch2_extent_drop_ptr_idx(struct bkey_s_extent e, unsigned idx)
+{
+	struct bch_extent_ptr *ptr;
+	unsigned i = 0;
+
+	extent_for_each_ptr(e, ptr)
+		if (i++ == idx)
+			goto found;
+
+	BUG();
+found:
+	bch2_extent_drop_ptr(e, ptr);
+}
+
 /* returns true if equal */
 static bool crc_cmp(union bch_extent_crc *l, union bch_extent_crc *r)
 {

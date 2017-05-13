@@ -41,7 +41,7 @@ static void __mca_data_free(struct bch_fs *c, struct btree *b)
 {
 	EBUG_ON(btree_node_write_in_flight(b));
 
-	free_pages((unsigned long) b->data, btree_page_order(c));
+	kvpfree(b->data, btree_bytes(c));
 	b->data = NULL;
 	bch2_btree_keys_free(b);
 }
@@ -53,8 +53,6 @@ static void mca_data_free(struct bch_fs *c, struct btree *b)
 	list_move(&b->list, &c->btree_cache_freed);
 }
 
-#define PTR_HASH(_k)	(bkey_i_to_extent_c(_k)->v._data[0])
-
 static const struct rhashtable_params bch_btree_cache_params = {
 	.head_offset	= offsetof(struct btree, hash),
 	.key_offset	= offsetof(struct btree, key.v),
@@ -63,20 +61,18 @@ static const struct rhashtable_params bch_btree_cache_params = {
 
 static void mca_data_alloc(struct bch_fs *c, struct btree *b, gfp_t gfp)
 {
-	unsigned order = ilog2(btree_pages(c));
-
-	b->data = (void *) __get_free_pages(gfp, order);
+	b->data = kvpmalloc(btree_bytes(c), gfp);
 	if (!b->data)
 		goto err;
 
-	if (bch2_btree_keys_alloc(b, order, gfp))
+	if (bch2_btree_keys_alloc(b, btree_page_order(c), gfp))
 		goto err;
 
 	c->btree_cache_used++;
 	list_move(&b->list, &c->btree_cache_freeable);
 	return;
 err:
-	free_pages((unsigned long) b->data, order);
+	kvpfree(b->data, btree_bytes(c));
 	b->data = NULL;
 	list_move(&b->list, &c->btree_cache_freed);
 }
@@ -91,7 +87,6 @@ static struct btree *mca_bucket_alloc(struct bch_fs *c, gfp_t gfp)
 	six_lock_init(&b->lock);
 	INIT_LIST_HEAD(&b->list);
 	INIT_LIST_HEAD(&b->write_blocked);
-	INIT_LIST_HEAD(&b->reachable);
 
 	mca_data_alloc(c, b, gfp);
 	return b->data ? b : NULL;
@@ -101,10 +96,6 @@ static struct btree *mca_bucket_alloc(struct bch_fs *c, gfp_t gfp)
 
 void bch2_btree_node_hash_remove(struct bch_fs *c, struct btree *b)
 {
-	BUG_ON(btree_node_dirty(b));
-
-	b->nsets = 0;
-
 	rhashtable_remove_fast(&c->btree_cache_table, &b->hash,
 			       bch_btree_cache_params);
 
@@ -112,23 +103,27 @@ void bch2_btree_node_hash_remove(struct bch_fs *c, struct btree *b)
 	bkey_i_to_extent(&b->key)->v._data[0] = 0;
 }
 
+int __bch2_btree_node_hash_insert(struct bch_fs *c, struct btree *b)
+{
+	return rhashtable_lookup_insert_fast(&c->btree_cache_table, &b->hash,
+					     bch_btree_cache_params);
+}
+
 int bch2_btree_node_hash_insert(struct bch_fs *c, struct btree *b,
 		    unsigned level, enum btree_id id)
 {
 	int ret;
+
 	b->level	= level;
 	b->btree_id	= id;
 
-	ret = rhashtable_lookup_insert_fast(&c->btree_cache_table, &b->hash,
-					    bch_btree_cache_params);
-	if (ret)
-		return ret;
-
 	mutex_lock(&c->btree_cache_lock);
-	list_add(&b->list, &c->btree_cache);
+	ret = __bch2_btree_node_hash_insert(c, b);
+	if (!ret)
+		list_add(&b->list, &c->btree_cache);
 	mutex_unlock(&c->btree_cache_lock);
 
-	return 0;
+	return ret;
 }
 
 __flatten
@@ -155,8 +150,7 @@ static int __btree_node_reclaim(struct bch_fs *c, struct btree *b, bool flush)
 	if (!six_trylock_write(&b->lock))
 		goto out_unlock_intent;
 
-	if (btree_node_write_error(b) ||
-	    btree_node_noevict(b))
+	if (btree_node_noevict(b))
 		goto out_unlock;
 
 	if (!btree_node_may_write(b))
@@ -328,7 +322,7 @@ void bch2_fs_btree_exit(struct bch_fs *c)
 	if (c->verify_data)
 		list_move(&c->verify_data->list, &c->btree_cache);
 
-	free_pages((unsigned long) c->verify_ondisk, ilog2(btree_pages(c)));
+	kvpfree(c->verify_ondisk, btree_bytes(c));
 #endif
 
 	for (i = 0; i < BTREE_ID_NR; i++)
@@ -384,8 +378,7 @@ int bch2_fs_btree_init(struct bch_fs *c)
 #ifdef CONFIG_BCACHEFS_DEBUG
 	mutex_init(&c->verify_lock);
 
-	c->verify_ondisk = (void *)
-		__get_free_pages(GFP_KERNEL, ilog2(btree_pages(c)));
+	c->verify_ondisk = kvpmalloc(btree_bytes(c), GFP_KERNEL);
 	if (!c->verify_ondisk)
 		return -ENOMEM;
 
@@ -510,7 +503,7 @@ struct btree *bch2_btree_node_mem_alloc(struct bch_fs *c)
 	BUG_ON(!six_trylock_intent(&b->lock));
 	BUG_ON(!six_trylock_write(&b->lock));
 out_unlock:
-	BUG_ON(bkey_extent_is_data(&b->key.k) && PTR_HASH(&b->key));
+	BUG_ON(btree_node_hashed(b));
 	BUG_ON(btree_node_write_in_flight(b));
 
 	list_del_init(&b->list);
@@ -553,6 +546,12 @@ static noinline struct btree *bch2_btree_node_fill(struct btree_iter *iter,
 {
 	struct bch_fs *c = iter->c;
 	struct btree *b;
+
+	/*
+	 * Parent node must be locked, else we could read in a btree node that's
+	 * been freed:
+	 */
+	BUG_ON(!btree_node_locked(iter, level + 1));
 
 	b = bch2_btree_node_mem_alloc(c);
 	if (IS_ERR(b))

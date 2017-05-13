@@ -1082,7 +1082,8 @@ struct jset_entry {
 	__le16			u64s;
 	__u8			btree_id;
 	__u8			level;
-	__le32			flags; /* designates what this jset holds */
+	__u8			type; /* designates what this jset holds */
+	__u8			pad[3];
 
 	union {
 		struct bkey_i	start[0];
@@ -1092,7 +1093,6 @@ struct jset_entry {
 
 #define JSET_KEYS_U64s	(sizeof(struct jset_entry) / sizeof(__u64))
 
-LE32_BITMASK(JOURNAL_ENTRY_TYPE,	struct jset_entry, flags, 0, 8);
 enum {
 	JOURNAL_ENTRY_BTREE_KEYS		= 0,
 	JOURNAL_ENTRY_BTREE_ROOT		= 1,

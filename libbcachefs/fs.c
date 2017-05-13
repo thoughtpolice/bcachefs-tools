@@ -1458,7 +1458,7 @@ int __init bch2_vfs_init(void)
 		goto err;
 
 	bch2_writepage_bioset =
-		bioset_create(4, offsetof(struct bch_writepage_io, bio.bio));
+		bioset_create(4, offsetof(struct bch_writepage_io, op.op.wbio.bio));
 	if (!bch2_writepage_bioset)
 		goto err;
 
@@ -1466,7 +1466,8 @@ int __init bch2_vfs_init(void)
 	if (!bch2_dio_read_bioset)
 		goto err;
 
-	bch2_dio_write_bioset = bioset_create(4, offsetof(struct dio_write, bio.bio));
+	bch2_dio_write_bioset =
+		bioset_create(4, offsetof(struct dio_write, iop.op.wbio.bio));
 	if (!bch2_dio_write_bioset)
 		goto err;
 

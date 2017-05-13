@@ -783,6 +783,12 @@ out:
 
 /* replica information: */
 
+static inline struct bch_replicas_cpu_entry *
+cpu_replicas_entry(struct bch_replicas_cpu *r, unsigned i)
+{
+	return (void *) r->entries + r->entry_size * i;
+}
+
 static inline struct bch_replicas_entry *
 replicas_entry_next(struct bch_replicas_entry *i)
 {
@@ -793,6 +799,24 @@ replicas_entry_next(struct bch_replicas_entry *i)
 	for (_i = (_r)->entries;					\
 	     (void *) (_i) < vstruct_end(&(_r)->field) && (_i)->data_type;\
 	     (_i) = replicas_entry_next(_i))
+
+static inline bool replicas_test_dev(struct bch_replicas_cpu_entry *e,
+				     unsigned dev)
+{
+	return (e->devs[dev >> 3] & (1 << (dev & 7))) != 0;
+}
+
+static inline void replicas_set_dev(struct bch_replicas_cpu_entry *e,
+				    unsigned dev)
+{
+	e->devs[dev >> 3] |= 1 << (dev & 7);
+}
+
+static inline unsigned replicas_dev_slots(struct bch_replicas_cpu *r)
+{
+	return (r->entry_size -
+		offsetof(struct bch_replicas_cpu_entry, devs)) * 8;
+}
 
 static void bch2_sb_replicas_nr_entries(struct bch_sb_field_replicas *r,
 					unsigned *nr,
@@ -879,6 +903,29 @@ static int bch2_sb_replicas_to_cpu_replicas(struct bch_fs *c)
 	return 0;
 }
 
+static void bkey_to_replicas(struct bkey_s_c_extent e,
+			     enum bch_data_types data_type,
+			     struct bch_replicas_cpu_entry *r,
+			     unsigned *max_dev)
+{
+	const struct bch_extent_ptr *ptr;
+
+	BUG_ON(!data_type ||
+	       data_type == BCH_DATA_SB ||
+	       data_type >= BCH_DATA_NR);
+
+	memset(r, 0, sizeof(*r));
+	r->data_type = data_type;
+
+	*max_dev = 0;
+
+	extent_for_each_ptr(e, ptr)
+		if (!ptr->cached) {
+			*max_dev = max_t(unsigned, *max_dev, ptr->dev);
+			replicas_set_dev(r, ptr->dev);
+		}
+}
+
 /*
  * for when gc of replica information is in progress:
  */
@@ -887,14 +934,11 @@ static int bch2_update_gc_replicas(struct bch_fs *c,
 				   struct bkey_s_c_extent e,
 				   enum bch_data_types data_type)
 {
-	const struct bch_extent_ptr *ptr;
-	struct bch_replicas_cpu_entry *new_e;
+	struct bch_replicas_cpu_entry new_e;
 	struct bch_replicas_cpu *new;
-	unsigned i, nr, entry_size, max_dev = 0;
+	unsigned i, nr, entry_size, max_dev;
 
-	extent_for_each_ptr(e, ptr)
-		if (!ptr->cached)
-			max_dev = max_t(unsigned, max_dev, ptr->dev);
+	bkey_to_replicas(e, data_type, &new_e, &max_dev);
 
 	entry_size = offsetof(struct bch_replicas_cpu_entry, devs) +
 		DIV_ROUND_UP(max_dev + 1, 8);
@@ -914,12 +958,9 @@ static int bch2_update_gc_replicas(struct bch_fs *c,
 		       cpu_replicas_entry(gc_r, i),
 		       gc_r->entry_size);
 
-	new_e = cpu_replicas_entry(new, nr - 1);
-	new_e->data_type = data_type;
-
-	extent_for_each_ptr(e, ptr)
-		if (!ptr->cached)
-			replicas_set_dev(new_e, ptr->dev);
+	memcpy(cpu_replicas_entry(new, nr - 1),
+	       &new_e,
+	       new->entry_size);
 
 	eytzinger0_sort(new->entries,
 			new->nr,
@@ -931,8 +972,38 @@ static int bch2_update_gc_replicas(struct bch_fs *c,
 	return 0;
 }
 
-int bch2_check_mark_super_slowpath(struct bch_fs *c, struct bkey_s_c_extent e,
-				   enum bch_data_types data_type)
+static bool replicas_has_extent(struct bch_replicas_cpu *r,
+				struct bkey_s_c_extent e,
+				enum bch_data_types data_type)
+{
+	struct bch_replicas_cpu_entry search;
+	unsigned max_dev;
+
+	bkey_to_replicas(e, data_type, &search, &max_dev);
+
+	return max_dev < replicas_dev_slots(r) &&
+		eytzinger0_find(r->entries, r->nr,
+				r->entry_size,
+				memcmp, &search) < r->nr;
+}
+
+bool bch2_sb_has_replicas(struct bch_fs *c, struct bkey_s_c_extent e,
+			  enum bch_data_types data_type)
+{
+	bool ret;
+
+	rcu_read_lock();
+	ret = replicas_has_extent(rcu_dereference(c->replicas),
+				  e, data_type);
+	rcu_read_unlock();
+
+	return ret;
+}
+
+noinline
+static int bch2_check_mark_super_slowpath(struct bch_fs *c,
+					  struct bkey_s_c_extent e,
+					  enum bch_data_types data_type)
 {
 	struct bch_replicas_cpu *gc_r;
 	const struct bch_extent_ptr *ptr;
@@ -994,6 +1065,25 @@ int bch2_check_mark_super_slowpath(struct bch_fs *c, struct bkey_s_c_extent e,
 err:
 	mutex_unlock(&c->sb_lock);
 	return ret;
+}
+
+int bch2_check_mark_super(struct bch_fs *c, struct bkey_s_c_extent e,
+			  enum bch_data_types data_type)
+{
+	struct bch_replicas_cpu *gc_r;
+	bool marked;
+
+	rcu_read_lock();
+	marked = replicas_has_extent(rcu_dereference(c->replicas),
+				     e, data_type) &&
+		(!(gc_r = rcu_dereference(c->replicas_gc)) ||
+		 replicas_has_extent(gc_r, e, data_type));
+	rcu_read_unlock();
+
+	if (marked)
+		return 0;
+
+	return bch2_check_mark_super_slowpath(c, e, data_type);
 }
 
 struct replicas_status __bch2_replicas_status(struct bch_fs *c,

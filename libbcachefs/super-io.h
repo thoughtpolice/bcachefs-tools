@@ -121,92 +121,10 @@ const char *bch2_read_super(struct bcache_superblock *,
 			   struct bch_opts, const char *);
 void bch2_write_super(struct bch_fs *);
 
-static inline bool replicas_test_dev(struct bch_replicas_cpu_entry *e,
-				     unsigned dev)
-{
-	return (e->devs[dev >> 3] & (1 << (dev & 7))) != 0;
-}
-
-static inline void replicas_set_dev(struct bch_replicas_cpu_entry *e,
-				    unsigned dev)
-{
-	e->devs[dev >> 3] |= 1 << (dev & 7);
-}
-
-static inline unsigned replicas_dev_slots(struct bch_replicas_cpu *r)
-{
-	return (r->entry_size -
-		offsetof(struct bch_replicas_cpu_entry, devs)) * 8;
-}
-
-static inline struct bch_replicas_cpu_entry *
-cpu_replicas_entry(struct bch_replicas_cpu *r, unsigned i)
-{
-	return (void *) r->entries + r->entry_size * i;
-}
-
-int bch2_check_mark_super_slowpath(struct bch_fs *, struct bkey_s_c_extent,
-				   enum bch_data_types);
-
-static inline bool replicas_has_extent(struct bch_replicas_cpu *r,
-				       struct bkey_s_c_extent e,
-				       enum bch_data_types data_type)
-{
-	const struct bch_extent_ptr *ptr;
-	struct bch_replicas_cpu_entry search = {
-		.data_type = data_type,
-	};
-	unsigned max_dev = 0;
-
-	BUG_ON(!data_type ||
-	       data_type == BCH_DATA_SB ||
-	       data_type >= BCH_DATA_NR);
-
-	extent_for_each_ptr(e, ptr)
-		if (!ptr->cached) {
-			max_dev = max_t(unsigned, max_dev, ptr->dev);
-			replicas_set_dev(&search, ptr->dev);
-		}
-
-	return max_dev < replicas_dev_slots(r) &&
-		eytzinger0_find(r->entries, r->nr,
-				r->entry_size,
-				memcmp, &search) < r->nr;
-}
-
-static inline bool bch2_sb_has_replicas(struct bch_fs *c,
-					struct bkey_s_c_extent e,
-					enum bch_data_types data_type)
-{
-	bool ret;
-
-	rcu_read_lock();
-	ret = replicas_has_extent(rcu_dereference(c->replicas),
-				  e, data_type);
-	rcu_read_unlock();
-
-	return ret;
-}
-
-static inline int bch2_check_mark_super(struct bch_fs *c,
-					struct bkey_s_c_extent e,
-					enum bch_data_types data_type)
-{
-	struct bch_replicas_cpu *gc_r;
-	bool marked;
-
-	rcu_read_lock();
-	marked = replicas_has_extent(rcu_dereference(c->replicas),
-				     e, data_type) &&
-		(!(gc_r = rcu_dereference(c->replicas_gc)) ||
-		 replicas_has_extent(gc_r, e, data_type));
-	rcu_read_unlock();
-
-	if (marked)
-		return 0;
-
-	return bch2_check_mark_super_slowpath(c, e, data_type);
-}
+bool bch2_sb_has_replicas(struct bch_fs *, struct bkey_s_c_extent,
+			  enum bch_data_types);
+int bch2_check_mark_super(struct bch_fs *, struct bkey_s_c_extent,
+			  enum bch_data_types);
 
 struct replicas_status {
 	struct {

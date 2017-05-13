@@ -37,7 +37,7 @@ static inline void btree_node_wait_on_io(struct btree *b)
 static inline bool btree_node_may_write(struct btree *b)
 {
 	return list_empty_careful(&b->write_blocked) &&
-		list_empty_careful(&b->reachable);
+		!b->will_make_reachable;
 }
 
 enum compact_mode {
@@ -79,6 +79,7 @@ int bch2_btree_root_read(struct bch_fs *, enum btree_id,
 
 void bch2_btree_complete_write(struct bch_fs *, struct btree *,
 			      struct btree_write *);
+void bch2_btree_write_error_work(struct work_struct *);
 
 void __bch2_btree_node_write(struct bch_fs *, struct btree *,
 			    struct closure *, enum six_lock_type);

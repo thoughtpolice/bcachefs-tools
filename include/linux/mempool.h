@@ -10,8 +10,14 @@
 
 struct kmem_cache;
 
+typedef void * (mempool_alloc_t)(gfp_t gfp_mask, void *pool_data);
+typedef void (mempool_free_t)(void *element, void *pool_data);
+
 typedef struct mempool_s {
-	size_t		elem_size;
+	size_t			elem_size;
+	void			*pool_data;
+	mempool_alloc_t		*alloc;
+	mempool_free_t		*free;
 } mempool_t;
 
 static inline bool mempool_initialized(mempool_t *pool)
@@ -60,24 +66,22 @@ static inline int mempool_init_kmalloc_pool(mempool_t *pool, int min_nr, size_t 
 	return 0;
 }
 
-static inline mempool_t *mempool_create_kmalloc_pool(int min_nr, size_t size)
-{
-	mempool_t *pool = malloc(sizeof(*pool));
-	pool->elem_size = size;
-	return pool;
-}
-
 static inline int mempool_init_page_pool(mempool_t *pool, int min_nr, int order)
 {
 	pool->elem_size = PAGE_SIZE << order;
 	return 0;
 }
 
-static inline mempool_t *mempool_create_page_pool(int min_nr, int order)
+static inline int mempool_init(mempool_t *pool, int min_nr,
+			       mempool_alloc_t *alloc_fn,
+			       mempool_free_t *free_fn,
+			       void *pool_data)
 {
-	mempool_t *pool = malloc(sizeof(*pool));
-	pool->elem_size = PAGE_SIZE << order;
-	return pool;
+	pool->elem_size = (size_t) pool_data;
+	pool->pool_data	= pool_data;
+	pool->alloc	= alloc_fn;
+	pool->free	= free_fn;
+	return 0;
 }
 
 #endif /* _LINUX_MEMPOOL_H */

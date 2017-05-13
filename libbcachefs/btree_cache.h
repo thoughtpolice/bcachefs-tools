@@ -3,6 +3,7 @@
 
 #include "bcachefs.h"
 #include "btree_types.h"
+#include "extents.h"
 
 struct btree_iter;
 
@@ -11,6 +12,7 @@ extern const char * const bch2_btree_ids[];
 void bch2_recalc_btree_reserve(struct bch_fs *);
 
 void bch2_btree_node_hash_remove(struct bch_fs *, struct btree *);
+int __bch2_btree_node_hash_insert(struct bch_fs *, struct btree *);
 int bch2_btree_node_hash_insert(struct bch_fs *, struct btree *,
 				unsigned, enum btree_id);
 
@@ -27,6 +29,14 @@ void bch2_btree_node_prefetch(struct btree_iter *, const struct bkey_i *,
 
 void bch2_fs_btree_exit(struct bch_fs *);
 int bch2_fs_btree_init(struct bch_fs *);
+
+#define PTR_HASH(_k)	(bkey_i_to_extent_c(_k)->v._data[0])
+
+/* is btree node in hash table? */
+static inline bool btree_node_hashed(struct btree *b)
+{
+	return bkey_extent_is_data(&b->key.k) && PTR_HASH(&b->key);
+}
 
 #define for_each_cached_btree(_b, _c, _tbl, _iter, _pos)		\
 	for ((_tbl) = rht_dereference_rcu((_c)->btree_cache_table.tbl,	\

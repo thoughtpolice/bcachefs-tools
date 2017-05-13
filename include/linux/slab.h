@@ -43,9 +43,6 @@ static inline void *krealloc(void *old, size_t size, gfp_t flags)
 #define kcalloc(n, size, flags)		calloc(n, size)
 #define kmalloc_array(n, size, flags)	calloc(n, size)
 
-#define vmalloc(size)			malloc(size)
-#define vzalloc(size)			calloc(1, size)
-
 #define kfree(p)			free(p)
 #define kvfree(p)			free(p)
 #define kzfree(p)			free(p)
@@ -88,8 +85,6 @@ do {							\
 #define VM_UNINITIALIZED	0x00000020	/* vm_struct is not fully initialized */
 #define VM_NO_GUARD		0x00000040      /* don't add guard page */
 #define VM_KASAN		0x00000080      /* has allocated kasan shadow memory */
-
-#define PAGE_KERNEL		0
 
 static inline void vunmap(const void *addr) {}
 

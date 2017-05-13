@@ -517,10 +517,15 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	mutex_init(&c->btree_interior_update_lock);
 
 	mutex_init(&c->bio_bounce_pages_lock);
+	mutex_init(&c->zlib_workspace_lock);
+
 	bio_list_init(&c->read_retry_list);
 	spin_lock_init(&c->read_retry_lock);
 	INIT_WORK(&c->read_retry_work, bch2_read_retry_work);
-	mutex_init(&c->zlib_workspace_lock);
+
+	bio_list_init(&c->btree_write_error_list);
+	spin_lock_init(&c->btree_write_error_lock);
+	INIT_WORK(&c->btree_write_error_work, bch2_btree_write_error_work);
 
 	INIT_LIST_HEAD(&c->fsck_errors);
 	mutex_init(&c->fsck_error_lock);
@@ -593,8 +598,7 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 				   PAGE_SECTORS, 0) ||
 	    !(c->usage_percpu = alloc_percpu(struct bch_fs_usage)) ||
 	    lg_lock_init(&c->usage_lock) ||
-	    mempool_init_page_pool(&c->btree_bounce_pool, 1,
-				   ilog2(btree_pages(c))) ||
+	    mempool_init_vp_pool(&c->btree_bounce_pool, 1, btree_bytes(c)) ||
 	    bdi_setup_and_register(&c->bdi, "bcachefs") ||
 	    bch2_io_clock_init(&c->io_clock[READ]) ||
 	    bch2_io_clock_init(&c->io_clock[WRITE]) ||
@@ -1345,11 +1349,13 @@ bool bch2_dev_state_allowed(struct bch_fs *c, struct bch_dev *ca,
 	}
 }
 
-static bool bch2_fs_may_start(struct bch_fs *c, int flags)
+static bool bch2_fs_may_start(struct bch_fs *c)
 {
 	struct replicas_status s;
 	struct bch_sb_field_members *mi;
-	unsigned i;
+	unsigned i, flags = c->opts.degraded
+		? BCH_FORCE_IF_DEGRADED
+		: 0;
 
 	if (!c->opts.degraded) {
 		mutex_lock(&c->sb_lock);
@@ -1773,7 +1779,7 @@ const char *bch2_fs_open(char * const *devices, unsigned nr_devices,
 	mutex_unlock(&c->sb_lock);
 
 	err = "insufficient devices";
-	if (!bch2_fs_may_start(c, 0))
+	if (!bch2_fs_may_start(c))
 		goto err;
 
 	if (!c->opts.nostart) {
@@ -1844,7 +1850,7 @@ static const char *__bch2_fs_open_incremental(struct bcache_superblock *sb,
 	}
 	mutex_unlock(&c->sb_lock);
 
-	if (!c->opts.nostart && bch2_fs_may_start(c, 0)) {
+	if (!c->opts.nostart && bch2_fs_may_start(c)) {
 		err = __bch2_fs_start(c);
 		if (err)
 			goto err;

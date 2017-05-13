@@ -79,23 +79,43 @@ do {									\
 	(__builtin_types_compatible_p(typeof(_val), _type) ||		\
 	 __builtin_types_compatible_p(typeof(_val), const _type))
 
+static inline void vpfree(void *p, size_t size)
+{
+	if (is_vmalloc_addr(p))
+		vfree(p);
+	else
+		free_pages((unsigned long) p, get_order(size));
+}
+
+static inline void *vpmalloc(size_t size, gfp_t gfp_mask)
+{
+	return (void *) __get_free_pages(gfp_mask|__GFP_NOWARN,
+					 get_order(size)) ?:
+		__vmalloc(size, gfp_mask, PAGE_KERNEL);
+}
+
 static inline void kvpfree(void *p, size_t size)
 {
 	if (size < PAGE_SIZE)
 		kfree(p);
-	else if (is_vmalloc_addr(p))
-		vfree(p);
 	else
-		free_pages((unsigned long) p, get_order(size));
-
+		vpfree(p, size);
 }
 
 static inline void *kvpmalloc(size_t size, gfp_t gfp_mask)
 {
-	return size < PAGE_SIZE ? kmalloc(size, gfp_mask)
-		:  (void *) __get_free_pages(gfp_mask|__GFP_NOWARN,
-					     get_order(size))
-		?: __vmalloc(size, gfp_mask, PAGE_KERNEL);
+	return size < PAGE_SIZE
+		? kmalloc(size, gfp_mask)
+		: vpmalloc(size, gfp_mask);
+}
+
+void mempool_free_vp(void *element, void *pool_data);
+void *mempool_alloc_vp(gfp_t gfp_mask, void *pool_data);
+
+static inline int mempool_init_vp_pool(mempool_t *pool, int min_nr, size_t size)
+{
+	return mempool_init(pool, min_nr, mempool_alloc_vp,
+			    mempool_free_vp, (void *) size);
 }
 
 #define HEAP(type)							\

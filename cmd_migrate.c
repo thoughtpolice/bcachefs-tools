@@ -250,7 +250,6 @@ static void write_data(struct bch_fs *c,
 {
 	struct disk_reservation res;
 	struct bch_write_op op;
-	struct bch_write_bio bio;
 	struct bio_vec bv;
 	struct closure cl;
 
@@ -259,15 +258,15 @@ static void write_data(struct bch_fs *c,
 
 	closure_init_stack(&cl);
 
-	bio_init(&bio.bio, &bv, 1);
-	bio.bio.bi_iter.bi_size	= len;
-	bch2_bio_map(&bio.bio, buf);
+	bio_init(&op.wbio.bio, &bv, 1);
+	op.wbio.bio.bi_iter.bi_size = len;
+	bch2_bio_map(&op.wbio.bio, buf);
 
 	int ret = bch2_disk_reservation_get(c, &res, len >> 9, 0);
 	if (ret)
 		die("error reserving space in new filesystem: %s", strerror(-ret));
 
-	bch2_write_op_init(&op, c, &bio, res, c->write_points,
+	bch2_write_op_init(&op, c, res, c->write_points,
 			   POS(dst_inode->inum, dst_offset >> 9), NULL, 0);
 	closure_call(&op.cl, bch2_write, NULL, &cl);
 	closure_sync(&cl);

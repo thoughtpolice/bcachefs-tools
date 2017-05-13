@@ -166,4 +166,8 @@ static __always_inline void __write_once_size(volatile void *p, void *res, int s
 #define flush_cache_vmap(start, end)		do { } while (0)
 #define flush_cache_vunmap(start, end)		do { } while (0)
 
+#ifdef __x86_64
+#define CONFIG_X86_64	y
+#endif
+
 #endif /* _TOOLS_LINUX_COMPILER_H */

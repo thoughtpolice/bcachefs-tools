@@ -1,5 +1,6 @@
 
 #include <string.h>
+#include <sys/mman.h>
 
 #include <linux/math64.h>
 #include <linux/printk.h>
@@ -162,6 +163,8 @@ __attribute__((constructor(101)))
 static void sched_init(void)
 {
 	struct task_struct *p = malloc(sizeof(*p));
+
+	mlockall(MCL_CURRENT|MCL_FUTURE);
 
 	memset(p, 0, sizeof(*p));
 

@@ -53,15 +53,15 @@ static inline u64 journal_pin_seq(struct journal *j,
 	return last_seq(j) + fifo_entry_idx(&j->pin, pin_list);
 }
 
-static inline void bch2_journal_add_entry(struct journal_buf *buf,
-					 const void *data, size_t u64s,
-					 unsigned type, enum btree_id id,
-					 unsigned level)
+static inline void bch2_journal_add_entry_noreservation(struct journal_buf *buf,
+				 unsigned type, enum btree_id id,
+				 unsigned level,
+				 const void *data, size_t u64s)
 {
 	struct jset *jset = buf->data;
 
-	bch2_journal_add_entry_at(buf, data, u64s, type, id, level,
-				 le32_to_cpu(jset->u64s));
+	bch2_journal_add_entry_at(buf, le32_to_cpu(jset->u64s),
+				  type, id, level, data, u64s);
 	le32_add_cpu(&jset->u64s, jset_u64s(u64s));
 }
 
@@ -97,8 +97,9 @@ static void bch2_journal_add_btree_root(struct journal_buf *buf,
 				       enum btree_id id, struct bkey_i *k,
 				       unsigned level)
 {
-	bch2_journal_add_entry(buf, k, k->k.u64s,
-			      JOURNAL_ENTRY_BTREE_ROOT, id, level);
+	bch2_journal_add_entry_noreservation(buf,
+			      JOURNAL_ENTRY_BTREE_ROOT, id, level,
+			      k, k->k.u64s);
 }
 
 static void journal_seq_blacklist_flush(struct journal *j,
@@ -416,13 +417,8 @@ static void journal_entry_null_range(void *start, void *end)
 {
 	struct jset_entry *entry;
 
-	for (entry = start; entry != end; entry = vstruct_next(entry)) {
-		entry->u64s	= 0;
-		entry->btree_id	= 0;
-		entry->level	= 0;
-		entry->flags	= 0;
-		SET_JOURNAL_ENTRY_TYPE(entry, 0);
-	}
+	for (entry = start; entry != end; entry = vstruct_next(entry))
+		memset(entry, 0, sizeof(*entry));
 }
 
 static int journal_validate_key(struct bch_fs *c, struct jset *j,
@@ -514,7 +510,7 @@ static int __journal_entry_validate(struct bch_fs *c, struct jset *j,
 			break;
 		}
 
-		switch (JOURNAL_ENTRY_TYPE(entry)) {
+		switch (entry->type) {
 		case JOURNAL_ENTRY_BTREE_KEYS:
 			vstruct_for_each(entry, k) {
 				ret = journal_validate_key(c, j, entry, k,
@@ -555,8 +551,8 @@ static int __journal_entry_validate(struct bch_fs *c, struct jset *j,
 
 			break;
 		default:
-			journal_entry_err(c, "invalid journal entry type %llu",
-				 JOURNAL_ENTRY_TYPE(entry));
+			journal_entry_err(c, "invalid journal entry type %u",
+					  entry->type);
 			journal_entry_null_range(entry, vstruct_next(entry));
 			break;
 		}
@@ -1426,9 +1422,9 @@ void bch2_journal_start(struct bch_fs *c)
 	 */
 	list_for_each_entry(bl, &j->seq_blacklist, list)
 		if (!bl->written) {
-			bch2_journal_add_entry(journal_cur_buf(j), &bl->seq, 1,
+			bch2_journal_add_entry_noreservation(journal_cur_buf(j),
 					JOURNAL_ENTRY_JOURNAL_SEQ_BLACKLISTED,
-					0, 0);
+					0, 0, &bl->seq, 1);
 
 			journal_pin_add_entry(j,
 					      &fifo_peek_back(&j->pin),
@@ -2083,8 +2079,8 @@ static void journal_write_compact(struct jset *jset)
 		if (prev &&
 		    i->btree_id == prev->btree_id &&
 		    i->level	== prev->level &&
-		    JOURNAL_ENTRY_TYPE(i) == JOURNAL_ENTRY_TYPE(prev) &&
-		    JOURNAL_ENTRY_TYPE(i) == JOURNAL_ENTRY_BTREE_KEYS &&
+		    i->type	== prev->type &&
+		    i->type	== JOURNAL_ENTRY_BTREE_KEYS &&
 		    le16_to_cpu(prev->u64s) + u64s <= U16_MAX) {
 			memmove_u64s_down(vstruct_next(prev),
 					  i->_data,
@@ -2238,8 +2234,9 @@ static void journal_write(struct closure *cl)
 		closure_return_with_destructor(cl, journal_write_done);
 	}
 
-	bch2_check_mark_super(c, bkey_i_to_s_c_extent(&j->key),
-			      BCH_DATA_JOURNAL);
+	if (bch2_check_mark_super(c, bkey_i_to_s_c_extent(&j->key),
+				  BCH_DATA_JOURNAL))
+		goto err;
 
 	/*
 	 * XXX: we really should just disable the entire journal in nochanges

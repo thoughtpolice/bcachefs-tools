@@ -66,37 +66,30 @@ struct bch_write_bio {
 	struct bch_fs		*c;
 	struct bch_dev		*ca;
 	union {
-		struct bio	*orig;
-		struct closure	*cl;
+	struct bch_write_bio	*parent;
+	struct closure		*cl;
 	};
 
-	unsigned		submit_time_us;
+	u8			ptr_idx;
+	u8			replicas_failed;
+	u8			order;
+
 	unsigned		split:1,
 				bounce:1,
 				put_bio:1,
-				have_io_ref:1;
+				have_io_ref:1,
+				used_mempool:1;
 
-	/* Only for btree writes: */
-	unsigned		used_mempool:1;
-	u8			order;
+	unsigned		submit_time_us;
+	void			*data;
 
 	struct bio		bio;
 };
 
-struct bch_replace_info {
-	struct extent_insert_hook	hook;
-	/* How many insertions succeeded */
-	unsigned			successes;
-	/* How many insertions failed */
-	unsigned			failures;
-	BKEY_PADDED(key);
-};
-
 struct bch_write_op {
 	struct closure		cl;
-	struct bch_fs	*c;
+	struct bch_fs		*c;
 	struct workqueue_struct	*io_wq;
-	struct bch_write_bio	*bio;
 
 	unsigned		written; /* sectors */
 
@@ -141,6 +134,9 @@ struct bch_write_op {
 
 	struct keylist		insert_keys;
 	u64			inline_keys[BKEY_EXTENT_U64s_MAX * 2];
+
+	/* Must be last: */
+	struct bch_write_bio	wbio;
 };
 
 #endif /* _BCACHE_IO_TYPES_H */
