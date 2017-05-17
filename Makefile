@@ -19,10 +19,6 @@ CC_VERSION=$(shell $(CC) -v 2>&1|grep -E '(gcc|clang) version')
 
 ifneq (,$(findstring gcc,$(CC_VERSION)))
 	CFLAGS+=-Wno-unused-but-set-variable
-ifndef D
-	CFLAGS+=-flto
-	LDFLAGS+=-flto
-endif
 endif
 
 ifneq (,$(findstring clang,$(CC_VERSION)))

@@ -149,4 +149,6 @@ const char *strcmp_prefix(const char *, const char *);
 
 unsigned hatoi_validate(const char *, const char *);
 
+u32 crc32c(u32, const void *, size_t);
+
 #endif /* _TOOLS_UTIL_H */
