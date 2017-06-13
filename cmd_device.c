@@ -246,9 +246,9 @@ int cmd_device_add(int argc, char *argv[])
 	dev_opts.fd = open_for_format(dev_opts.path, force);
 
 	format_opts.block_size	=
-		read_file_u64(fs.sysfs_fd, "block_size_bytes") >> 9;
+		read_file_u64(fs.sysfs_fd, "block_size") >> 9;
 	format_opts.btree_node_size =
-		read_file_u64(fs.sysfs_fd, "btree_node_size_bytes") >> 9;
+		read_file_u64(fs.sysfs_fd, "btree_node_size") >> 9;
 
 	struct bch_sb *sb = bch2_format(format_opts, &dev_opts, 1);
 	free(sb);
@@ -284,7 +284,7 @@ int cmd_device_remove(int argc, char *argv[])
 		{ "help",		0, NULL, 'h' },
 		{ NULL }
 	};
-	int opt, flags = 0;
+	int opt, flags = BCH_FORCE_IF_DEGRADED;
 
 	while ((opt = getopt_long(argc, argv, "fh", longopts, NULL)) != -1)
 		switch (opt) {
