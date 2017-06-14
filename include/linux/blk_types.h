@@ -59,16 +59,6 @@ struct bio {
 	struct bio_vec		bi_inline_vecs[0];
 };
 
-#define BIO_OP_SHIFT	(8 * sizeof(unsigned int) - REQ_OP_BITS)
-#define bio_op(bio)	((bio)->bi_opf >> BIO_OP_SHIFT)
-
-#define bio_set_op_attrs(bio, op, op_flags) do {		\
-	WARN_ON(op >= (1 << REQ_OP_BITS));			\
-	(bio)->bi_opf &= ((1 << BIO_OP_SHIFT) - 1);		\
-	(bio)->bi_opf |= ((unsigned int) (op) << BIO_OP_SHIFT);	\
-	(bio)->bi_opf |= op_flags;				\
-} while (0)
-
 #define BIO_RESET_BYTES		offsetof(struct bio, bi_max_vecs)
 
 /*
@@ -106,16 +96,68 @@ struct bio {
 #define BVEC_POOL_IDX(bio)	((bio)->bi_flags >> BVEC_POOL_OFFSET)
 
 /*
- * Request flags.  For use in the cmd_flags field of struct request, and in
- * bi_opf of struct bio.  Note that some flags are only valid in either one.
+ * Operations and flags common to the bio and request structures.
+ * We use 8 bits for encoding the operation, and the remaining 24 for flags.
+ *
+ * The least significant bit of the operation number indicates the data
+ * transfer direction:
+ *
+ *   - if the least significant bit is set transfers are TO the device
+ *   - if the least significant bit is not set transfers are FROM the device
+ *
+ * If a operation does not transfer data the least significant bit has no
+ * meaning.
  */
-enum rq_flag_bits {
+#define REQ_OP_BITS	8
+#define REQ_OP_MASK	((1 << REQ_OP_BITS) - 1)
+#define REQ_FLAG_BITS	24
+
+enum req_opf {
+	/* read sectors from the device */
+	REQ_OP_READ		= 0,
+	/* write sectors to the device */
+	REQ_OP_WRITE		= 1,
+	/* flush the volatile write cache */
+	REQ_OP_FLUSH		= 2,
+	/* discard sectors */
+	REQ_OP_DISCARD		= 3,
+	/* get zone information */
+	REQ_OP_ZONE_REPORT	= 4,
+	/* securely erase sectors */
+	REQ_OP_SECURE_ERASE	= 5,
+	/* seset a zone write pointer */
+	REQ_OP_ZONE_RESET	= 6,
+	/* write the same sector many times */
+	REQ_OP_WRITE_SAME	= 7,
+	/* write the zero filled sector many times */
+	REQ_OP_WRITE_ZEROES	= 8,
+
+	/* SCSI passthrough using struct scsi_request */
+	REQ_OP_SCSI_IN		= 32,
+	REQ_OP_SCSI_OUT		= 33,
+	/* Driver private requests */
+	REQ_OP_DRV_IN		= 34,
+	REQ_OP_DRV_OUT		= 35,
+
+	REQ_OP_LAST,
+};
+
+enum req_flag_bits {
+	__REQ_FAILFAST_DEV =	/* no driver retries of device errors */
+		REQ_OP_BITS,
+	__REQ_FAILFAST_TRANSPORT, /* no driver retries of transport errors */
+	__REQ_FAILFAST_DRIVER,	/* no driver retries of driver errors */
 	__REQ_SYNC,		/* request is sync (sync write or read) */
 	__REQ_META,		/* metadata io request */
 	__REQ_PRIO,		/* boost priority in cfq */
-
+	__REQ_NOMERGE,		/* don't touch this for merging */
+	__REQ_IDLE,		/* anticipate more IO after this one */
+	__REQ_INTEGRITY,	/* I/O includes block integrity payload */
 	__REQ_FUA,		/* forced unit access */
 	__REQ_PREFLUSH,		/* request for cache flush */
+	__REQ_RAHEAD,		/* read ahead, can fail anytime */
+	__REQ_BACKGROUND,	/* background IO */
+	__REQ_NR_BITS,		/* stops here */
 };
 
 #define REQ_SYNC		(1ULL << __REQ_SYNC)
@@ -123,6 +165,15 @@ enum rq_flag_bits {
 #define REQ_PRIO		(1ULL << __REQ_PRIO)
 
 #define REQ_NOMERGE_FLAGS	(REQ_PREFLUSH | REQ_FUA)
+
+#define bio_op(bio) \
+	((bio)->bi_opf & REQ_OP_MASK)
+
+static inline void bio_set_op_attrs(struct bio *bio, unsigned op,
+		unsigned op_flags)
+{
+	bio->bi_opf = op | op_flags;
+}
 
 #define REQ_RAHEAD		(1ULL << __REQ_RAHEAD)
 #define REQ_THROTTLED		(1ULL << __REQ_THROTTLED)
@@ -141,16 +192,5 @@ enum rq_flag_bits {
 #define WRITE_FLUSH		(REQ_SYNC | REQ_PREFLUSH)
 #define WRITE_FUA		(REQ_SYNC | REQ_FUA)
 #define WRITE_FLUSH_FUA		(REQ_SYNC | REQ_PREFLUSH | REQ_FUA)
-
-enum req_op {
-	REQ_OP_READ,
-	REQ_OP_WRITE,
-	REQ_OP_DISCARD,		/* request to discard sectors */
-	REQ_OP_SECURE_ERASE,	/* request to securely erase sectors */
-	REQ_OP_WRITE_SAME,	/* write same block many times */
-	REQ_OP_FLUSH,		/* request for cache flush */
-};
-
-#define REQ_OP_BITS 3
 
 #endif /* __LINUX_BLK_TYPES_H */
