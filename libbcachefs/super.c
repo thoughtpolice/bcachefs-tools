@@ -11,6 +11,7 @@
 #include "btree_cache.h"
 #include "btree_gc.h"
 #include "btree_update.h"
+#include "btree_update_interior.h"
 #include "btree_io.h"
 #include "chardev.h"
 #include "checksum.h"
@@ -416,7 +417,6 @@ static void bch2_fs_exit(struct bch_fs *c)
 	del_timer_sync(&c->foreground_write_wakeup);
 	cancel_delayed_work_sync(&c->pd_controllers_update);
 	cancel_work_sync(&c->read_only_work);
-	cancel_work_sync(&c->read_retry_work);
 
 	for (i = 0; i < c->sb.nr_devices; i++)
 		if (c->devs[i])
@@ -519,10 +519,6 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	mutex_init(&c->bio_bounce_pages_lock);
 	mutex_init(&c->zlib_workspace_lock);
 
-	bio_list_init(&c->read_retry_list);
-	spin_lock_init(&c->read_retry_lock);
-	INIT_WORK(&c->read_retry_work, bch2_read_retry_work);
-
 	bio_list_init(&c->btree_write_error_list);
 	spin_lock_init(&c->btree_write_error_lock);
 	INIT_WORK(&c->btree_write_error_work, bch2_btree_write_error_work);
@@ -584,7 +580,7 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	    mempool_init_kmalloc_pool(&c->btree_reserve_pool, 1,
 				      sizeof(struct btree_reserve)) ||
 	    mempool_init_kmalloc_pool(&c->btree_interior_update_pool, 1,
-				      sizeof(struct btree_interior_update)) ||
+				      sizeof(struct btree_update)) ||
 	    mempool_init_kmalloc_pool(&c->fill_iter, 1, iter_size) ||
 	    bioset_init(&c->btree_read_bio, 1,
 			offsetof(struct btree_read_bio, bio)) ||
@@ -1120,7 +1116,7 @@ static int bch2_dev_alloc(struct bch_fs *c, unsigned dev_idx)
 	spin_lock_init(&ca->freelist_lock);
 	bch2_dev_moving_gc_init(ca);
 
-	INIT_WORK(&ca->io_error_work, bch2_nonfatal_io_error_work);
+	INIT_WORK(&ca->io_error_work, bch2_io_error_work);
 
 	if (bch2_fs_init_fault("dev_alloc"))
 		goto err;
@@ -1262,31 +1258,6 @@ static int __bch2_dev_online(struct bch_fs *c, struct bcache_superblock *sb)
 
 /* Device management: */
 
-static bool have_enough_devs(struct bch_fs *c,
-			     struct replicas_status s,
-			     unsigned flags)
-{
-	if ((s.replicas[BCH_DATA_JOURNAL].nr_offline ||
-	     s.replicas[BCH_DATA_BTREE].nr_offline) &&
-	    !(flags & BCH_FORCE_IF_METADATA_DEGRADED))
-		return false;
-
-	if ((!s.replicas[BCH_DATA_JOURNAL].nr_online ||
-	     !s.replicas[BCH_DATA_BTREE].nr_online) &&
-	    !(flags & BCH_FORCE_IF_METADATA_LOST))
-		return false;
-
-	if (s.replicas[BCH_DATA_USER].nr_offline &&
-	    !(flags & BCH_FORCE_IF_DATA_DEGRADED))
-		return false;
-
-	if (!s.replicas[BCH_DATA_USER].nr_online &&
-	    !(flags & BCH_FORCE_IF_DATA_LOST))
-		return false;
-
-	return true;
-}
-
 /*
  * Note: this function is also used by the error paths - when a particular
  * device sees an error, we call it to determine whether we can just set the
@@ -1299,6 +1270,7 @@ static bool have_enough_devs(struct bch_fs *c,
 bool bch2_dev_state_allowed(struct bch_fs *c, struct bch_dev *ca,
 			    enum bch_member_state new_state, int flags)
 {
+	struct bch_devs_mask new_online_devs;
 	struct replicas_status s;
 	struct bch_dev *ca2;
 	int i, nr_rw = 0, required;
@@ -1331,19 +1303,12 @@ bool bch2_dev_state_allowed(struct bch_fs *c, struct bch_dev *ca,
 			return true;
 
 		/* do we have enough devices to read from?  */
-		s = __bch2_replicas_status(c, ca);
+		new_online_devs = bch2_online_devs(c);
+		__clear_bit(ca->dev_idx, new_online_devs.d);
 
-		pr_info("replicas: j %u %u b %u %u d %u %u",
-			s.replicas[BCH_DATA_JOURNAL].nr_online,
-			s.replicas[BCH_DATA_JOURNAL].nr_offline,
+		s = __bch2_replicas_status(c, new_online_devs);
 
-			s.replicas[BCH_DATA_BTREE].nr_online,
-			s.replicas[BCH_DATA_BTREE].nr_offline,
-
-			s.replicas[BCH_DATA_USER].nr_online,
-			s.replicas[BCH_DATA_USER].nr_offline);
-
-		return have_enough_devs(c, s, flags);
+		return bch2_have_enough_devs(c, s, flags);
 	default:
 		BUG();
 	}
@@ -1374,7 +1339,7 @@ static bool bch2_fs_may_start(struct bch_fs *c)
 
 	s = bch2_replicas_status(c);
 
-	return have_enough_devs(c, s, flags);
+	return bch2_have_enough_devs(c, s, flags);
 }
 
 static void __bch2_dev_read_only(struct bch_fs *c, struct bch_dev *ca)

@@ -26,7 +26,7 @@ void bch2_fatal_error(struct bch_fs *c)
 		bch_err(c, "emergency read only");
 }
 
-void bch2_nonfatal_io_error_work(struct work_struct *work)
+void bch2_io_error_work(struct work_struct *work)
 {
 	struct bch_dev *ca = container_of(work, struct bch_dev, io_error_work);
 	struct bch_fs *c = ca->fs;
@@ -45,9 +45,9 @@ void bch2_nonfatal_io_error_work(struct work_struct *work)
 	mutex_unlock(&c->state_lock);
 }
 
-void bch2_nonfatal_io_error(struct bch_dev *ca)
+void bch2_io_error(struct bch_dev *ca)
 {
-	queue_work(system_long_wq, &ca->io_error_work);
+	//queue_work(system_long_wq, &ca->io_error_work);
 }
 
 #ifdef __KERNEL__

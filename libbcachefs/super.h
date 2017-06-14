@@ -94,6 +94,18 @@ static inline struct bch_dev *bch2_get_next_online_dev(struct bch_fs *c,
 	__for_each_online_member(ca, c, iter,				\
 		(1 << BCH_MEMBER_STATE_RW)|(1 << BCH_MEMBER_STATE_RO))
 
+static inline struct bch_devs_mask bch2_online_devs(struct bch_fs *c)
+{
+	struct bch_devs_mask devs;
+	struct bch_dev *ca;
+	unsigned i;
+
+	memset(&devs, 0, sizeof(devs));
+	for_each_online_member(ca, c, i)
+		__set_bit(ca->dev_idx, devs.d);
+	return devs;
+}
+
 struct bch_fs *bch2_bdev_to_fs(struct block_device *);
 struct bch_fs *bch2_uuid_to_fs(uuid_le);
 int bch2_congested(struct bch_fs *, int);

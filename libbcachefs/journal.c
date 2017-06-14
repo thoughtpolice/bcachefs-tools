@@ -10,6 +10,7 @@
 #include "buckets.h"
 #include "btree_gc.h"
 #include "btree_update.h"
+#include "btree_update_interior.h"
 #include "btree_io.h"
 #include "checksum.h"
 #include "debug.h"
@@ -150,7 +151,7 @@ static void journal_seq_blacklist_flush(struct journal *j,
 	}
 
 	for (i = 0;; i++) {
-		struct btree_interior_update *as;
+		struct btree_update *as;
 		struct pending_btree_node_free *d;
 
 		mutex_lock(&j->blacklist_lock);
@@ -673,9 +674,9 @@ reread:			sectors_read = min_t(unsigned,
 
 			ret = submit_bio_wait(bio);
 
-			if (bch2_dev_fatal_io_err_on(ret, ca,
-						  "journal read from sector %llu",
-						  offset) ||
+			if (bch2_dev_io_err_on(ret, ca,
+					       "journal read from sector %llu",
+					       offset) ||
 			    bch2_meta_read_fault("journal"))
 				return -EIO;
 
@@ -1086,7 +1087,6 @@ static bool journal_entry_is_open(struct journal *j)
 
 void bch2_journal_buf_put_slowpath(struct journal *j, bool need_write_just_set)
 {
-	struct bch_fs *c = container_of(j, struct bch_fs, journal);
 	struct journal_buf *w = journal_prev_buf(j);
 
 	atomic_dec_bug(&journal_seq_pin(j, w->data->seq)->count);
@@ -1096,10 +1096,10 @@ void bch2_journal_buf_put_slowpath(struct journal *j, bool need_write_just_set)
 		__bch2_time_stats_update(j->delay_time,
 					j->need_write_time);
 #if 0
-	closure_call(&j->io, journal_write, NULL, &c->cl);
+	closure_call(&j->io, journal_write, NULL, NULL);
 #else
 	/* Shut sparse up: */
-	closure_init(&j->io, &c->cl);
+	closure_init(&j->io, NULL);
 	set_closure_fn(&j->io, journal_write, NULL);
 	journal_write(&j->io);
 #endif
@@ -1734,13 +1734,11 @@ void bch2_journal_pin_drop(struct journal *j,
 			  struct journal_entry_pin *pin)
 {
 	unsigned long flags;
-	bool wakeup;
-
-	if (!journal_pin_active(pin))
-		return;
+	bool wakeup = false;
 
 	spin_lock_irqsave(&j->pin_lock, flags);
-	wakeup = __journal_pin_drop(j, pin);
+	if (journal_pin_active(pin))
+		wakeup = __journal_pin_drop(j, pin);
 	spin_unlock_irqrestore(&j->pin_lock, flags);
 
 	/*
@@ -2099,60 +2097,6 @@ static void journal_write_compact(struct jset *jset)
 	jset->u64s = cpu_to_le32((u64 *) prev - jset->_data);
 }
 
-static void journal_write_endio(struct bio *bio)
-{
-	struct bch_dev *ca = bio->bi_private;
-	struct journal *j = &ca->fs->journal;
-
-	if (bch2_dev_fatal_io_err_on(bio->bi_error, ca, "journal write") ||
-	    bch2_meta_write_fault("journal"))
-		bch2_journal_halt(j);
-
-	closure_put(&j->io);
-	percpu_ref_put(&ca->io_ref);
-}
-
-static void journal_write_done(struct closure *cl)
-{
-	struct journal *j = container_of(cl, struct journal, io);
-	struct journal_buf *w = journal_prev_buf(j);
-
-	__bch2_time_stats_update(j->write_time, j->write_start_time);
-
-	j->last_seq_ondisk = le64_to_cpu(w->data->last_seq);
-
-	/*
-	 * Updating last_seq_ondisk may let journal_reclaim_work() discard more
-	 * buckets:
-	 *
-	 * Must come before signaling write completion, for
-	 * bch2_fs_journal_stop():
-	 */
-	mod_delayed_work(system_freezable_wq, &j->reclaim_work, 0);
-
-	BUG_ON(!j->reservations.prev_buf_unwritten);
-	atomic64_sub(((union journal_res_state) { .prev_buf_unwritten = 1 }).v,
-		     &j->reservations.counter);
-
-	/*
-	 * XXX: this is racy, we could technically end up doing the wake up
-	 * after the journal_buf struct has been reused for the next write
-	 * (because we're clearing JOURNAL_IO_IN_FLIGHT) and wake up things that
-	 * are waiting on the _next_ write, not this one.
-	 *
-	 * The wake up can't come before, because journal_flush_seq_async() is
-	 * looking at JOURNAL_IO_IN_FLIGHT when it has to wait on a journal
-	 * write that was already in flight.
-	 *
-	 * The right fix is to use a lock here, but using j.lock here means it
-	 * has to be a spin_lock_irqsave() lock which then requires propagating
-	 * the irq()ness to other locks and it's all kinds of nastiness.
-	 */
-
-	closure_wake_up(&w->wait);
-	wake_up(&j->wait);
-}
-
 static void journal_buf_realloc(struct journal *j, struct journal_buf *buf)
 {
 	/* we aren't holding j->lock: */
@@ -2172,6 +2116,89 @@ static void journal_buf_realloc(struct journal *j, struct journal_buf *buf)
 	buf->size	= new_size;
 }
 
+static void journal_write_done(struct closure *cl)
+{
+	struct journal *j = container_of(cl, struct journal, io);
+	struct journal_buf *w = journal_prev_buf(j);
+
+	__bch2_time_stats_update(j->write_time, j->write_start_time);
+
+	spin_lock(&j->lock);
+	j->last_seq_ondisk = le64_to_cpu(w->data->last_seq);
+
+	/*
+	 * Updating last_seq_ondisk may let journal_reclaim_work() discard more
+	 * buckets:
+	 *
+	 * Must come before signaling write completion, for
+	 * bch2_fs_journal_stop():
+	 */
+	mod_delayed_work(system_freezable_wq, &j->reclaim_work, 0);
+
+	/* also must come before signalling write completion: */
+	closure_debug_destroy(cl);
+
+	BUG_ON(!j->reservations.prev_buf_unwritten);
+	atomic64_sub(((union journal_res_state) { .prev_buf_unwritten = 1 }).v,
+		     &j->reservations.counter);
+
+	closure_wake_up(&w->wait);
+	wake_up(&j->wait);
+
+	if (test_bit(JOURNAL_NEED_WRITE, &j->flags))
+		mod_delayed_work(system_freezable_wq, &j->write_work, 0);
+	spin_unlock(&j->lock);
+}
+
+static void journal_write_error(struct closure *cl)
+{
+	struct journal *j = container_of(cl, struct journal, io);
+	struct bch_fs *c = container_of(j, struct bch_fs, journal);
+	struct bkey_s_extent e = bkey_i_to_s_extent(&j->key);
+
+	while (j->replicas_failed) {
+		unsigned idx = __fls(j->replicas_failed);
+
+		bch2_extent_drop_ptr_idx(e, idx);
+		j->replicas_failed ^= 1 << idx;
+	}
+
+	if (!bch2_extent_nr_ptrs(e.c)) {
+		bch_err(c, "unable to write journal to sufficient devices");
+		goto err;
+	}
+
+	if (bch2_check_mark_super(c, e.c, BCH_DATA_JOURNAL))
+		goto err;
+
+out:
+	journal_write_done(cl);
+	return;
+err:
+	bch2_fatal_error(c);
+	bch2_journal_halt(j);
+	goto out;
+}
+
+static void journal_write_endio(struct bio *bio)
+{
+	struct bch_dev *ca = bio->bi_private;
+	struct journal *j = &ca->fs->journal;
+
+	if (bch2_dev_io_err_on(bio->bi_error, ca, "journal write") ||
+	    bch2_meta_write_fault("journal")) {
+		/* Was this a flush or an actual journal write? */
+		if (ca->journal.ptr_idx != U8_MAX) {
+			set_bit(ca->journal.ptr_idx, &j->replicas_failed);
+			set_closure_fn(&j->io, journal_write_error,
+				       system_highpri_wq);
+		}
+	}
+
+	closure_put(&j->io);
+	percpu_ref_put(&ca->io_ref);
+}
+
 static void journal_write(struct closure *cl)
 {
 	struct journal *j = container_of(cl, struct journal, io);
@@ -2181,7 +2208,7 @@ static void journal_write(struct closure *cl)
 	struct jset *jset;
 	struct bio *bio;
 	struct bch_extent_ptr *ptr;
-	unsigned i, sectors, bytes;
+	unsigned i, sectors, bytes, ptr_idx = 0;
 
 	journal_buf_realloc(j, w);
 	jset = w->data;
@@ -2231,7 +2258,7 @@ static void journal_write(struct closure *cl)
 		bch2_journal_halt(j);
 		bch_err(c, "Unable to allocate journal write");
 		bch2_fatal_error(c);
-		closure_return_with_destructor(cl, journal_write_done);
+		continue_at(cl, journal_write_done, system_highpri_wq);
 	}
 
 	if (bch2_check_mark_super(c, bkey_i_to_s_c_extent(&j->key),
@@ -2255,6 +2282,7 @@ static void journal_write(struct closure *cl)
 
 		atomic64_add(sectors, &ca->meta_sectors_written);
 
+		ca->journal.ptr_idx	= ptr_idx++;
 		bio = ca->journal.bio;
 		bio_reset(bio);
 		bio->bi_iter.bi_sector	= ptr->offset;
@@ -2277,6 +2305,7 @@ static void journal_write(struct closure *cl)
 		    !bch2_extent_has_device(bkey_i_to_s_c_extent(&j->key), i)) {
 			percpu_ref_get(&ca->io_ref);
 
+			ca->journal.ptr_idx = U8_MAX;
 			bio = ca->journal.bio;
 			bio_reset(bio);
 			bio->bi_bdev		= ca->disk_sb.bdev;
@@ -2290,10 +2319,10 @@ no_io:
 	extent_for_each_ptr(bkey_i_to_s_extent(&j->key), ptr)
 		ptr->offset += sectors;
 
-	closure_return_with_destructor(cl, journal_write_done);
+	continue_at(cl, journal_write_done, system_highpri_wq);
 err:
 	bch2_inconsistent_error(c);
-	closure_return_with_destructor(cl, journal_write_done);
+	continue_at(cl, journal_write_done, system_highpri_wq);
 }
 
 static void journal_write_work(struct work_struct *work)
@@ -2524,18 +2553,61 @@ void bch2_journal_flush_seq_async(struct journal *j, u64 seq, struct closure *pa
 	spin_unlock(&j->lock);
 }
 
+static int journal_seq_flushed(struct journal *j, u64 seq)
+{
+	struct journal_buf *buf;
+	int ret = 1;
+
+	spin_lock(&j->lock);
+	BUG_ON(seq > atomic64_read(&j->seq));
+
+	if (seq == atomic64_read(&j->seq)) {
+		bool set_need_write = false;
+
+		ret = 0;
+
+		buf = journal_cur_buf(j);
+
+		if (!test_and_set_bit(JOURNAL_NEED_WRITE, &j->flags)) {
+			j->need_write_time = local_clock();
+			set_need_write = true;
+		}
+
+		switch (journal_buf_switch(j, set_need_write)) {
+		case JOURNAL_ENTRY_ERROR:
+			ret = -EIO;
+			break;
+		case JOURNAL_ENTRY_CLOSED:
+			/*
+			 * Journal entry hasn't been opened yet, but caller
+			 * claims it has something (seq == j->seq):
+			 */
+			BUG();
+		case JOURNAL_ENTRY_INUSE:
+			break;
+		case JOURNAL_UNLOCKED:
+			return 0;
+		}
+	} else if (seq + 1 == atomic64_read(&j->seq) &&
+		   j->reservations.prev_buf_unwritten) {
+		ret = bch2_journal_error(j);
+	}
+
+	spin_unlock(&j->lock);
+
+	return ret;
+}
+
 int bch2_journal_flush_seq(struct journal *j, u64 seq)
 {
-	struct closure cl;
 	u64 start_time = local_clock();
+	int ret, ret2;
 
-	closure_init_stack(&cl);
-	bch2_journal_flush_seq_async(j, seq, &cl);
-	closure_sync(&cl);
+	ret = wait_event_killable(j->wait, (ret2 = journal_seq_flushed(j, seq)));
 
 	bch2_time_stats_update(j->flush_seq_time, start_time);
 
-	return bch2_journal_error(j);
+	return ret ?: ret2 < 0 ? ret2 : 0;
 }
 
 void bch2_journal_meta_async(struct journal *j, struct closure *parent)

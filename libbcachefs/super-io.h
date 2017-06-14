@@ -4,6 +4,7 @@
 #include "extents.h"
 #include "eytzinger.h"
 #include "super_types.h"
+#include "super.h"
 
 #include <asm/byteorder.h>
 
@@ -134,8 +135,9 @@ struct replicas_status {
 };
 
 struct replicas_status __bch2_replicas_status(struct bch_fs *,
-					      struct bch_dev *);
+					      struct bch_devs_mask);
 struct replicas_status bch2_replicas_status(struct bch_fs *);
+bool bch2_have_enough_devs(struct bch_fs *, struct replicas_status, unsigned);
 
 unsigned bch2_replicas_online(struct bch_fs *, bool);
 unsigned bch2_dev_has_data(struct bch_fs *, struct bch_dev *);

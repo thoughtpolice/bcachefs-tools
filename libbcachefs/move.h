@@ -46,7 +46,7 @@ struct moving_context {
 	struct bch_ratelimit	*rate;
 
 	/* Try to avoid reading the following device */
-	struct bch_dev		*avoid;
+	struct bch_devs_mask	avoid;
 
 	struct list_head	reads;
 

@@ -30,7 +30,7 @@ static struct bch_extent_ptr *bkey_find_ptr(struct bch_fs *c,
 }
 
 static struct bch_extent_ptr *bch2_migrate_matching_ptr(struct migrate_write *m,
-						       struct bkey_s_extent e)
+							struct bkey_s_extent e)
 {
 	const struct bch_extent_ptr *ptr;
 	struct bch_extent_ptr *ret;
@@ -138,11 +138,11 @@ out:
 }
 
 void bch2_migrate_write_init(struct bch_fs *c,
-			    struct migrate_write *m,
-			    struct write_point *wp,
-			    struct bkey_s_c k,
-			    const struct bch_extent_ptr *move_ptr,
-			    unsigned flags)
+			     struct migrate_write *m,
+			     struct write_point *wp,
+			     struct bkey_s_c k,
+			     const struct bch_extent_ptr *move_ptr,
+			     unsigned flags)
 {
 	bkey_reassemble(&m->key, k);
 
@@ -178,15 +178,11 @@ static void migrate_bio_init(struct moving_io *io, struct bio *bio,
 	bch2_bio_map(bio, NULL);
 }
 
-static void moving_io_destructor(struct closure *cl)
+static void moving_io_free(struct moving_io *io)
 {
-	struct moving_io *io = container_of(cl, struct moving_io, cl);
 	struct moving_context *ctxt = io->ctxt;
 	struct bio_vec *bv;
 	int i;
-
-	//if (io->replace.failures)
-	//	trace_copy_collision(q, &io->key.k);
 
 	atomic_sub(io->write.key.k.size, &ctxt->sectors_in_flight);
 	wake_up(&ctxt->wait);
@@ -194,7 +190,6 @@ static void moving_io_destructor(struct closure *cl)
 	bio_for_each_segment_all(bv, &io->write.op.wbio.bio, i)
 		if (bv->bv_page)
 			__free_page(bv->bv_page);
-
 	kfree(io);
 }
 
@@ -204,27 +199,26 @@ static void moving_error(struct moving_context *ctxt, unsigned flag)
 	//atomic_or(flag, &ctxt->error_flags);
 }
 
-static void moving_io_after_write(struct closure *cl)
+static void moving_write_done(struct closure *cl)
 {
 	struct moving_io *io = container_of(cl, struct moving_io, cl);
-	struct moving_context *ctxt = io->ctxt;
 
 	if (io->write.op.error)
-		moving_error(ctxt, MOVING_FLAG_WRITE);
+		moving_error(io->ctxt, MOVING_FLAG_WRITE);
 
-	moving_io_destructor(cl);
+	//if (io->replace.failures)
+	//	trace_copy_collision(q, &io->key.k);
+
+	moving_io_free(io);
 }
 
-static void write_moving(struct moving_io *io)
+static void write_moving(struct closure *cl)
 {
+	struct moving_io *io = container_of(cl, struct moving_io, cl);
 	struct bch_write_op *op = &io->write.op;
 
-	if (op->error) {
-		closure_return_with_destructor(&io->cl, moving_io_destructor);
-	} else {
-		closure_call(&op->cl, bch2_write, NULL, &io->cl);
-		closure_return_with_destructor(&io->cl, moving_io_after_write);
-	}
+	closure_call(&op->cl, bch2_write, NULL, &io->cl);
+	closure_return_with_destructor(&io->cl, moving_write_done);
 }
 
 static inline struct moving_io *next_pending_write(struct moving_context *ctxt)
@@ -243,10 +237,8 @@ static void read_moving_endio(struct bio *bio)
 
 	trace_move_read_done(&io->write.key.k);
 
-	if (bio->bi_error) {
-		io->write.op.error = bio->bi_error;
+	if (bio->bi_error)
 		moving_error(io->ctxt, MOVING_FLAG_READ);
-	}
 
 	io->read_completed = true;
 	if (next_pending_write(ctxt))
@@ -255,49 +247,31 @@ static void read_moving_endio(struct bio *bio)
 	closure_put(&ctxt->cl);
 }
 
-static void __bch2_data_move(struct closure *cl)
-{
-	struct moving_io *io = container_of(cl, struct moving_io, cl);
-	struct bch_fs *c = io->write.op.c;
-	struct extent_pick_ptr pick;
-
-	bch2_extent_pick_ptr_avoiding(c, bkey_i_to_s_c(&io->write.key),
-				     io->ctxt->avoid, &pick);
-	if (IS_ERR_OR_NULL(pick.ca))
-		closure_return_with_destructor(cl, moving_io_destructor);
-
-	bio_set_op_attrs(&io->rbio.bio, REQ_OP_READ, 0);
-	io->rbio.bio.bi_iter.bi_sector = bkey_start_offset(&io->write.key.k);
-	io->rbio.bio.bi_end_io	= read_moving_endio;
-
-	/*
-	 * dropped by read_moving_endio() - guards against use after free of
-	 * ctxt when doing wakeup
-	 */
-	closure_get(&io->ctxt->cl);
-
-	bch2_read_extent(c, &io->rbio,
-			bkey_i_to_s_c(&io->write.key),
-			&pick, BCH_READ_IS_LAST);
-}
-
 int bch2_data_move(struct bch_fs *c,
-		  struct moving_context *ctxt,
-		  struct write_point *wp,
-		  struct bkey_s_c k,
-		  const struct bch_extent_ptr *move_ptr)
+		   struct moving_context *ctxt,
+		   struct write_point *wp,
+		   struct bkey_s_c k,
+		   const struct bch_extent_ptr *move_ptr)
 {
+	struct extent_pick_ptr pick;
 	struct moving_io *io;
 
+	bch2_extent_pick_ptr(c, k, &ctxt->avoid, &pick);
+	if (IS_ERR_OR_NULL(pick.ca))
+		return pick.ca ? PTR_ERR(pick.ca) : 0;
+
 	io = kzalloc(sizeof(struct moving_io) + sizeof(struct bio_vec) *
-		     DIV_ROUND_UP(k.k->size, PAGE_SECTORS),
-		     GFP_KERNEL);
+		     DIV_ROUND_UP(k.k->size, PAGE_SECTORS), GFP_KERNEL);
 	if (!io)
 		return -ENOMEM;
 
 	io->ctxt = ctxt;
 
 	migrate_bio_init(io, &io->rbio.bio, k.k->size);
+
+	bio_set_op_attrs(&io->rbio.bio, REQ_OP_READ, 0);
+	io->rbio.bio.bi_iter.bi_sector	= bkey_start_offset(k.k);
+	io->rbio.bio.bi_end_io		= read_moving_endio;
 
 	if (bio_alloc_pages(&io->rbio.bio, GFP_KERNEL)) {
 		kfree(io);
@@ -318,7 +292,12 @@ int bch2_data_move(struct bch_fs *c,
 	atomic_add(k.k->size, &ctxt->sectors_in_flight);
 	list_add_tail(&io->list, &ctxt->reads);
 
-	closure_call(&io->cl, __bch2_data_move, NULL, &ctxt->cl);
+	/*
+	 * dropped by read_moving_endio() - guards against use after free of
+	 * ctxt when doing wakeup
+	 */
+	closure_get(&io->ctxt->cl);
+	bch2_read_extent(c, &io->rbio, k, &pick, 0);
 	return 0;
 }
 
@@ -328,8 +307,14 @@ static void do_pending_writes(struct moving_context *ctxt)
 
 	while ((io = next_pending_write(ctxt))) {
 		list_del(&io->list);
+
+		if (io->rbio.bio.bi_error) {
+			moving_io_free(io);
+			continue;
+		}
+
 		trace_move_write(&io->write.key.k);
-		write_moving(io);
+		closure_call(&io->cl, write_moving, NULL, &ctxt->cl);
 	}
 }
 

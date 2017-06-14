@@ -181,7 +181,7 @@ int bch2_parse_mount_opts(struct bch_opts *opts, char *options)
 		if (val) {
 			id = bch2_opt_lookup(name);
 			if (id < 0)
-				return -EINVAL;
+				continue;
 
 			ret = parse_one_opt(id, val, &v);
 			if (ret < 0)
@@ -196,8 +196,9 @@ int bch2_parse_mount_opts(struct bch_opts *opts, char *options)
 				v = 0;
 			}
 
-			if (bch2_opt_table[id].type != BCH_OPT_BOOL)
-				return -EINVAL;
+			if (id < 0 ||
+			    bch2_opt_table[id].type != BCH_OPT_BOOL)
+				continue;
 		}
 
 		bch2_opt_set(opts, id, v);

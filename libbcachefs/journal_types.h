@@ -139,6 +139,7 @@ struct journal {
 
 	struct closure		io;
 	struct delayed_work	write_work;
+	unsigned long		replicas_failed;
 
 	/* Sequence number of most recent journal entry (last entry in @pin) */
 	atomic64_t		seq;
@@ -227,6 +228,7 @@ struct journal_device {
 
 	/* Bio for journal reads/writes to this device */
 	struct bio		*bio;
+	u8			ptr_idx;
 
 	/* for bch_journal_read_device */
 	struct closure		read;

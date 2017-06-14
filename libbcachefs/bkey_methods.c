@@ -27,9 +27,18 @@ const char *bch2_bkey_invalid(struct bch_fs *c, enum bkey_type type,
 	if (k.k->u64s < BKEY_U64s)
 		return "u64s too small";
 
-	if (k.k->size &&
-	    (bkey_deleted(k.k) || !ops->is_extents))
-		return "nonzero size field";
+	if (!ops->is_extents) {
+		if (k.k->size)
+			return "nonzero size field";
+	} else {
+		if ((k.k->size == 0) != bkey_deleted(k.k))
+			return "bad size field";
+	}
+
+	if (ops->is_extents &&
+	    !k.k->size &&
+	    !bkey_deleted(k.k))
+		return "zero size field";
 
 	switch (k.k->type) {
 	case KEY_TYPE_DELETED:

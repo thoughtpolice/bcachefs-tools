@@ -539,12 +539,12 @@ err:
 }
 
 /* Slowpath, don't want it inlined into btree_iter_traverse() */
-static noinline struct btree *bch2_btree_node_fill(struct btree_iter *iter,
+static noinline struct btree *bch2_btree_node_fill(struct bch_fs *c,
+						   struct btree_iter *iter,
 						   const struct bkey_i *k,
 						   unsigned level,
 						   enum six_lock_type lock_type)
 {
-	struct bch_fs *c = iter->c;
 	struct btree *b;
 
 	/*
@@ -603,7 +603,7 @@ static noinline struct btree *bch2_btree_node_fill(struct btree_iter *iter,
  * The btree node will have either a read or a write lock held, depending on
  * the @write parameter.
  */
-struct btree *bch2_btree_node_get(struct btree_iter *iter,
+struct btree *bch2_btree_node_get(struct bch_fs *c, struct btree_iter *iter,
 				  const struct bkey_i *k, unsigned level,
 				  enum six_lock_type lock_type)
 {
@@ -613,7 +613,7 @@ struct btree *bch2_btree_node_get(struct btree_iter *iter,
 	BUG_ON(level >= BTREE_MAX_DEPTH);
 retry:
 	rcu_read_lock();
-	b = mca_find(iter->c, k);
+	b = mca_find(c, k);
 	rcu_read_unlock();
 
 	if (unlikely(!b)) {
@@ -622,7 +622,7 @@ retry:
 		 * else we could read in a btree node from disk that's been
 		 * freed:
 		 */
-		b = bch2_btree_node_fill(iter, k, level, lock_type);
+		b = bch2_btree_node_fill(c, iter, k, level, lock_type);
 
 		/* We raced and found the btree node in the cache */
 		if (!b)
@@ -706,10 +706,61 @@ retry:
 	return b;
 }
 
-void bch2_btree_node_prefetch(struct btree_iter *iter,
-			      const struct bkey_i *k, unsigned level)
+struct btree *bch2_btree_node_get_sibling(struct bch_fs *c,
+					  struct btree_iter *iter,
+					  struct btree *b,
+					  enum btree_node_sibling sib)
 {
-	struct bch_fs *c = iter->c;
+	struct btree *parent;
+	struct btree_node_iter node_iter;
+	struct bkey_packed *k;
+	BKEY_PADDED(k) tmp;
+	struct btree *ret;
+	unsigned level = b->level;
+
+	parent = iter->nodes[level + 1];
+	if (!parent)
+		return NULL;
+
+	if (!bch2_btree_node_relock(iter, level + 1)) {
+		bch2_btree_iter_set_locks_want(iter, level + 2);
+		return ERR_PTR(-EINTR);
+	}
+
+	node_iter = iter->node_iters[parent->level];
+
+	k = bch2_btree_node_iter_peek_all(&node_iter, parent);
+	BUG_ON(bkey_cmp_left_packed(parent, k, &b->key.k.p));
+
+	do {
+		k = sib == btree_prev_sib
+			? bch2_btree_node_iter_prev_all(&node_iter, parent)
+			: (bch2_btree_node_iter_advance(&node_iter, parent),
+			   bch2_btree_node_iter_peek_all(&node_iter, parent));
+		if (!k)
+			return NULL;
+	} while (bkey_deleted(k));
+
+	bch2_bkey_unpack(parent, &tmp.k, k);
+
+	ret = bch2_btree_node_get(c, iter, &tmp.k, level, SIX_LOCK_intent);
+
+	if (IS_ERR(ret) && PTR_ERR(ret) == -EINTR) {
+		btree_node_unlock(iter, level);
+		ret = bch2_btree_node_get(c, iter, &tmp.k, level, SIX_LOCK_intent);
+	}
+
+	if (!IS_ERR(ret) && !bch2_btree_node_relock(iter, level)) {
+		six_unlock_intent(&ret->lock);
+		ret = ERR_PTR(-EINTR);
+	}
+
+	return ret;
+}
+
+void bch2_btree_node_prefetch(struct bch_fs *c, const struct bkey_i *k,
+			      unsigned level, enum btree_id btree_id)
+{
 	struct btree *b;
 
 	BUG_ON(level >= BTREE_MAX_DEPTH);
@@ -726,7 +777,7 @@ void bch2_btree_node_prefetch(struct btree_iter *iter,
 		return;
 
 	bkey_copy(&b->key, k);
-	if (bch2_btree_node_hash_insert(c, b, level, iter->btree_id)) {
+	if (bch2_btree_node_hash_insert(c, b, level, btree_id)) {
 		/* raced with another fill: */
 
 		/* mark as unhashed... */

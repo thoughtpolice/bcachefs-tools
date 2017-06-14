@@ -21,6 +21,8 @@
 #include <linux/task_io_accounting_ops.h>
 #include <linux/uio.h>
 #include <linux/writeback.h>
+
+#include <trace/events/bcachefs.h>
 #include <trace/events/writeback.h>
 
 struct bio_set *bch2_writepage_bioset;
@@ -700,8 +702,7 @@ static void bchfs_read(struct bch_fs *c, struct btree_iter *iter,
 {
 	struct bio *bio = &rbio->bio;
 	int flags = BCH_READ_RETRY_IF_STALE|
-		BCH_READ_PROMOTE|
-		BCH_READ_MAY_REUSE_BIO;
+		BCH_READ_MAY_PROMOTE;
 
 	while (1) {
 		struct extent_pick_ptr pick;
@@ -727,7 +728,7 @@ static void bchfs_read(struct bch_fs *c, struct btree_iter *iter,
 		bch2_btree_iter_unlock(iter);
 		k = bkey_i_to_s_c(&tmp.k);
 
-		bch2_extent_pick_ptr(c, k, &pick);
+		bch2_extent_pick_ptr(c, k, NULL, &pick);
 		if (IS_ERR(pick.ca)) {
 			bcache_io_error(c, bio, "no device to read from");
 			bio_endio(bio);
@@ -753,15 +754,14 @@ static void bchfs_read(struct bch_fs *c, struct btree_iter *iter,
 		    bkey_extent_is_compressed(k))
 			bch2_mark_pages_unalloc(bio);
 
-		if (is_last)
-			flags |= BCH_READ_IS_LAST;
-
 		if (pick.ca) {
-			PTR_BUCKET(pick.ca, &pick.ptr)->prio[READ] =
-				c->prio_clock[READ].hand;
+			if (!is_last) {
+				bio_inc_remaining(&rbio->bio);
+				flags |= BCH_READ_MUST_CLONE;
+				trace_read_split(&rbio->bio);
+			}
 
 			bch2_read_extent(c, rbio, k, &pick, flags);
-			flags &= ~BCH_READ_MAY_REUSE_BIO;
 		} else {
 			zero_fill_bio(bio);
 
@@ -803,9 +803,7 @@ int bch2_readpages(struct file *file, struct address_space *mapping,
 				 BCH_ENCODED_EXTENT_MAX >> PAGE_SECTOR_SHIFT);
 
 		struct bch_read_bio *rbio =
-			container_of(bio_alloc_bioset(GFP_NOFS, n,
-						      &c->bio_read),
-				     struct bch_read_bio, bio);
+			to_rbio(bio_alloc_bioset(GFP_NOFS, n, &c->bio_read));
 
 		rbio->bio.bi_end_io = bch2_readpages_end_io;
 		bio_add_page_contig(&rbio->bio, page);
@@ -854,9 +852,7 @@ int bch2_readpage(struct file *file, struct page *page)
 	struct bch_fs *c = inode->i_sb->s_fs_info;
 	struct bch_read_bio *rbio;
 
-	rbio = container_of(bio_alloc_bioset(GFP_NOFS, 1,
-					    &c->bio_read),
-			   struct bch_read_bio, bio);
+	rbio = to_rbio(bio_alloc_bioset(GFP_NOFS, 1, &c->bio_read));
 	rbio->bio.bi_end_io = bch2_readpages_end_io;
 
 	__bchfs_readpage(c, rbio, inode->i_ino, page);
@@ -1240,9 +1236,7 @@ static int bch2_read_single_page(struct page *page,
 	int ret;
 	DECLARE_COMPLETION_ONSTACK(done);
 
-	rbio = container_of(bio_alloc_bioset(GFP_NOFS, 1,
-					     &c->bio_read),
-			    struct bch_read_bio, bio);
+	rbio = to_rbio(bio_alloc_bioset(GFP_NOFS, 1, &c->bio_read));
 	rbio->bio.bi_private = &done;
 	rbio->bio.bi_end_io = bch2_read_single_page_end_io;
 
@@ -1464,9 +1458,7 @@ start:
 		if (iter->count)
 			closure_get(&dio->cl);
 
-		bch2_read(c, container_of(bio,
-				struct bch_read_bio, bio),
-			 inode->i_ino);
+		bch2_read(c, to_rbio(bio), inode->i_ino);
 	}
 
 	if (sync) {
@@ -2088,13 +2080,14 @@ static long bch2_fpunch(struct inode *inode, loff_t offset, loff_t len)
 		if (unlikely(ret))
 			goto out;
 
-		ret = bch2_discard(c,
-				  POS(ino, discard_start),
-				  POS(ino, discard_end),
-				  ZERO_VERSION,
-				  &disk_res,
-				  &i_sectors_hook.hook,
-				  &ei->journal_seq);
+		ret = bch2_btree_delete_range(c,
+				BTREE_ID_EXTENTS,
+				POS(ino, discard_start),
+				POS(ino, discard_end),
+				ZERO_VERSION,
+				&disk_res,
+				&i_sectors_hook.hook,
+				&ei->journal_seq);
 
 		i_sectors_dirty_put(ei, &i_sectors_hook);
 		bch2_disk_reservation_put(c, &disk_res);

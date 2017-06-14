@@ -4,11 +4,20 @@
 #include "btree_types.h"
 #include "buckets_types.h"
 #include "keylist_types.h"
+#include "super_types.h"
 
 #include <linux/llist.h>
 #include <linux/workqueue.h>
 
+struct extent_pick_ptr {
+	struct bch_extent_crc128	crc;
+	struct bch_extent_ptr		ptr;
+	struct bch_dev			*ca;
+};
+
 struct bch_read_bio {
+	struct bch_fs		*c;
+
 	/*
 	 * Reads will often have to be split, and if the extent being read from
 	 * was checksummed or compressed we'll also have to allocate bounce
@@ -19,33 +28,37 @@ struct bch_read_bio {
 	 */
 	union {
 	struct bch_read_bio	*parent;
-	bio_end_io_t		*orig_bi_end_io;
+	bio_end_io_t		*end_io;
 	};
 
 	/*
-	 * Saved copy of parent->bi_iter, from submission time - allows us to
+	 * Saved copy of bio->bi_iter, from submission time - allows us to
 	 * resubmit on IO error, and also to copy data back to the original bio
 	 * when we're bouncing:
 	 */
-	struct bvec_iter	parent_iter;
+	struct bvec_iter	bvec_iter;
 
 	unsigned		submit_time_us;
-	u16			flags;
+	u8			flags;
+	union {
+	struct {
 	u8			bounce:1,
-				split:1;
+				split:1,
+				process_context:1,
+				retry:2;
+	};
+	u8			_state;
+	};
 
-	struct bch_fs		*c;
-	struct bch_dev		*ca;
-	struct bch_extent_ptr	ptr;
-	struct bch_extent_crc128 crc;
+	struct extent_pick_ptr	pick;
 	struct bversion		version;
 
-	struct cache_promote_op *promote;
+	struct promote_op	*promote;
 
 	/*
 	 * If we have to retry the read (IO error, checksum failure, read stale
 	 * data (raced with allocator), we retry the portion of the parent bio
-	 * that failed (i.e. this bio's portion, parent_iter).
+	 * that failed (i.e. this bio's portion, bvec_iter).
 	 *
 	 * But we need to stash the inode somewhere:
 	 */
@@ -55,12 +68,6 @@ struct bch_read_bio {
 
 	struct bio		bio;
 };
-
-static inline struct bch_read_bio *
-bch2_rbio_parent(struct bch_read_bio *rbio)
-{
-	return rbio->split ? rbio->parent : rbio;
-}
 
 struct bch_write_bio {
 	struct bch_fs		*c;
@@ -131,6 +138,8 @@ struct bch_write_op {
 	};
 
 	int			(*index_update_fn)(struct bch_write_op *);
+
+	struct bch_devs_mask	failed;
 
 	struct keylist		insert_keys;
 	u64			inline_keys[BKEY_EXTENT_U64s_MAX * 2];

@@ -9,6 +9,8 @@
 #include "bkey_methods.h"
 #include "btree_gc.h"
 #include "btree_update.h"
+#include "btree_update_interior.h"
+#include "buckets.h"
 #include "checksum.h"
 #include "debug.h"
 #include "dirent.h"
@@ -497,6 +499,54 @@ out:
 	return out - buf;
 }
 
+void bch2_get_read_device(struct bch_fs *c,
+			  const struct bkey *k,
+			  const struct bch_extent_ptr *ptr,
+			  const union bch_extent_crc *crc,
+			  struct bch_devs_mask *avoid,
+			  struct extent_pick_ptr *pick)
+{
+	struct bch_dev *ca = c->devs[ptr->dev];
+
+	if (ptr->cached && ptr_stale(ca, ptr))
+		return;
+
+	if (ca->mi.state == BCH_MEMBER_STATE_FAILED)
+		return;
+
+	if (avoid && test_bit(ca->dev_idx, avoid->d))
+		return;
+
+	if (pick->ca && pick->ca->mi.tier < ca->mi.tier)
+		return;
+
+	if (!percpu_ref_tryget(&ca->io_ref))
+		return;
+
+	if (pick->ca)
+		percpu_ref_put(&pick->ca->io_ref);
+
+	*pick = (struct extent_pick_ptr) {
+		.ptr	= *ptr,
+		.ca	= ca,
+	};
+
+	if (k->size)
+		pick->crc = crc_to_128(k, crc);
+}
+
+static void extent_pick_read_device(struct bch_fs *c,
+				    struct bkey_s_c_extent e,
+				    struct bch_devs_mask *avoid,
+				    struct extent_pick_ptr *pick)
+{
+	const union bch_extent_crc *crc;
+	const struct bch_extent_ptr *ptr;
+
+	extent_for_each_ptr_crc(e, ptr, crc)
+		bch2_get_read_device(c, e.k, ptr, crc, avoid, pick);
+}
+
 /* Btree ptrs */
 
 static const char *bch2_btree_ptr_invalid(const struct bch_fs *c,
@@ -615,36 +665,10 @@ static void bch2_btree_ptr_to_text(struct bch_fs *c, char *buf,
 struct extent_pick_ptr
 bch2_btree_pick_ptr(struct bch_fs *c, const struct btree *b)
 {
-	struct bkey_s_c_extent e = bkey_i_to_s_c_extent(&b->key);
-	const union bch_extent_crc *crc;
-	const struct bch_extent_ptr *ptr;
 	struct extent_pick_ptr pick = { .ca = NULL };
 
-	extent_for_each_ptr_crc(e, ptr, crc) {
-		struct bch_dev *ca = c->devs[ptr->dev];
-		struct btree *root = btree_node_root(c, b);
-
-		if (bch2_fs_inconsistent_on(crc, c,
-				"btree node pointer with crc at btree %u level %u/%u bucket %zu",
-				b->btree_id, b->level, root ? root->level : -1,
-				PTR_BUCKET_NR(ca, ptr)))
-			break;
-
-		if (ca->mi.state == BCH_MEMBER_STATE_FAILED)
-			continue;
-
-		if (pick.ca && pick.ca->mi.tier < ca->mi.tier)
-			continue;
-
-		if (!percpu_ref_tryget(&ca->io_ref))
-			continue;
-
-		if (pick.ca)
-			percpu_ref_put(&pick.ca->io_ref);
-
-		pick.ca		= ca;
-		pick.ptr	= *ptr;
-	}
+	extent_pick_read_device(c, bkey_i_to_s_c_extent(&b->key),
+				NULL, &pick);
 
 	return pick;
 }
@@ -2029,13 +2053,11 @@ void bch2_extent_mark_replicas_cached(struct bch_fs *c,
  * as the pointers are sorted by tier, hence preferring pointers to tier 0
  * rather than pointers to tier 1.
  */
-void bch2_extent_pick_ptr_avoiding(struct bch_fs *c, struct bkey_s_c k,
-				   struct bch_dev *avoid,
-				   struct extent_pick_ptr *ret)
+void bch2_extent_pick_ptr(struct bch_fs *c, struct bkey_s_c k,
+			  struct bch_devs_mask *avoid,
+			  struct extent_pick_ptr *ret)
 {
 	struct bkey_s_c_extent e;
-	const union bch_extent_crc *crc;
-	const struct bch_extent_ptr *ptr;
 
 	switch (k.k->type) {
 	case KEY_TYPE_DELETED:
@@ -2053,32 +2075,7 @@ void bch2_extent_pick_ptr_avoiding(struct bch_fs *c, struct bkey_s_c k,
 		e = bkey_s_c_to_extent(k);
 		ret->ca = NULL;
 
-		extent_for_each_ptr_crc(e, ptr, crc) {
-			struct bch_dev *ca = c->devs[ptr->dev];
-
-			if (ptr->cached && ptr_stale(ca, ptr))
-				continue;
-
-			if (ca->mi.state == BCH_MEMBER_STATE_FAILED)
-				continue;
-
-			if (ret->ca &&
-			    (ca == avoid ||
-			     ret->ca->mi.tier < ca->mi.tier))
-				continue;
-
-			if (!percpu_ref_tryget(&ca->io_ref))
-				continue;
-
-			if (ret->ca)
-				percpu_ref_put(&ret->ca->io_ref);
-
-			*ret = (struct extent_pick_ptr) {
-				.crc = crc_to_128(e.k, crc),
-				.ptr = *ptr,
-				.ca = ca,
-			};
-		}
+		extent_pick_read_device(c, bkey_s_c_to_extent(k), avoid, ret);
 
 		if (!ret->ca && !bkey_extent_is_cached(e.k))
 			ret->ca = ERR_PTR(-EIO);

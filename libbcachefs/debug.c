@@ -71,7 +71,7 @@ void __bch2_btree_verify(struct bch_fs *c, struct btree *b)
 
 	memcpy(n_ondisk, n_sorted, btree_bytes(c));
 
-	bch2_btree_node_read_done(c, v, pick.ca, &pick.ptr);
+	bch2_btree_node_read_done(c, v);
 	n_sorted = c->verify_data->data;
 
 	percpu_ref_put(&pick.ca->io_ref);

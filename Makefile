@@ -69,7 +69,8 @@ SRCS=bcachefs.c				\
      libbcachefs/btree_gc.c		\
      libbcachefs/btree_io.c		\
      libbcachefs/btree_iter.c		\
-     libbcachefs/btree_update.c		\
+     libbcachefs/btree_update_interior.c\
+     libbcachefs/btree_update_leaf.c	\
      libbcachefs/buckets.c		\
      libbcachefs/checksum.c		\
      libbcachefs/clock.c		\

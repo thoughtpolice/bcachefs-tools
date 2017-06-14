@@ -27,13 +27,6 @@
 
 #include <trace/events/bcachefs.h>
 
-static inline void __bio_inc_remaining(struct bio *bio)
-{
-	bio_set_flag(bio, BIO_CHAIN);
-	smp_mb__before_atomic();
-	atomic_inc(&bio->__bi_remaining);
-}
-
 /* Allocate, free from mempool: */
 
 void bch2_bio_free_pages_pool(struct bch_fs *c, struct bio *bio)
@@ -97,6 +90,9 @@ void bch2_submit_wbio_replicas(struct bch_write_bio *wbio, struct bch_fs *c,
 	BUG_ON(c->opts.nochanges);
 
 	extent_for_each_ptr(e, ptr) {
+		BUG_ON(ptr->dev >= BCH_SB_MEMBERS_MAX ||
+		       !c->devs[ptr->dev]);
+
 		ca = c->devs[ptr->dev];
 
 		if (ptr + 1 < &extent_entry_last(e)->ptr) {
@@ -110,7 +106,7 @@ void bch2_submit_wbio_replicas(struct bch_write_bio *wbio, struct bch_fs *c,
 			n->bounce		= false;
 			n->put_bio		= true;
 			n->bio.bi_opf		= wbio->bio.bi_opf;
-			__bio_inc_remaining(&wbio->bio);
+			bio_inc_remaining(&wbio->bio);
 		} else {
 			n = wbio;
 			n->split		= false;
@@ -128,7 +124,7 @@ void bch2_submit_wbio_replicas(struct bch_write_bio *wbio, struct bch_fs *c,
 		if (likely(percpu_ref_tryget(&ca->io_ref))) {
 			n->have_io_ref		= true;
 			n->bio.bi_bdev		= ca->disk_sb.bdev;
-			generic_make_request(&n->bio);
+			submit_bio(&n->bio);
 		} else {
 			n->have_io_ref		= false;
 			bcache_io_error(c, &n->bio, "device has been removed");
@@ -241,68 +237,41 @@ static void bch2_write_index(struct closure *cl)
 	}
 }
 
-/**
- * bch_write_discard - discard range of keys
- *
- * Used to implement discard, and to handle when writethrough write hits
- * a write error on the cache device.
- */
-static void bch2_write_discard(struct closure *cl)
-{
-	struct bch_write_op *op = container_of(cl, struct bch_write_op, cl);
-	struct bpos end = op->pos;
-
-	end.offset += bio_sectors(&op->wbio.bio);
-
-	op->error = bch2_discard(op->c, op->pos, end, op->version,
-				&op->res, NULL, NULL);
-}
-
-/*
- * Convert extents to be inserted to discards after an error:
- */
 static void bch2_write_io_error(struct closure *cl)
 {
 	struct bch_write_op *op = container_of(cl, struct bch_write_op, cl);
+	struct keylist *keys = &op->insert_keys;
+	struct bch_fs *c = op->c;
+	struct bch_extent_ptr *ptr;
+	struct bkey_i *k;
+	int ret;
 
-	if (op->flags & BCH_WRITE_DISCARD_ON_ERROR) {
-		struct bkey_i *src = bch2_keylist_front(&op->insert_keys);
-		struct bkey_i *dst = bch2_keylist_front(&op->insert_keys);
+	for_each_keylist_key(keys, k) {
+		struct bkey_i *n = bkey_next(k);
+		struct bkey_s_extent e = bkey_i_to_s_extent(k);
 
-		/*
-		 * Our data write just errored, which means we've got a bunch
-		 * of keys to insert that point to data that wasn't
-		 * successfully written.
-		 *
-		 * We don't have to insert those keys but we still have to
-		 * invalidate that region of the cache - so, if we just strip
-		 * off all the pointers from the keys we'll accomplish just
-		 * that.
-		 */
+		extent_for_each_ptr_backwards(e, ptr)
+			if (test_bit(ptr->dev, op->failed.d))
+				bch2_extent_drop_ptr(e, ptr);
 
-		while (src != op->insert_keys.top) {
-			struct bkey_i *n = bkey_next(src);
+		memmove(bkey_next(k), n, (void *) keys->top - (void *) n);
+		keys->top_p -= (u64 *) n - (u64 *) bkey_next(k);
 
-			set_bkey_val_u64s(&src->k, 0);
-			src->k.type = KEY_TYPE_DISCARD;
-			bkey_copy(dst, src);
-
-			dst = bkey_next(dst);
-			src = n;
+		ret = bch2_extent_nr_ptrs(e.c)
+			? bch2_check_mark_super(c, e.c, BCH_DATA_USER)
+			: -EIO;
+		if (ret) {
+			keys->top = keys->keys;
+			op->error = ret;
+			op->flags |= BCH_WRITE_DONE;
+			break;
 		}
-
-		op->insert_keys.top = dst;
-		op->flags |= BCH_WRITE_DISCARD;
-	} else {
-		/* TODO: We could try to recover from this. */
-		while (!bch2_keylist_empty(&op->insert_keys))
-			bch2_keylist_pop_front(&op->insert_keys);
-
-		op->error = -EIO;
-		op->flags |= BCH_WRITE_DONE;
 	}
 
+	memset(&op->failed, 0, sizeof(op->failed));
+
 	bch2_write_index(cl);
+	return;
 }
 
 static void bch2_write_endio(struct bio *bio)
@@ -314,9 +283,10 @@ static void bch2_write_endio(struct bio *bio)
 	struct bch_fs *c		= wbio->c;
 	struct bch_dev *ca		= wbio->ca;
 
-	if (bch2_dev_nonfatal_io_err_on(bio->bi_error, ca,
-					"data write"))
+	if (bch2_dev_io_err_on(bio->bi_error, ca, "data write")) {
+		set_bit(ca->dev_idx, op->failed.d);
 		set_closure_fn(cl, bch2_write_io_error, index_update_wq(op));
+	}
 
 	if (wbio->have_io_ref)
 		percpu_ref_put(&ca->io_ref);
@@ -538,14 +508,6 @@ static void __bch2_write(struct closure *cl)
 	struct open_bucket *b;
 	int ret;
 
-	memset(op->open_buckets, 0, sizeof(op->open_buckets));
-
-	if (op->flags & BCH_WRITE_DISCARD) {
-		bch2_write_discard(cl);
-		op->flags |= BCH_WRITE_DONE;
-		continue_at(cl, bch2_write_done, index_update_wq(op));
-	}
-
 	do {
 		if (open_bucket_nr == ARRAY_SIZE(op->open_buckets))
 			continue_at(cl, bch2_write_index, index_update_wq(op));
@@ -614,27 +576,15 @@ static void __bch2_write(struct closure *cl)
 	op->flags |= BCH_WRITE_DONE;
 	continue_at(cl, bch2_write_index, index_update_wq(op));
 err:
-	if (op->flags & BCH_WRITE_DISCARD_ON_ERROR) {
-		/*
-		 * If we were writing cached data, not doing the write is fine
-		 * so long as we discard whatever would have been overwritten -
-		 * then it's equivalent to doing the write and immediately
-		 * reclaiming it.
-		 */
-
-		bch2_write_discard(cl);
-	} else {
-		/*
-		 * Right now we can only error here if we went RO - the
-		 * allocation failed, but we already checked for -ENOSPC when we
-		 * got our reservation.
-		 *
-		 * XXX capacity might have changed, but we don't check for that
-		 * yet:
-		 */
-		op->error = ret;
-	}
-
+	/*
+	 * Right now we can only error here if we went RO - the
+	 * allocation failed, but we already checked for -ENOSPC when we
+	 * got our reservation.
+	 *
+	 * XXX capacity might have changed, but we don't check for that
+	 * yet:
+	 */
+	op->error = ret;
 	op->flags |= BCH_WRITE_DONE;
 
 	/*
@@ -707,14 +657,13 @@ void bch2_write(struct closure *cl)
 		op->version.lo =
 			atomic64_inc_return(&c->key_version) + 1;
 
-	if (!(op->flags & BCH_WRITE_DISCARD))
-		bch2_increment_clock(c, bio_sectors(bio), WRITE);
+	bch2_increment_clock(c, bio_sectors(bio), WRITE);
 
 	/* Don't call bch2_next_delay() if rate is >= 1 GB/sec */
 
 	if (c->foreground_write_ratelimit_enabled &&
 	    c->foreground_write_pd.rate.rate < (1 << 30) &&
-	    !(op->flags & BCH_WRITE_DISCARD) && op->wp->throttle) {
+	    op->wp->throttle) {
 		unsigned long flags;
 		u64 delay;
 
@@ -784,6 +733,9 @@ void bch2_write_op_init(struct bch_write_op *op, struct bch_fs *c,
 
 	op->index_update_fn = bch2_write_index_default;
 
+	memset(op->open_buckets, 0, sizeof(op->open_buckets));
+	memset(&op->failed, 0, sizeof(op->failed));
+
 	bch2_keylist_init(&op->insert_keys,
 			  op->inline_keys,
 			  ARRAY_SIZE(op->inline_keys));
@@ -792,53 +744,228 @@ void bch2_write_op_init(struct bch_write_op *op, struct bch_fs *c,
 		get_random_bytes(&op->version, sizeof(op->version));
 }
 
-/* Discard */
-
-/* bch_discard - discard a range of keys from start_key to end_key.
- * @c		filesystem
- * @start_key	pointer to start location
- *		NOTE: discard starts at bkey_start_offset(start_key)
- * @end_key	pointer to end location
- *		NOTE: discard ends at KEY_OFFSET(end_key)
- * @version	version of discard (0ULL if none)
- *
- * Returns:
- *	 0 on success
- *	<0 on error
- *
- * XXX: this needs to be refactored with inode_truncate, or more
- *	appropriately inode_truncate should call this
- */
-int bch2_discard(struct bch_fs *c, struct bpos start,
-		 struct bpos end, struct bversion version,
-		 struct disk_reservation *disk_res,
-		 struct extent_insert_hook *hook,
-		 u64 *journal_seq)
-{
-	return bch2_btree_delete_range(c, BTREE_ID_EXTENTS, start, end, version,
-				      disk_res, hook, journal_seq);
-}
-
 /* Cache promotion on read */
 
-struct cache_promote_op {
+struct promote_op {
 	struct closure		cl;
 	struct migrate_write	write;
 	struct bio_vec		bi_inline_vecs[0]; /* must be last */
 };
 
+static void promote_done(struct closure *cl)
+{
+	struct promote_op *op =
+		container_of(cl, struct promote_op, cl);
+	struct bch_fs *c = op->write.op.c;
+
+	percpu_ref_put(&c->writes);
+	bch2_bio_free_pages_pool(c, &op->write.op.wbio.bio);
+	kfree(op);
+}
+
+static void promote_start(struct promote_op *op, struct bch_read_bio *rbio)
+{
+	struct bch_fs *c = rbio->c;
+	struct closure *cl = &op->cl;
+	struct bio *bio = &op->write.op.wbio.bio;
+
+	BUG_ON(!rbio->split || !rbio->bounce);
+
+	if (!percpu_ref_tryget(&c->writes))
+		return;
+
+	trace_promote(&rbio->bio);
+
+	/* we now own pages: */
+	swap(bio->bi_vcnt, rbio->bio.bi_vcnt);
+	memcpy(bio->bi_io_vec, rbio->bio.bi_io_vec,
+	       sizeof(struct bio_vec) * bio->bi_vcnt);
+	rbio->promote = NULL;
+
+	closure_init(cl, NULL);
+	closure_call(&op->write.op.cl, bch2_write, c->wq, cl);
+	closure_return_with_destructor(cl, promote_done);
+}
+
+/*
+ * XXX: multiple promotes can race with each other, wastefully. Keep a list of
+ * outstanding promotes?
+ */
+static struct promote_op *promote_alloc(struct bch_fs *c,
+					struct bvec_iter iter,
+					struct bkey_s_c k,
+					struct extent_pick_ptr *pick,
+					bool read_full)
+{
+	struct promote_op *op;
+	struct bio *bio;
+	/*
+	 * biovec needs to be big enough to hold decompressed data, if
+	 * bch2_write_extent() has to decompress/recompress it:
+	 */
+	unsigned sectors = max_t(unsigned, k.k->size,
+		      crc_uncompressed_size(NULL, &pick->crc));
+	unsigned pages = DIV_ROUND_UP(sectors, PAGE_SECTORS);
+
+	op = kmalloc(sizeof(*op) + sizeof(struct bio_vec) * pages, GFP_NOIO);
+	if (!op)
+		return NULL;
+
+	bio = &op->write.op.wbio.bio;
+	bio_init(bio, bio->bi_inline_vecs, pages);
+
+	bio->bi_iter = iter;
+
+	if (pick->crc.compression_type) {
+		op->write.op.flags     |= BCH_WRITE_DATA_COMPRESSED;
+		op->write.op.crc	= pick->crc;
+		op->write.op.size	= k.k->size;
+	} else if (read_full) {
+		/*
+		 * Adjust bio to correspond to _live_ portion of @k -
+		 * which might be less than what we're actually reading:
+		 */
+		bio_advance(bio, pick->crc.offset << 9);
+		BUG_ON(bio_sectors(bio) < k.k->size);
+		bio->bi_iter.bi_size = k.k->size << 9;
+	} else {
+		/*
+		 * Set insert pos to correspond to what we're actually
+		 * reading:
+		 */
+		op->write.op.pos.offset = iter.bi_sector;
+	}
+	bch2_migrate_write_init(c, &op->write, &c->promote_write_point,
+				k, NULL,
+				BCH_WRITE_ALLOC_NOWAIT|
+				BCH_WRITE_CACHED);
+	op->write.promote = true;
+
+	return op;
+}
+
+/* only promote if we're not reading from the fastest tier: */
+static bool should_promote(struct bch_fs *c,
+			   struct extent_pick_ptr *pick, unsigned flags)
+{
+	if (!(flags & BCH_READ_MAY_PROMOTE))
+		return false;
+
+	if (flags & BCH_READ_IN_RETRY)
+		return false;
+
+	if (percpu_ref_is_dying(&c->writes))
+		return false;
+
+	return c->fastest_tier &&
+		c->fastest_tier < c->tiers + pick->ca->mi.tier;
+}
+
 /* Read */
 
-static int bio_checksum_uncompress(struct bch_fs *c,
-				   struct bch_read_bio *rbio)
+#define READ_RETRY_AVOID	1
+#define READ_RETRY		2
+#define READ_ERR		3
+
+static inline struct bch_read_bio *
+bch2_rbio_parent(struct bch_read_bio *rbio)
 {
+	return rbio->split ? rbio->parent : rbio;
+}
+
+__always_inline
+static void bch2_rbio_punt(struct bch_read_bio *rbio, work_func_t fn,
+			   struct workqueue_struct *wq)
+{
+
+	if (!wq || rbio->process_context) {
+		fn(&rbio->work);
+	} else {
+		rbio->work.func		= fn;
+		rbio->process_context	= true;
+		queue_work(wq, &rbio->work);
+	}
+}
+
+static inline struct bch_read_bio *bch2_rbio_free(struct bch_read_bio *rbio)
+{
+	struct bch_read_bio *parent = rbio->parent;
+
+	BUG_ON(!rbio->split);
+
+	if (rbio->promote)
+		kfree(rbio->promote);
+	if (rbio->bounce)
+		bch2_bio_free_pages_pool(rbio->c, &rbio->bio);
+	bio_put(&rbio->bio);
+
+	return parent;
+}
+
+static void bch2_rbio_done(struct bch_read_bio *rbio)
+{
+	if (rbio->promote)
+		kfree(rbio->promote);
+	rbio->promote = NULL;
+
+	if (rbio->split)
+		rbio = bch2_rbio_free(rbio);
+	bio_endio(&rbio->bio);
+}
+
+static void bch2_rbio_retry(struct work_struct *work)
+{
+	struct bch_read_bio *rbio =
+		container_of(work, struct bch_read_bio, work);
+	struct bch_fs *c		= rbio->c;
+	struct bvec_iter iter		= rbio->bvec_iter;
+	unsigned flags			= rbio->flags;
+	u64 inode			= rbio->inode;
+	struct bch_devs_mask avoid;
+
+	trace_read_retry(&rbio->bio);
+
+	memset(&avoid, 0, sizeof(avoid));
+
+	if (rbio->retry == READ_RETRY_AVOID)
+		__set_bit(rbio->pick.ca->dev_idx, avoid.d);
+
+	if (rbio->split)
+		rbio = bch2_rbio_free(rbio);
+	else
+		rbio->bio.bi_error = 0;
+
+	flags |= BCH_READ_MUST_CLONE;
+	flags |= BCH_READ_IN_RETRY;
+
+	__bch2_read(c, rbio, iter, inode, &avoid, flags);
+}
+
+static void bch2_rbio_error(struct bch_read_bio *rbio, int retry, int error)
+{
+	rbio->retry = retry;
+
+	if (rbio->flags & BCH_READ_IN_RETRY)
+		return;
+
+	if (retry == READ_ERR) {
+		bch2_rbio_parent(rbio)->bio.bi_error = error;
+		bch2_rbio_done(rbio);
+	} else {
+		bch2_rbio_punt(rbio, bch2_rbio_retry, rbio->c->wq);
+	}
+}
+
+static int bch2_rbio_checksum_uncompress(struct bio *dst,
+					 struct bch_read_bio *rbio)
+{
+	struct bch_fs *c = rbio->c;
 	struct bio *src = &rbio->bio;
-	struct bio *dst = &bch2_rbio_parent(rbio)->bio;
-	struct bvec_iter dst_iter = rbio->parent_iter;
+	struct bvec_iter dst_iter = rbio->bvec_iter;
 	struct nonce nonce = extent_nonce(rbio->version,
-				rbio->crc.nonce,
-				crc_uncompressed_size(NULL, &rbio->crc),
-				rbio->crc.compression_type);
+				rbio->pick.crc.nonce,
+				crc_uncompressed_size(NULL, &rbio->pick.crc),
+				rbio->pick.crc.compression_type);
 	struct bch_csum csum;
 	int ret = 0;
 
@@ -849,119 +976,54 @@ static int bio_checksum_uncompress(struct bch_fs *c,
 	 * in order to promote
 	 */
 	if (rbio->bounce) {
-		src->bi_iter.bi_size	= crc_compressed_size(NULL, &rbio->crc) << 9;
+		src->bi_iter.bi_size	= crc_compressed_size(NULL, &rbio->pick.crc) << 9;
 		src->bi_iter.bi_idx	= 0;
 		src->bi_iter.bi_bvec_done = 0;
 	} else {
-		src->bi_iter = rbio->parent_iter;
+		src->bi_iter = rbio->bvec_iter;
 	}
 
-	csum = bch2_checksum_bio(c, rbio->crc.csum_type, nonce, src);
-	if (bch2_dev_nonfatal_io_err_on(bch2_crc_cmp(rbio->crc.csum, csum),
-					rbio->ca,
+	csum = bch2_checksum_bio(c, rbio->pick.crc.csum_type, nonce, src);
+	if (bch2_dev_io_err_on(bch2_crc_cmp(rbio->pick.crc.csum, csum),
+			       rbio->pick.ca,
 			"data checksum error, inode %llu offset %llu: expected %0llx%0llx got %0llx%0llx (type %u)",
-			rbio->inode, (u64) rbio->parent_iter.bi_sector << 9,
-			rbio->crc.csum.hi, rbio->crc.csum.lo, csum.hi, csum.lo,
-			rbio->crc.csum_type))
+			rbio->inode, (u64) rbio->bvec_iter.bi_sector << 9,
+			rbio->pick.crc.csum.hi, rbio->pick.crc.csum.lo,
+			csum.hi, csum.lo,
+			rbio->pick.crc.csum_type))
 		ret = -EIO;
 
 	/*
 	 * If there was a checksum error, still copy the data back - unless it
 	 * was compressed, we don't want to decompress bad data:
 	 */
-	if (rbio->crc.compression_type != BCH_COMPRESSION_NONE) {
+	if (rbio->pick.crc.compression_type != BCH_COMPRESSION_NONE) {
 		if (!ret) {
-			bch2_encrypt_bio(c, rbio->crc.csum_type, nonce, src);
+			bch2_encrypt_bio(c, rbio->pick.crc.csum_type, nonce, src);
 			ret = bch2_bio_uncompress(c, src, dst,
-						 dst_iter, rbio->crc);
+						 dst_iter, rbio->pick.crc);
 			if (ret)
 				__bcache_io_error(c, "decompression error");
 		}
 	} else if (rbio->bounce) {
-		bio_advance(src, rbio->crc.offset << 9);
+		bio_advance(src, rbio->pick.crc.offset << 9);
 
 		/* don't need to decrypt the entire bio: */
 		BUG_ON(src->bi_iter.bi_size < dst_iter.bi_size);
 		src->bi_iter.bi_size = dst_iter.bi_size;
 
-		nonce = nonce_add(nonce, rbio->crc.offset << 9);
+		nonce = nonce_add(nonce, rbio->pick.crc.offset << 9);
 
-		bch2_encrypt_bio(c, rbio->crc.csum_type,
+		bch2_encrypt_bio(c, rbio->pick.crc.csum_type,
 				nonce, src);
 
 		bio_copy_data_iter(dst, &dst_iter,
 				   src, &src->bi_iter);
 	} else {
-		bch2_encrypt_bio(c, rbio->crc.csum_type, nonce, src);
+		bch2_encrypt_bio(c, rbio->pick.crc.csum_type, nonce, src);
 	}
 
 	return ret;
-}
-
-static void bch2_rbio_free(struct bch_read_bio *rbio)
-{
-	struct bch_fs *c = rbio->c;
-	struct bio *bio = &rbio->bio;
-
-	BUG_ON(rbio->ca);
-	BUG_ON(!rbio->split);
-
-	if (rbio->promote)
-		kfree(rbio->promote);
-	if (rbio->bounce)
-		bch2_bio_free_pages_pool(c, bio);
-
-	bio_put(bio);
-}
-
-static void bch2_rbio_done(struct bch_read_bio *rbio)
-{
-	struct bio *orig = &bch2_rbio_parent(rbio)->bio;
-
-	percpu_ref_put(&rbio->ca->io_ref);
-	rbio->ca = NULL;
-
-	if (rbio->split) {
-		if (rbio->bio.bi_error)
-			orig->bi_error = rbio->bio.bi_error;
-
-		bio_endio(orig);
-		bch2_rbio_free(rbio);
-	} else {
-		if (rbio->promote)
-			kfree(rbio->promote);
-
-		orig->bi_end_io = rbio->orig_bi_end_io;
-		bio_endio_nodec(orig);
-	}
-}
-
-static void bch2_rbio_error(struct bch_read_bio *rbio, int error)
-{
-	bch2_rbio_parent(rbio)->bio.bi_error = error;
-	bch2_rbio_done(rbio);
-}
-
-static void bch2_rbio_retry(struct bch_fs *c, struct bch_read_bio *rbio)
-{
-	unsigned long flags;
-
-	percpu_ref_put(&rbio->ca->io_ref);
-	rbio->ca = NULL;
-
-	spin_lock_irqsave(&c->read_retry_lock, flags);
-	bio_list_add(&c->read_retry_list, &rbio->bio);
-	spin_unlock_irqrestore(&c->read_retry_lock, flags);
-	queue_work(c->wq, &c->read_retry_work);
-}
-
-static void cache_promote_done(struct closure *cl)
-{
-	struct cache_promote_op *op =
-		container_of(cl, struct cache_promote_op, cl);
-
-	bch2_bio_free_pages_pool(op->write.op.c, &op->write.op.wbio.bio);
-	kfree(op);
 }
 
 /* Inner part that may run in process context */
@@ -969,10 +1031,9 @@ static void __bch2_read_endio(struct work_struct *work)
 {
 	struct bch_read_bio *rbio =
 		container_of(work, struct bch_read_bio, work);
-	struct bch_fs *c = rbio->c;
 	int ret;
 
-	ret = bio_checksum_uncompress(c, rbio);
+	ret = bch2_rbio_checksum_uncompress(&bch2_rbio_parent(rbio)->bio, rbio);
 	if (ret) {
 		/*
 		 * Checksum error: if the bio wasn't bounced, we may have been
@@ -980,34 +1041,19 @@ static void __bch2_read_endio(struct work_struct *work)
 		 * scribble over) - retry the read, bouncing it this time:
 		 */
 		if (!rbio->bounce && (rbio->flags & BCH_READ_USER_MAPPED)) {
-			rbio->flags |= BCH_READ_FORCE_BOUNCE;
-			bch2_rbio_retry(c, rbio);
+			rbio->flags |= BCH_READ_MUST_BOUNCE;
+			bch2_rbio_error(rbio, READ_RETRY, ret);
 		} else {
-			bch2_rbio_error(rbio, -EIO);
+			bch2_rbio_error(rbio, READ_RETRY_AVOID, ret);
 		}
 		return;
 	}
 
-	if (rbio->promote) {
-		struct cache_promote_op *promote = rbio->promote;
-		struct closure *cl = &promote->cl;
+	if (rbio->promote)
+		promote_start(rbio->promote, rbio);
 
-		BUG_ON(!rbio->split || !rbio->bounce);
-
-		trace_promote(&rbio->bio);
-
-		/* we now own pages: */
-		swap(promote->write.op.wbio.bio.bi_vcnt, rbio->bio.bi_vcnt);
-		rbio->promote = NULL;
-
+	if (likely(!(rbio->flags & BCH_READ_IN_RETRY)))
 		bch2_rbio_done(rbio);
-
-		closure_init(cl, &c->cl);
-		closure_call(&promote->write.op.cl, bch2_write, c->wq, cl);
-		closure_return_with_destructor(cl, cache_promote_done);
-	} else {
-		bch2_rbio_done(rbio);
-	}
 }
 
 static void bch2_read_endio(struct bio *bio)
@@ -1015,89 +1061,54 @@ static void bch2_read_endio(struct bio *bio)
 	struct bch_read_bio *rbio =
 		container_of(bio, struct bch_read_bio, bio);
 	struct bch_fs *c = rbio->c;
+	struct workqueue_struct *wq = NULL;
 
-	if (bch2_dev_nonfatal_io_err_on(bio->bi_error, rbio->ca, "data read")) {
-		/* XXX: retry IO errors when we have another replica */
-		bch2_rbio_error(rbio, bio->bi_error);
+	percpu_ref_put(&rbio->pick.ca->io_ref);
+
+	if (!rbio->split)
+		rbio->bio.bi_end_io = rbio->end_io;
+
+	if (bch2_dev_io_err_on(bio->bi_error, rbio->pick.ca, "data read")) {
+		bch2_rbio_error(rbio, READ_RETRY_AVOID, bio->bi_error);
 		return;
 	}
 
-	if (rbio->ptr.cached &&
+	if (rbio->pick.ptr.cached &&
 	    (((rbio->flags & BCH_READ_RETRY_IF_STALE) && race_fault()) ||
-	     ptr_stale(rbio->ca, &rbio->ptr))) {
+	     ptr_stale(rbio->pick.ca, &rbio->pick.ptr))) {
 		atomic_long_inc(&c->read_realloc_races);
 
 		if (rbio->flags & BCH_READ_RETRY_IF_STALE)
-			bch2_rbio_retry(c, rbio);
+			bch2_rbio_error(rbio, READ_RETRY, -EINTR);
 		else
-			bch2_rbio_error(rbio, -EINTR);
+			bch2_rbio_error(rbio, READ_ERR, -EINTR);
 		return;
 	}
 
-	if (rbio->crc.compression_type ||
-	    bch2_csum_type_is_encryption(rbio->crc.csum_type))
-		queue_work(system_unbound_wq, &rbio->work);
-	else if (rbio->crc.csum_type)
-		queue_work(system_highpri_wq, &rbio->work);
-	else
-		__bch2_read_endio(&rbio->work);
+	if (rbio->pick.crc.compression_type ||
+	    bch2_csum_type_is_encryption(rbio->pick.crc.csum_type))
+		wq = system_unbound_wq;
+	else if (rbio->pick.crc.csum_type)
+		wq = system_highpri_wq;
+
+	bch2_rbio_punt(rbio, __bch2_read_endio, wq);
 }
 
-static bool should_promote(struct bch_fs *c,
-			   struct extent_pick_ptr *pick, unsigned flags)
-{
-	if (!(flags & BCH_READ_PROMOTE))
-		return false;
-
-	if (percpu_ref_is_dying(&c->writes))
-		return false;
-
-	return c->fastest_tier &&
-		c->fastest_tier < c->tiers + pick->ca->mi.tier;
-}
-
-void bch2_read_extent_iter(struct bch_fs *c, struct bch_read_bio *orig,
-			  struct bvec_iter iter, struct bkey_s_c k,
-			  struct extent_pick_ptr *pick, unsigned flags)
+int __bch2_read_extent(struct bch_fs *c, struct bch_read_bio *orig,
+		       struct bvec_iter iter, struct bkey_s_c k,
+		       struct extent_pick_ptr *pick, unsigned flags)
 {
 	struct bch_read_bio *rbio;
-	struct cache_promote_op *promote_op = NULL;
+	struct promote_op *promote_op = NULL;
 	unsigned skip = iter.bi_sector - bkey_start_offset(k.k);
 	bool bounce = false, split, read_full = false;
+	int ret = 0;
 
 	bch2_increment_clock(c, bio_sectors(&orig->bio), READ);
+	PTR_BUCKET(pick->ca, &pick->ptr)->prio[READ] = c->prio_clock[READ].hand;
 
 	EBUG_ON(bkey_start_offset(k.k) > iter.bi_sector ||
 		k.k->p.offset < bvec_iter_end_sector(iter));
-
-	/* only promote if we're not reading from the fastest tier: */
-
-	/*
-	 * XXX: multiple promotes can race with each other, wastefully. Keep a
-	 * list of outstanding promotes?
-	 */
-	if (should_promote(c, pick, flags)) {
-		/*
-		 * biovec needs to be big enough to hold decompressed data, if
-		 * the bch2_write_extent() has to decompress/recompress it:
-		 */
-		unsigned sectors =
-			max_t(unsigned, k.k->size,
-			      crc_uncompressed_size(NULL, &pick->crc));
-		unsigned pages = DIV_ROUND_UP(sectors, PAGE_SECTORS);
-
-		promote_op = kmalloc(sizeof(*promote_op) +
-				sizeof(struct bio_vec) * pages, GFP_NOIO);
-		if (promote_op) {
-			struct bio *promote_bio = &promote_op->write.op.wbio.bio;
-
-			bio_init(promote_bio,
-				 promote_bio->bi_inline_vecs,
-				 pages);
-			bounce = true;
-			/* could also set read_full */
-		}
-	}
 
 	/*
 	 * note: if compression_type and crc_type both == none, then
@@ -1108,25 +1119,30 @@ void bch2_read_extent_iter(struct bch_fs *c, struct bch_read_bio *orig,
 	     (bvec_iter_sectors(iter) != crc_uncompressed_size(NULL, &pick->crc) ||
 	      (bch2_csum_type_is_encryption(pick->crc.csum_type) &&
 	       (flags & BCH_READ_USER_MAPPED)) ||
-	      (flags & BCH_READ_FORCE_BOUNCE)))) {
+	      (flags & BCH_READ_MUST_BOUNCE)))) {
 		read_full = true;
 		bounce = true;
 	}
+
+	if (should_promote(c, pick, flags))
+		promote_op = promote_alloc(c, iter, k, pick, read_full);
+
+	/* could also set read_full */
+	if (promote_op)
+		bounce = true;
 
 	if (bounce) {
 		unsigned sectors = read_full
 			? (crc_compressed_size(NULL, &pick->crc) ?: k.k->size)
 			: bvec_iter_sectors(iter);
 
-		rbio = container_of(bio_alloc_bioset(GFP_NOIO,
+		rbio = rbio_init(bio_alloc_bioset(GFP_NOIO,
 					DIV_ROUND_UP(sectors, PAGE_SECTORS),
-					&c->bio_read_split),
-				    struct bch_read_bio, bio);
+					&c->bio_read_split));
 
 		bch2_bio_alloc_pages_pool(c, &rbio->bio, sectors << 9);
 		split = true;
-	} else if (!(flags & BCH_READ_MAY_REUSE_BIO) ||
-		   !(flags & BCH_READ_IS_LAST)) {
+	} else if (flags & BCH_READ_MUST_CLONE) {
 		/*
 		 * Have to clone if there were any splits, due to error
 		 * reporting issues (if a split errored, and retrying didn't
@@ -1135,9 +1151,8 @@ void bch2_read_extent_iter(struct bch_fs *c, struct bch_read_bio *orig,
 		 * from the whole bio, in which case we don't want to retry and
 		 * lose the error)
 		 */
-		rbio = container_of(bio_clone_fast(&orig->bio,
-					GFP_NOIO, &c->bio_read_split),
-				    struct bch_read_bio, bio);
+		rbio = rbio_init(bio_clone_fast(&orig->bio,
+					      GFP_NOIO, &c->bio_read_split));
 		rbio->bio.bi_iter = iter;
 		split = true;
 	} else {
@@ -1147,80 +1162,39 @@ void bch2_read_extent_iter(struct bch_fs *c, struct bch_read_bio *orig,
 		BUG_ON(bio_flagged(&rbio->bio, BIO_CHAIN));
 	}
 
-	if (!(flags & BCH_READ_IS_LAST))
-		__bio_inc_remaining(&orig->bio);
+	rbio->c			= c;
 
 	if (split)
 		rbio->parent	= orig;
 	else
-		rbio->orig_bi_end_io = orig->bio.bi_end_io;
-	rbio->parent_iter	= iter;
+		rbio->end_io	= orig->bio.bi_end_io;
 
+	rbio->bvec_iter		= iter;
 	rbio->flags		= flags;
 	rbio->bounce		= bounce;
 	rbio->split		= split;
-	rbio->c			= c;
-	rbio->ca		= pick->ca;
-	rbio->ptr		= pick->ptr;
-	rbio->crc		= pick->crc;
+	rbio->process_context	= false;
+	rbio->retry		= 0;
+	rbio->pick		= *pick;
 	/*
 	 * crc.compressed_size will be 0 if there wasn't any checksum
 	 * information, also we need to stash the original size of the bio if we
 	 * bounced (which isn't necessarily the original key size, if we bounced
 	 * only for promoting)
 	 */
-	rbio->crc._compressed_size = bio_sectors(&rbio->bio) - 1;
+	rbio->pick.crc._compressed_size = bio_sectors(&rbio->bio) - 1;
 	rbio->version		= k.k->version;
 	rbio->promote		= promote_op;
 	rbio->inode		= k.k->p.inode;
-	INIT_WORK(&rbio->work, __bch2_read_endio);
+	INIT_WORK(&rbio->work, NULL);
 
 	rbio->bio.bi_bdev	= pick->ca->disk_sb.bdev;
 	rbio->bio.bi_opf	= orig->bio.bi_opf;
 	rbio->bio.bi_iter.bi_sector = pick->ptr.offset;
 	rbio->bio.bi_end_io	= bch2_read_endio;
 
-	if (promote_op) {
-		struct bio *promote_bio = &promote_op->write.op.wbio.bio;
-
-		promote_bio->bi_iter = rbio->bio.bi_iter;
-		memcpy(promote_bio->bi_io_vec, rbio->bio.bi_io_vec,
-		       sizeof(struct bio_vec) * rbio->bio.bi_vcnt);
-
-		bch2_migrate_write_init(c, &promote_op->write,
-				       &c->promote_write_point,
-				       k, NULL,
-				       BCH_WRITE_ALLOC_NOWAIT|
-				       BCH_WRITE_CACHED);
-		promote_op->write.promote = true;
-
-		if (rbio->crc.compression_type) {
-			promote_op->write.op.flags |= BCH_WRITE_DATA_COMPRESSED;
-			promote_op->write.op.crc = rbio->crc;
-			promote_op->write.op.size = k.k->size;
-		} else if (read_full) {
-			/*
-			 * Adjust bio to correspond to _live_ portion of @k -
-			 * which might be less than what we're actually reading:
-			 */
-			bio_advance(promote_bio, rbio->crc.offset << 9);
-			BUG_ON(bio_sectors(promote_bio) < k.k->size);
-			promote_bio->bi_iter.bi_size = k.k->size << 9;
-		} else {
-			/*
-			 * Set insert pos to correspond to what we're actually
-			 * reading:
-			 */
-			promote_op->write.op.pos.offset = iter.bi_sector;
-		}
-
-		promote_bio->bi_iter.bi_sector =
-			promote_op->write.op.pos.offset;
-	}
-
-	/* _after_ promete stuff has looked at rbio->crc.offset */
 	if (read_full)
-		rbio->crc.offset += skip;
+		rbio->pick.crc.offset += skip;
 	else
 		rbio->bio.bi_iter.bi_sector += skip;
 
@@ -1229,28 +1203,36 @@ void bch2_read_extent_iter(struct bch_fs *c, struct bch_read_bio *orig,
 	if (bounce)
 		trace_read_bounce(&rbio->bio);
 
-	if (!(flags & BCH_READ_IS_LAST))
-		trace_read_split(&rbio->bio);
+	if (likely(!(flags & BCH_READ_IN_RETRY))) {
+		submit_bio(&rbio->bio);
+	} else {
+		submit_bio_wait(&rbio->bio);
 
-	generic_make_request(&rbio->bio);
+		rbio->process_context = true;
+		bch2_read_endio(&rbio->bio);
+
+		ret = rbio->retry;
+		if (!ret)
+			bch2_rbio_done(rbio);
+	}
+
+	return ret;
 }
 
-static void bch2_read_iter(struct bch_fs *c, struct bch_read_bio *rbio,
-			  struct bvec_iter bvec_iter, u64 inode,
-			  unsigned flags)
+void __bch2_read(struct bch_fs *c, struct bch_read_bio *rbio,
+		 struct bvec_iter bvec_iter, u64 inode,
+		 struct bch_devs_mask *avoid, unsigned flags)
 {
-	struct bio *bio = &rbio->bio;
 	struct btree_iter iter;
 	struct bkey_s_c k;
 	int ret;
-
+retry:
 	for_each_btree_key(&iter, c, BTREE_ID_EXTENTS,
 			   POS(inode, bvec_iter.bi_sector),
 			   BTREE_ITER_WITH_HOLES, k) {
 		BKEY_PADDED(k) tmp;
 		struct extent_pick_ptr pick;
-		unsigned bytes, sectors;
-		bool is_last;
+		struct bvec_iter fragment;
 
 		/*
 		 * Unlock the iterator while the btree node's lock is still in
@@ -1260,43 +1242,47 @@ static void bch2_read_iter(struct bch_fs *c, struct bch_read_bio *rbio,
 		k = bkey_i_to_s_c(&tmp.k);
 		bch2_btree_iter_unlock(&iter);
 
-		bch2_extent_pick_ptr(c, k, &pick);
+		bch2_extent_pick_ptr(c, k, avoid, &pick);
 		if (IS_ERR(pick.ca)) {
-			bcache_io_error(c, bio, "no device to read from");
-			bio_endio(bio);
+			bcache_io_error(c, &rbio->bio, "no device to read from");
+			bio_endio(&rbio->bio);
 			return;
 		}
 
-		sectors = min_t(u64, k.k->p.offset,
-				bvec_iter_end_sector(bvec_iter)) -
-			bvec_iter.bi_sector;
-		bytes = sectors << 9;
-		is_last = bytes == bvec_iter.bi_size;
-		swap(bvec_iter.bi_size, bytes);
-
-		if (is_last)
-			flags |= BCH_READ_IS_LAST;
+		fragment = bvec_iter;
+		fragment.bi_size = (min_t(u64, k.k->p.offset,
+					  bvec_iter_end_sector(bvec_iter)) -
+				    bvec_iter.bi_sector) << 9;
 
 		if (pick.ca) {
-			PTR_BUCKET(pick.ca, &pick.ptr)->prio[READ] =
-				c->prio_clock[READ].hand;
+			if (fragment.bi_size != bvec_iter.bi_size) {
+				bio_inc_remaining(&rbio->bio);
+				flags |= BCH_READ_MUST_CLONE;
+				trace_read_split(&rbio->bio);
+			}
 
-			bch2_read_extent_iter(c, rbio, bvec_iter,
-					      k, &pick, flags);
-
-			flags &= ~BCH_READ_MAY_REUSE_BIO;
+			ret = __bch2_read_extent(c, rbio, fragment,
+						 k, &pick, flags);
+			switch (ret) {
+			case READ_RETRY_AVOID:
+				__set_bit(pick.ca->dev_idx, avoid->d);
+			case READ_RETRY:
+				goto retry;
+			case READ_ERR:
+				bio_endio(&rbio->bio);
+				return;
+			};
 		} else {
-			zero_fill_bio_iter(bio, bvec_iter);
+			zero_fill_bio_iter(&rbio->bio, fragment);
 
-			if (is_last)
-				bio_endio(bio);
+			if (fragment.bi_size == bvec_iter.bi_size)
+				bio_endio(&rbio->bio);
 		}
 
-		if (is_last)
+		if (fragment.bi_size == bvec_iter.bi_size)
 			return;
 
-		swap(bvec_iter.bi_size, bytes);
-		bio_advance_iter(bio, &bvec_iter, bytes);
+		bio_advance_iter(&rbio->bio, &bvec_iter, fragment.bi_size);
 	}
 
 	/*
@@ -1305,55 +1291,6 @@ static void bch2_read_iter(struct bch_fs *c, struct bch_read_bio *rbio,
 	 */
 	ret = bch2_btree_iter_unlock(&iter);
 	BUG_ON(!ret);
-	bcache_io_error(c, bio, "btree IO error %i", ret);
-	bio_endio(bio);
-}
-
-void bch2_read(struct bch_fs *c, struct bch_read_bio *bio, u64 inode)
-{
-	bch2_read_iter(c, bio, bio->bio.bi_iter, inode,
-		      BCH_READ_RETRY_IF_STALE|
-		      BCH_READ_PROMOTE|
-		      BCH_READ_MAY_REUSE_BIO|
-		      BCH_READ_USER_MAPPED);
-}
-
-/**
- * bch_read_retry - re-submit a bio originally from bch2_read()
- */
-static void bch2_read_retry(struct bch_fs *c, struct bch_read_bio *rbio)
-{
-	struct bch_read_bio *parent = bch2_rbio_parent(rbio);
-	struct bvec_iter iter = rbio->parent_iter;
-	unsigned flags = rbio->flags;
-	u64 inode = rbio->inode;
-
-	trace_read_retry(&rbio->bio);
-
-	if (rbio->split)
-		bch2_rbio_free(rbio);
-	else
-		rbio->bio.bi_end_io = rbio->orig_bi_end_io;
-
-	bch2_read_iter(c, parent, iter, inode, flags);
-}
-
-void bch2_read_retry_work(struct work_struct *work)
-{
-	struct bch_fs *c = container_of(work, struct bch_fs,
-					   read_retry_work);
-	struct bch_read_bio *rbio;
-	struct bio *bio;
-
-	while (1) {
-		spin_lock_irq(&c->read_retry_lock);
-		bio = bio_list_pop(&c->read_retry_list);
-		spin_unlock_irq(&c->read_retry_lock);
-
-		if (!bio)
-			break;
-
-		rbio = container_of(bio, struct bch_read_bio, bio);
-		bch2_read_retry(c, rbio);
-	}
+	bcache_io_error(c, &rbio->bio, "btree IO error %i", ret);
+	bio_endio(&rbio->bio);
 }

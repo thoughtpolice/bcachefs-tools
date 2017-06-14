@@ -21,11 +21,16 @@ int bch2_btree_node_cannibalize_lock(struct bch_fs *, struct closure *);
 
 struct btree *bch2_btree_node_mem_alloc(struct bch_fs *);
 
-struct btree *bch2_btree_node_get(struct btree_iter *, const struct bkey_i *,
-				  unsigned, enum six_lock_type);
+struct btree *bch2_btree_node_get(struct bch_fs *, struct btree_iter *,
+				  const struct bkey_i *, unsigned,
+				  enum six_lock_type);
 
-void bch2_btree_node_prefetch(struct btree_iter *, const struct bkey_i *,
-			      unsigned);
+struct btree *bch2_btree_node_get_sibling(struct bch_fs *, struct btree_iter *,
+					  struct btree *,
+					  enum btree_node_sibling);
+
+void bch2_btree_node_prefetch(struct bch_fs *, const struct bkey_i *,
+			      unsigned, enum btree_id);
 
 void bch2_fs_btree_exit(struct bch_fs *);
 int bch2_fs_btree_init(struct bch_fs *);

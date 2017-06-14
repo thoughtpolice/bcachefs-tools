@@ -232,24 +232,36 @@ static ssize_t show_fs_alloc_debug(struct bch_fs *c, char *buf)
 
 	return scnprintf(buf, PAGE_SIZE,
 			 "capacity:\t\t%llu\n"
-			 "compressed:\n"
+			 "1 replicas:\n"
 			 "\tmeta:\t\t%llu\n"
 			 "\tdirty:\t\t%llu\n"
-			 "\tcached:\t\t%llu\n"
-			 "uncompressed:\n"
+			 "\treserved:\t%llu\n"
+			 "2 replicas:\n"
 			 "\tmeta:\t\t%llu\n"
 			 "\tdirty:\t\t%llu\n"
-			 "\tcached:\t\t%llu\n"
-			 "persistent reserved sectors:\t%llu\n"
-			 "online reserved sectors:\t%llu\n",
+			 "\treserved:\t%llu\n"
+			 "3 replicas:\n"
+			 "\tmeta:\t\t%llu\n"
+			 "\tdirty:\t\t%llu\n"
+			 "\treserved:\t%llu\n"
+			 "4 replicas:\n"
+			 "\tmeta:\t\t%llu\n"
+			 "\tdirty:\t\t%llu\n"
+			 "\treserved:\t%llu\n"
+			 "online reserved:\t%llu\n",
 			 c->capacity,
-			 stats.s[S_COMPRESSED][S_META],
-			 stats.s[S_COMPRESSED][S_DIRTY],
-			 stats.s[S_COMPRESSED][S_CACHED],
-			 stats.s[S_UNCOMPRESSED][S_META],
-			 stats.s[S_UNCOMPRESSED][S_DIRTY],
-			 stats.s[S_UNCOMPRESSED][S_CACHED],
-			 stats.persistent_reserved,
+			 stats.s[0].data[S_META],
+			 stats.s[0].data[S_DIRTY],
+			 stats.s[0].persistent_reserved,
+			 stats.s[1].data[S_META],
+			 stats.s[1].data[S_DIRTY],
+			 stats.s[1].persistent_reserved,
+			 stats.s[2].data[S_META],
+			 stats.s[2].data[S_DIRTY],
+			 stats.s[2].persistent_reserved,
+			 stats.s[3].data[S_META],
+			 stats.s[3].data[S_DIRTY],
+			 stats.s[3].persistent_reserved,
 			 stats.online_reserved);
 }
 
@@ -708,8 +720,8 @@ static ssize_t show_dev_alloc_debug(struct bch_dev *ca, char *buf)
 		fifo_used(&ca->free[RESERVE_MOVINGGC]),	ca->free[RESERVE_MOVINGGC].size,
 		fifo_used(&ca->free[RESERVE_NONE]),	ca->free[RESERVE_NONE].size,
 		stats.buckets_alloc,			ca->mi.nbuckets - ca->mi.first_bucket,
-		stats.buckets_meta,			ca->mi.nbuckets - ca->mi.first_bucket,
-		stats.buckets_dirty,			ca->mi.nbuckets - ca->mi.first_bucket,
+		stats.buckets[S_META],			ca->mi.nbuckets - ca->mi.first_bucket,
+		stats.buckets[S_DIRTY],			ca->mi.nbuckets - ca->mi.first_bucket,
 		__dev_buckets_available(ca, stats),	ca->mi.nbuckets - ca->mi.first_bucket,
 		c->freelist_wait.list.first		? "waiting" : "empty",
 		c->open_buckets_nr_free, OPEN_BUCKETS_COUNT, BTREE_NODE_RESERVE,
@@ -749,11 +761,11 @@ SHOW(bch2_dev)
 
 	sysfs_hprint(dirty_data,	stats.sectors[S_DIRTY] << 9);
 	sysfs_print(dirty_bytes,	stats.sectors[S_DIRTY] << 9);
-	sysfs_print(dirty_buckets,	stats.buckets_dirty);
-	sysfs_hprint(cached_data,	stats.sectors[S_CACHED] << 9);
-	sysfs_print(cached_bytes,	stats.sectors[S_CACHED] << 9);
+	sysfs_print(dirty_buckets,	stats.buckets[S_DIRTY]);
+	sysfs_hprint(cached_data,	stats.sectors_cached << 9);
+	sysfs_print(cached_bytes,	stats.sectors_cached << 9);
 	sysfs_print(cached_buckets,	stats.buckets_cached);
-	sysfs_print(meta_buckets,	stats.buckets_meta);
+	sysfs_print(meta_buckets,	stats.buckets[S_META]);
 	sysfs_print(alloc_buckets,	stats.buckets_alloc);
 	sysfs_print(available_buckets,	dev_buckets_available(ca));
 	sysfs_print(free_buckets,	dev_buckets_free(ca));

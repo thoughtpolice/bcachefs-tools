@@ -7,7 +7,6 @@
 enum bucket_data_type {
 	BUCKET_DATA	= 0,
 	BUCKET_BTREE,
-	BUCKET_PRIOS,
 	BUCKET_JOURNAL,
 	BUCKET_SB,
 };
@@ -49,32 +48,33 @@ struct bucket {
 	};
 };
 
-enum s_compressed {
-	S_COMPRESSED,
-	S_UNCOMPRESSED,
-	S_COMPRESSED_NR,
-};
-
+/* kill, switch to bucket_data_type */
 enum s_alloc {
 	S_META,
 	S_DIRTY,
-	S_CACHED,
 	S_ALLOC_NR,
 };
 
 struct bch_dev_usage {
-	u64			buckets_dirty;
+	u64			buckets[S_ALLOC_NR];
 	u64			buckets_cached;
-	u64			buckets_meta;
 	u64			buckets_alloc;
 
+	/* _compressed_ sectors: */
 	u64			sectors[S_ALLOC_NR];
+	u64			sectors_cached;
 };
 
 struct bch_fs_usage {
 	/* all fields are in units of 512 byte sectors: */
-	u64			s[S_COMPRESSED_NR][S_ALLOC_NR];
-	u64			persistent_reserved;
+
+	/* _uncompressed_ sectors: */
+
+	struct {
+		u64		data[S_ALLOC_NR];
+		u64		persistent_reserved;
+	}			s[BCH_REPLICAS_MAX];
+
 	u64			online_reserved;
 	u64			available_cache;
 };

@@ -24,6 +24,7 @@
 #include <linux/dcache.h>
 #include <linux/generic-radix-tree.h>
 #include <linux/xattr.h>
+#include "bcachefs.h"
 #include "btree_update.h"
 #include "buckets.h"
 #include "dirent.h"

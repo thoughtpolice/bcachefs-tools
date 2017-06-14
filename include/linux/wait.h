@@ -90,6 +90,8 @@ do {									\
 	__wait_event(wq, condition);					\
 } while (0)
 
+#define wait_event_killable(wq, condition)	({wait_event(wq, condition); 0; })
+
 #define __wait_event_timeout(wq, condition, timeout)			\
 	___wait_event(wq, ___wait_cond_timeout(condition),		\
 		      TASK_UNINTERRUPTIBLE, 0, timeout,			\

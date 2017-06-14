@@ -72,7 +72,7 @@ int bch2_move_data_off_device(struct bch_dev *ca)
 	bch2_replicas_gc_start(c, 1 << BCH_DATA_USER);
 
 	bch2_move_ctxt_init(&ctxt, NULL, SECTORS_IN_FLIGHT_PER_DEVICE);
-	ctxt.avoid = ca;
+	__set_bit(ca->dev_idx, ctxt.avoid.d);
 
 	/*
 	 * In theory, only one pass should be necessary as we've

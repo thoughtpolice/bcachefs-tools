@@ -11,7 +11,7 @@
 #include "six.h"
 
 struct open_bucket;
-struct btree_interior_update;
+struct btree_update;
 
 #define MAX_BSETS		3U
 
@@ -105,7 +105,7 @@ struct btree {
 	 * node to point to them: we update the parent in memory immediately,
 	 * but then we must wait until the children have been written out before
 	 * the update to the parent can be written - this is a list of the
-	 * btree_interior_updates that are blocking this node from being
+	 * btree_updates that are blocking this node from being
 	 * written:
 	 */
 	struct list_head	write_blocked;
@@ -116,7 +116,7 @@ struct btree {
 	 * another write - because that write also won't yet be reachable and
 	 * marking it as completed before it's reachable would be incorrect:
 	 */
-	struct btree_interior_update *will_make_reachable;
+	struct btree_update	*will_make_reachable;
 
 	struct open_bucket	*ob;
 
@@ -265,7 +265,7 @@ static inline bool btree_node_is_extents(struct btree *b)
 struct btree_root {
 	struct btree		*b;
 
-	struct btree_interior_update *as;
+	struct btree_update	*as;
 
 	/* On disk root - see async splits: */
 	__BKEY_PADDED(key, BKEY_BTREE_PTR_VAL_U64s_MAX);
@@ -310,6 +310,11 @@ enum btree_gc_coalesce_fail_reason {
 	BTREE_GC_COALESCE_FAIL_RESERVE_GET,
 	BTREE_GC_COALESCE_FAIL_KEYLIST_REALLOC,
 	BTREE_GC_COALESCE_FAIL_FORMAT_FITS,
+};
+
+enum btree_node_sibling {
+	btree_prev_sib,
+	btree_next_sib,
 };
 
 typedef struct btree_nr_keys (*sort_fix_overlapping_fn)(struct bset *,

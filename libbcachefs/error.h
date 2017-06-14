@@ -179,63 +179,32 @@ do {									\
 	_ret;								\
 })
 
-#define bch2_dev_fatal_error(ca, ...)					\
-do {									\
-	bch_err(ca, __VA_ARGS__);					\
-	bch2_fatal_error(c);						\
-} while (0)
-
-#define bch2_dev_fatal_io_error(ca, fmt, ...)				\
-do {									\
-	printk_ratelimited(KERN_ERR bch2_fmt((ca)->fs,			\
-		"fatal IO error on %s for " fmt),			\
-		(ca)->name, ##__VA_ARGS__);				\
-	bch2_fatal_error((ca)->fs);					\
-} while (0)
-
-#define bch2_dev_fatal_io_err_on(cond, ca, ...)				\
-({									\
-	int _ret = !!(cond);						\
-									\
-	if (_ret)							\
-		bch2_dev_fatal_io_error(ca, __VA_ARGS__);		\
-	_ret;								\
-})
-
 /*
- * Nonfatal IO errors: either recoverable metadata IO (because we have
- * replicas), or data IO - we need to log it and print out a message, but we
- * don't (necessarily) want to shut down the fs:
+ * IO errors: either recoverable metadata IO (because we have replicas), or data
+ * IO - we need to log it and print out a message, but we don't (necessarily)
+ * want to shut down the fs:
  */
 
-void bch2_nonfatal_io_error_work(struct work_struct *);
+void bch2_io_error_work(struct work_struct *);
 
 /* Does the error handling without logging a message */
-void bch2_nonfatal_io_error(struct bch_dev *);
-
-#if 0
-#define bch2_fs_nonfatal_io_error(c, ...)				\
-do {									\
-	bch_err(c, __VA_ARGS__);					\
-	bch2_nonfatal_io_error(c);					\
-} while (0)
-#endif
+void bch2_io_error(struct bch_dev *);
 
 /* Logs message and handles the error: */
-#define bch2_dev_nonfatal_io_error(ca, fmt, ...)				\
+#define bch2_dev_io_error(ca, fmt, ...)					\
 do {									\
 	printk_ratelimited(KERN_ERR bch2_fmt((ca)->fs,			\
 		"IO error on %s for " fmt),				\
 		(ca)->name, ##__VA_ARGS__);				\
-	bch2_nonfatal_io_error(ca);					\
+	bch2_io_error(ca);						\
 } while (0)
 
-#define bch2_dev_nonfatal_io_err_on(cond, ca, ...)			\
+#define bch2_dev_io_err_on(cond, ca, ...)				\
 ({									\
 	bool _ret = (cond);						\
 									\
 	if (_ret)							\
-		bch2_dev_nonfatal_io_error(ca, __VA_ARGS__);		\
+		bch2_dev_io_error(ca, __VA_ARGS__);			\
 	_ret;								\
 })
 

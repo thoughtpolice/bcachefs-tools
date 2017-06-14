@@ -700,22 +700,17 @@ static void write_super_endio(struct bio *bio)
 
 	/* XXX: return errors directly */
 
-	bch2_dev_fatal_io_err_on(bio->bi_error, ca, "superblock write");
+	if (bch2_dev_io_err_on(bio->bi_error, ca, "superblock write"))
+		ca->sb_write_error = 1;
 
 	closure_put(&ca->fs->sb_write);
 	percpu_ref_put(&ca->io_ref);
 }
 
-static bool write_one_super(struct bch_fs *c, struct bch_dev *ca, unsigned idx)
+static void write_one_super(struct bch_fs *c, struct bch_dev *ca, unsigned idx)
 {
 	struct bch_sb *sb = ca->disk_sb.sb;
 	struct bio *bio = ca->disk_sb.bio;
-
-	if (idx >= sb->layout.nr_superblocks)
-		return false;
-
-	if (!percpu_ref_tryget(&ca->io_ref))
-		return false;
 
 	sb->offset = sb->layout.sb_offset[idx];
 
@@ -734,21 +729,23 @@ static bool write_one_super(struct bch_fs *c, struct bch_dev *ca, unsigned idx)
 	bio_set_op_attrs(bio, REQ_OP_WRITE, REQ_SYNC|REQ_META);
 	bch2_bio_map(bio, sb);
 
+	percpu_ref_get(&ca->io_ref);
 	closure_bio_submit(bio, &c->sb_write);
-	return true;
 }
 
 void bch2_write_super(struct bch_fs *c)
 {
 	struct closure *cl = &c->sb_write;
 	struct bch_dev *ca;
-	unsigned i, super_idx = 0;
+	unsigned i, sb = 0, nr_wrote;
 	const char *err;
-	bool wrote;
+	struct bch_devs_mask sb_written;
+	bool wrote, can_mount_without_written, can_mount_with_written;
 
 	lockdep_assert_held(&c->sb_lock);
 
 	closure_init_stack(cl);
+	memset(&sb_written, 0, sizeof(sb_written));
 
 	le64_add_cpu(&c->disk_sb->seq, 1);
 
@@ -767,15 +764,53 @@ void bch2_write_super(struct bch_fs *c)
 	    test_bit(BCH_FS_ERROR, &c->flags))
 		goto out;
 
+	for_each_online_member(ca, c, i) {
+		__set_bit(ca->dev_idx, sb_written.d);
+		ca->sb_write_error = 0;
+	}
+
 	do {
 		wrote = false;
 		for_each_online_member(ca, c, i)
-			if (write_one_super(c, ca, super_idx))
+			if (sb < ca->disk_sb.sb->layout.nr_superblocks) {
+				write_one_super(c, ca, sb);
 				wrote = true;
-
+			}
 		closure_sync(cl);
-		super_idx++;
+		sb++;
 	} while (wrote);
+
+	for_each_online_member(ca, c, i)
+		if (ca->sb_write_error)
+			__clear_bit(ca->dev_idx, sb_written.d);
+
+	nr_wrote = bitmap_weight(sb_written.d, BCH_SB_MEMBERS_MAX);
+
+	can_mount_with_written =
+		bch2_have_enough_devs(c,
+			__bch2_replicas_status(c, sb_written),
+			BCH_FORCE_IF_DEGRADED);
+
+	for (i = 0; i < ARRAY_SIZE(sb_written.d); i++)
+		sb_written.d[i] = ~sb_written.d[i];
+
+	can_mount_without_written =
+		bch2_have_enough_devs(c,
+			__bch2_replicas_status(c, sb_written),
+			BCH_FORCE_IF_DEGRADED);
+
+	/*
+	 * If we would be able to mount _without_ the devices we successfully
+	 * wrote superblocks to, we weren't able to write to enough devices:
+	 *
+	 * Exception: if we can mount without the successes because we haven't
+	 * written anything (new filesystem), we continue if we'd be able to
+	 * mount with the devices we did successfully write to:
+	 */
+	bch2_fs_fatal_err_on(!nr_wrote ||
+			     (can_mount_without_written &&
+			      !can_mount_with_written), c,
+		"Unable to write superblock to sufficient devices");
 out:
 	/* Make new options visible after they're persistent: */
 	bch2_sb_update(c);
@@ -1087,7 +1122,7 @@ int bch2_check_mark_super(struct bch_fs *c, struct bkey_s_c_extent e,
 }
 
 struct replicas_status __bch2_replicas_status(struct bch_fs *c,
-					      struct bch_dev *dev_to_offline)
+					struct bch_devs_mask online_devs)
 {
 	struct bch_replicas_cpu_entry *e;
 	struct bch_replicas_cpu *r;
@@ -1114,8 +1149,7 @@ struct replicas_status __bch2_replicas_status(struct bch_fs *c,
 			if (!replicas_test_dev(e, dev))
 				continue;
 
-			if (bch2_dev_is_online(c->devs[dev]) &&
-			    c->devs[dev] != dev_to_offline)
+			if (test_bit(dev, online_devs.d))
 				nr_online++;
 			else
 				nr_offline++;
@@ -1137,7 +1171,32 @@ struct replicas_status __bch2_replicas_status(struct bch_fs *c,
 
 struct replicas_status bch2_replicas_status(struct bch_fs *c)
 {
-	return __bch2_replicas_status(c, NULL);
+	return __bch2_replicas_status(c, bch2_online_devs(c));
+}
+
+bool bch2_have_enough_devs(struct bch_fs *c,
+			   struct replicas_status s,
+			   unsigned flags)
+{
+	if ((s.replicas[BCH_DATA_JOURNAL].nr_offline ||
+	     s.replicas[BCH_DATA_BTREE].nr_offline) &&
+	    !(flags & BCH_FORCE_IF_METADATA_DEGRADED))
+		return false;
+
+	if ((!s.replicas[BCH_DATA_JOURNAL].nr_online ||
+	     !s.replicas[BCH_DATA_BTREE].nr_online) &&
+	    !(flags & BCH_FORCE_IF_METADATA_LOST))
+		return false;
+
+	if (s.replicas[BCH_DATA_USER].nr_offline &&
+	    !(flags & BCH_FORCE_IF_DATA_DEGRADED))
+		return false;
+
+	if (!s.replicas[BCH_DATA_USER].nr_online &&
+	    !(flags & BCH_FORCE_IF_DATA_LOST))
+		return false;
+
+	return true;
 }
 
 unsigned bch2_replicas_online(struct bch_fs *c, bool meta)

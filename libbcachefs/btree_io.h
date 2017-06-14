@@ -10,6 +10,7 @@ struct btree_iter;
 
 struct btree_read_bio {
 	struct bch_fs		*c;
+	u64			start_time;
 	struct extent_pick_ptr	pick;
 	struct work_struct	work;
 	struct bio		bio;
@@ -71,11 +72,10 @@ void bch2_btree_build_aux_trees(struct btree *);
 void bch2_btree_init_next(struct bch_fs *, struct btree *,
 			 struct btree_iter *);
 
-void bch2_btree_node_read_done(struct bch_fs *, struct btree *,
-			      struct bch_dev *, const struct bch_extent_ptr *);
+int bch2_btree_node_read_done(struct bch_fs *, struct btree *);
 void bch2_btree_node_read(struct bch_fs *, struct btree *, bool);
 int bch2_btree_root_read(struct bch_fs *, enum btree_id,
-			const struct bkey_i *, unsigned);
+			 const struct bkey_i *, unsigned);
 
 void bch2_btree_complete_write(struct bch_fs *, struct btree *,
 			      struct btree_write *);

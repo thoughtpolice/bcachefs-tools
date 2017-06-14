@@ -9,4 +9,8 @@ struct bcache_superblock {
 	fmode_t			mode;
 };
 
+struct bch_devs_mask {
+	unsigned long d[BITS_TO_LONGS(BCH_SB_MEMBERS_MAX)];
+};
+
 #endif /* _BCACHE_SUPER_TYPES_H */

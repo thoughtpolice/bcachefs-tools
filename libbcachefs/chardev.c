@@ -73,12 +73,12 @@ static long bch2_ioctl_assemble(struct bch_ioctl_assemble __user *user_arg)
 		return -EINVAL;
 
 	user_devs = kmalloc_array(arg.nr_devs, sizeof(u64), GFP_KERNEL);
-	if (!devs)
+	if (!user_devs)
 		return -ENOMEM;
 
 	devs = kcalloc(arg.nr_devs, sizeof(char *), GFP_KERNEL);
 
-	if (copy_from_user(user_devs, user_arg->devs,
+	if (copy_from_user(user_devs, arg.devs,
 			   sizeof(u64) * arg.nr_devs))
 		goto err;
 

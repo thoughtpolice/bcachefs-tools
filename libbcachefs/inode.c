@@ -328,8 +328,11 @@ again:
 int bch2_inode_truncate(struct bch_fs *c, u64 inode_nr, u64 new_size,
 			struct extent_insert_hook *hook, u64 *journal_seq)
 {
-	return bch2_discard(c, POS(inode_nr, new_size), POS(inode_nr + 1, 0),
-			   ZERO_VERSION, NULL, hook, journal_seq);
+	return bch2_btree_delete_range(c, BTREE_ID_EXTENTS,
+				       POS(inode_nr, new_size),
+				       POS(inode_nr + 1, 0),
+				       ZERO_VERSION, NULL, hook,
+				       journal_seq);
 }
 
 int bch2_inode_rm(struct bch_fs *c, u64 inode_nr)

@@ -80,21 +80,25 @@ static void bch2_fs_stats_verify(struct bch_fs *c)
 {
 	struct bch_fs_usage stats =
 		__bch2_fs_usage_read(c);
+	unsigned i;
 
-	if ((s64) stats.sectors_dirty < 0)
-		panic("sectors_dirty underflow: %lli\n", stats.sectors_dirty);
+	for (i = 0; i < BCH_REPLICAS_MAX; i++) {
+		if ((s64) stats.s[i].data[S_META] < 0)
+			panic("replicas %u meta underflow: %lli\n",
+			      i + 1, stats.s[i].data[S_META]);
 
-	if ((s64) stats.sectors_cached < 0)
-		panic("sectors_cached underflow: %lli\n", stats.sectors_cached);
+		if ((s64) stats.s[i].data[S_DIRTY] < 0)
+			panic("replicas %u dirty underflow: %lli\n",
+			      i + 1, stats.s[i].data[S_DIRTY]);
 
-	if ((s64) stats.sectors_meta < 0)
-		panic("sectors_meta underflow: %lli\n", stats.sectors_meta);
+		if ((s64) stats.s[i].persistent_reserved < 0)
+			panic("replicas %u reserved underflow: %lli\n",
+			      i + 1, stats.s[i].persistent_reserved);
+	}
 
-	if ((s64) stats.sectors_persistent_reserved < 0)
-		panic("sectors_persistent_reserved underflow: %lli\n", stats.sectors_persistent_reserved);
-
-	if ((s64) stats.sectors_online_reserved < 0)
-		panic("sectors_online_reserved underflow: %lli\n", stats.sectors_online_reserved);
+	if ((s64) stats.online_reserved < 0)
+		panic("sectors_online_reserved underflow: %lli\n",
+		      stats.online_reserved);
 }
 
 #else
@@ -223,11 +227,8 @@ void bch2_fs_usage_apply(struct bch_fs *c,
 			struct disk_reservation *disk_res,
 			struct gc_pos gc_pos)
 {
-	s64 added =
-		stats->s[S_COMPRESSED][S_META] +
-		stats->s[S_COMPRESSED][S_DIRTY] +
-		stats->persistent_reserved +
-		stats->online_reserved;
+	struct fs_usage_sum sum = __fs_usage_sum(*stats);
+	s64 added = sum.data + sum.reserved;
 
 	/*
 	 * Not allowed to reduce sectors_available except by getting a
@@ -255,19 +256,8 @@ void bch2_fs_usage_apply(struct bch_fs *c,
 	memset(stats, 0, sizeof(*stats));
 }
 
-static void bch2_fs_usage_update(struct bch_fs_usage *fs_usage,
-				struct bucket_mark old, struct bucket_mark new)
-{
-	fs_usage->s[S_COMPRESSED][S_CACHED] +=
-		(int) new.cached_sectors - (int) old.cached_sectors;
-	fs_usage->s[S_COMPRESSED][bucket_type(old)] -=
-		old.dirty_sectors;
-	fs_usage->s[S_COMPRESSED][bucket_type(new)] +=
-		new.dirty_sectors;
-}
-
 static void bch2_dev_usage_update(struct bch_dev *ca,
-				 struct bucket_mark old, struct bucket_mark new)
+				  struct bucket_mark old, struct bucket_mark new)
 {
 	struct bch_fs *c = ca->fs;
 	struct bch_dev_usage *dev_usage;
@@ -280,7 +270,7 @@ static void bch2_dev_usage_update(struct bch_dev *ca,
 	preempt_disable();
 	dev_usage = this_cpu_ptr(ca->usage_percpu);
 
-	dev_usage->sectors[S_CACHED] +=
+	dev_usage->sectors_cached +=
 		(int) new.cached_sectors - (int) old.cached_sectors;
 
 	dev_usage->sectors[bucket_type(old)] -= old.dirty_sectors;
@@ -289,9 +279,9 @@ static void bch2_dev_usage_update(struct bch_dev *ca,
 	dev_usage->buckets_alloc +=
 		(int) new.owned_by_allocator - (int) old.owned_by_allocator;
 
-	dev_usage->buckets_meta += is_meta_bucket(new) - is_meta_bucket(old);
+	dev_usage->buckets[S_META] += is_meta_bucket(new) - is_meta_bucket(old);
+	dev_usage->buckets[S_DIRTY] += is_dirty_bucket(new) - is_dirty_bucket(old);
 	dev_usage->buckets_cached += is_cached_bucket(new) - is_cached_bucket(old);
-	dev_usage->buckets_dirty += is_dirty_bucket(new) - is_dirty_bucket(old);
 	preempt_enable();
 
 	if (!is_available_bucket(old) && is_available_bucket(new))
@@ -309,7 +299,6 @@ static void bch2_dev_usage_update(struct bch_dev *ca,
 bool bch2_invalidate_bucket(struct bch_dev *ca, struct bucket *g,
 			    struct bucket_mark *old)
 {
-	struct bch_fs_usage stats = { 0 };
 	struct bucket_mark new;
 
 	*old = bucket_data_cmpxchg(ca, g, new, ({
@@ -324,12 +313,8 @@ bool bch2_invalidate_bucket(struct bch_dev *ca, struct bucket *g,
 		new.gen++;
 	}));
 
-	/* XXX: we're not actually updating fs usage's cached sectors... */
-	bch2_fs_usage_update(&stats, *old, new);
-
 	if (!old->owned_by_allocator && old->cached_sectors)
-		trace_invalidate(ca, g - ca->buckets,
-					old->cached_sectors);
+		trace_invalidate(ca, g - ca->buckets, old->cached_sectors);
 	return true;
 }
 
@@ -367,12 +352,15 @@ void bch2_mark_free_bucket(struct bch_dev *ca, struct bucket *g)
 void bch2_mark_alloc_bucket(struct bch_dev *ca, struct bucket *g,
 			   bool owned_by_allocator)
 {
-	struct bucket_mark new;
+	struct bucket_mark old, new;
 
-	bucket_data_cmpxchg(ca, g, new, ({
+	old = bucket_data_cmpxchg(ca, g, new, ({
 		new.touched_this_mount	= 1;
 		new.owned_by_allocator	= owned_by_allocator;
 	}));
+
+	BUG_ON(!owned_by_allocator && !old.owned_by_allocator &&
+	       ca->fs->gc_pos.phase == GC_PHASE_DONE);
 }
 
 #define saturated_add(ca, dst, src, max)			\
@@ -414,33 +402,13 @@ void bch2_mark_metadata_bucket(struct bch_dev *ca, struct bucket *g,
 	       bucket_became_unavailable(ca->fs, old, new));
 }
 
-#if 0
 /* Reverting this until the copygc + compression issue is fixed: */
 
-static unsigned __disk_sectors(const union bch_extent_crc *crc, unsigned sectors)
+static int __disk_sectors(const union bch_extent_crc *crc, unsigned sectors)
 {
-	return crc_compression_type(crc)
-		? sectors * crc_compressed_size(crc) / crc_uncompressed_size(crc)
-		: sectors;
+	return sectors * crc_compressed_size(NULL, crc) /
+		crc_uncompressed_size(NULL, crc);
 }
-
-static unsigned __compressed_sectors(const union bch_extent_crc *crc, unsigned sectors)
-{
-	return crc_compression_type(crc)
-		? min_t(unsigned, crc_compressed_size(crc), sectors)
-		: sectors;
-}
-#else
-static unsigned __disk_sectors(const union bch_extent_crc *crc, unsigned sectors)
-{
-	return sectors;
-}
-
-static unsigned __compressed_sectors(const union bch_extent_crc *crc, unsigned sectors)
-{
-	return sectors;
-}
-#endif
 
 /*
  * Checking against gc's position has to be done here, inside the cmpxchg()
@@ -452,9 +420,8 @@ static void bch2_mark_pointer(struct bch_fs *c,
 			     const union bch_extent_crc *crc,
 			     const struct bch_extent_ptr *ptr,
 			     s64 sectors, enum s_alloc type,
-			     bool may_make_unavailable,
 			     struct bch_fs_usage *stats,
-			     bool gc_will_visit, u64 journal_seq)
+			     u64 journal_seq, unsigned flags)
 {
 	struct bucket_mark old, new;
 	unsigned saturated;
@@ -462,23 +429,24 @@ static void bch2_mark_pointer(struct bch_fs *c,
 	struct bucket *g = ca->buckets + PTR_BUCKET_NR(ca, ptr);
 	unsigned data_type = type == S_META
 		? BUCKET_BTREE : BUCKET_DATA;
-	unsigned old_sectors, new_sectors;
-	int disk_sectors, compressed_sectors;
+	u64 v;
 
-	if (sectors > 0) {
-		old_sectors = 0;
-		new_sectors = sectors;
-	} else {
-		old_sectors = e.k->size;
-		new_sectors = e.k->size + sectors;
+	if (crc_compression_type(crc)) {
+		unsigned old_sectors, new_sectors;
+
+		if (sectors > 0) {
+			old_sectors = 0;
+			new_sectors = sectors;
+		} else {
+			old_sectors = e.k->size;
+			new_sectors = e.k->size + sectors;
+		}
+
+		sectors = -__disk_sectors(crc, old_sectors)
+			  +__disk_sectors(crc, new_sectors);
 	}
 
-	disk_sectors = -__disk_sectors(crc, old_sectors)
-		+ __disk_sectors(crc, new_sectors);
-	compressed_sectors = -__compressed_sectors(crc, old_sectors)
-		+ __compressed_sectors(crc, new_sectors);
-
-	if (gc_will_visit) {
+	if (flags & BCH_BUCKET_MARK_GC_WILL_VISIT) {
 		if (journal_seq)
 			bucket_cmpxchg(g, new, ({
 				new.touched_this_mount	= 1;
@@ -486,10 +454,12 @@ static void bch2_mark_pointer(struct bch_fs *c,
 				new.journal_seq		= journal_seq;
 			}));
 
-		goto out;
+		return;
 	}
 
-	old = bucket_data_cmpxchg(ca, g, new, ({
+	v = READ_ONCE(g->_mark.counter);
+	do {
+		new.counter = old.counter = v;
 		saturated = 0;
 
 		/*
@@ -498,21 +468,21 @@ static void bch2_mark_pointer(struct bch_fs *c,
 		 * checked the gen
 		 */
 		if (gen_after(new.gen, ptr->gen)) {
-			EBUG_ON(type != S_CACHED &&
+			EBUG_ON(!ptr->cached &&
 				test_bit(JOURNAL_REPLAY_DONE, &c->journal.flags));
 			return;
 		}
 
-		if (type != S_CACHED &&
+		if (!ptr->cached &&
 		    new.dirty_sectors == GC_MAX_SECTORS_USED &&
-		    disk_sectors < 0)
-			saturated = -disk_sectors;
+		    sectors < 0)
+			saturated = -sectors;
 
-		if (type == S_CACHED)
-			saturated_add(ca, new.cached_sectors, disk_sectors,
+		if (ptr->cached)
+			saturated_add(ca, new.cached_sectors, sectors,
 				      GC_MAX_SECTORS_USED);
 		else
-			saturated_add(ca, new.dirty_sectors, disk_sectors,
+			saturated_add(ca, new.dirty_sectors, sectors,
 				      GC_MAX_SECTORS_USED);
 
 		if (!new.dirty_sectors &&
@@ -528,7 +498,16 @@ static void bch2_mark_pointer(struct bch_fs *c,
 		}
 
 		new.touched_this_mount	= 1;
-	}));
+
+		if (flags & BCH_BUCKET_MARK_NOATOMIC) {
+			g->_mark = new;
+			break;
+		}
+	} while ((v = cmpxchg(&g->_mark.counter,
+			      old.counter,
+			      new.counter)) != old.counter);
+
+	bch2_dev_usage_update(ca, old, new);
 
 	if (old.data_type != data_type &&
 	    (old.data_type ||
@@ -537,7 +516,7 @@ static void bch2_mark_pointer(struct bch_fs *c,
 		bch_err(ca->fs, "bucket %zu has multiple types of data (%u, %u)",
 			g - ca->buckets, old.data_type, new.data_type);
 
-	BUG_ON(!may_make_unavailable &&
+	BUG_ON(!(flags & BCH_BUCKET_MARK_MAY_MAKE_UNAVAILABLE) &&
 	       bucket_became_unavailable(c, old, new));
 
 	if (saturated &&
@@ -549,66 +528,61 @@ static void bch2_mark_pointer(struct bch_fs *c,
 			wake_up_process(c->gc_thread);
 		}
 	}
-out:
-	stats->s[S_COMPRESSED][type]	+= compressed_sectors;
-	stats->s[S_UNCOMPRESSED][type]	+= sectors;
 }
 
 static void bch2_mark_extent(struct bch_fs *c, struct bkey_s_c_extent e,
 			    s64 sectors, bool metadata,
-			    bool may_make_unavailable,
 			    struct bch_fs_usage *stats,
-			    bool gc_will_visit, u64 journal_seq)
+			    u64 journal_seq, unsigned flags)
 {
 	const struct bch_extent_ptr *ptr;
 	const union bch_extent_crc *crc;
 	enum s_alloc type = metadata ? S_META : S_DIRTY;
+	unsigned replicas = 0;
 
 	BUG_ON(metadata && bkey_extent_is_cached(e.k));
 	BUG_ON(!sectors);
 
-	extent_for_each_ptr_crc(e, ptr, crc)
-		bch2_mark_pointer(c, e, crc, ptr, sectors,
-				 ptr->cached ? S_CACHED : type,
-				 may_make_unavailable,
-				 stats, gc_will_visit, journal_seq);
+	extent_for_each_ptr_crc(e, ptr, crc) {
+		bch2_mark_pointer(c, e, crc, ptr, sectors, type,
+				  stats, journal_seq, flags);
+		replicas += !ptr->cached;
+	}
+
+	BUG_ON(replicas >= BCH_REPLICAS_MAX);
+
+	if (replicas)
+		stats->s[replicas - 1].data[type] += sectors;
 }
 
-static void __bch2_mark_key(struct bch_fs *c, struct bkey_s_c k,
-			   s64 sectors, bool metadata,
-			   bool may_make_unavailable,
-			   struct bch_fs_usage *stats,
-			   bool gc_will_visit, u64 journal_seq)
+void __bch2_mark_key(struct bch_fs *c, struct bkey_s_c k,
+		     s64 sectors, bool metadata,
+		     struct bch_fs_usage *stats,
+		     u64 journal_seq, unsigned flags)
 {
 	switch (k.k->type) {
 	case BCH_EXTENT:
 	case BCH_EXTENT_CACHED:
 		bch2_mark_extent(c, bkey_s_c_to_extent(k), sectors, metadata,
-				may_make_unavailable, stats,
-				gc_will_visit, journal_seq);
+				stats, journal_seq, flags);
 		break;
 	case BCH_RESERVATION: {
 		struct bkey_s_c_reservation r = bkey_s_c_to_reservation(k);
 
-		stats->persistent_reserved += r.v->nr_replicas * sectors;
+		if (r.v->nr_replicas)
+			stats->s[r.v->nr_replicas - 1].persistent_reserved += sectors;
 		break;
 	}
 	}
 }
 
-void __bch2_gc_mark_key(struct bch_fs *c, struct bkey_s_c k,
-		       s64 sectors, bool metadata,
-		       struct bch_fs_usage *stats)
-{
-	__bch2_mark_key(c, k, sectors, metadata, true, stats, false, 0);
-}
-
 void bch2_gc_mark_key(struct bch_fs *c, struct bkey_s_c k,
-		     s64 sectors, bool metadata)
+		     s64 sectors, bool metadata, unsigned flags)
 {
 	struct bch_fs_usage stats = { 0 };
 
-	__bch2_gc_mark_key(c, k, sectors, metadata, &stats);
+	__bch2_mark_key(c, k, sectors, metadata, &stats, 0,
+			flags|BCH_BUCKET_MARK_MAY_MAKE_UNAVAILABLE);
 
 	preempt_disable();
 	bch2_usage_add(this_cpu_ptr(c->usage_percpu), &stats);
@@ -619,6 +593,8 @@ void bch2_mark_key(struct bch_fs *c, struct bkey_s_c k,
 		  s64 sectors, bool metadata, struct gc_pos gc_pos,
 		  struct bch_fs_usage *stats, u64 journal_seq)
 {
+	unsigned flags = gc_will_visit(c, gc_pos)
+		? BCH_BUCKET_MARK_GC_WILL_VISIT : 0;
 	/*
 	 * synchronization w.r.t. GC:
 	 *
@@ -647,9 +623,7 @@ void bch2_mark_key(struct bch_fs *c, struct bkey_s_c k,
 	 *    (e.g. the btree node lock, or the relevant allocator lock).
 	 */
 	lg_local_lock(&c->usage_lock);
-	__bch2_mark_key(c, k, sectors, metadata, false, stats,
-		       gc_will_visit(c, gc_pos), journal_seq);
-
+	__bch2_mark_key(c, k, sectors, metadata, stats, journal_seq, flags);
 	bch2_fs_stats_verify(c);
 	lg_local_unlock(&c->usage_lock);
 }

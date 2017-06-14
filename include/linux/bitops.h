@@ -38,6 +38,14 @@ static inline void set_bit(long nr, volatile unsigned long *addr)
 	__atomic_or_fetch(p, mask, __ATOMIC_RELAXED);
 }
 
+static inline void __clear_bit(int nr, volatile unsigned long *addr)
+{
+	unsigned long mask = BIT_MASK(nr);
+	unsigned long *p = ((unsigned long *)addr) + BIT_WORD(nr);
+
+	*p &= ~mask;
+}
+
 static inline void clear_bit(long nr, volatile unsigned long *addr)
 {
 	unsigned long mask = BIT_MASK(nr);
