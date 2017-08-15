@@ -179,3 +179,17 @@ static void sched_init(void)
 	rcu_init();
 	rcu_register_thread();
 }
+
+#ifndef __NR_getrandom
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+int urandom_fd;
+
+__attribute__((constructor(101)))
+static void rand_init(void)
+{
+	urandom_fd = open("/dev/urandom", O_RDONLY);
+	BUG_ON(urandom_fd < 0);
+}
+#endif
