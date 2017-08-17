@@ -65,8 +65,9 @@ void generic_make_request(struct bio *bio)
 		iocb.u.v.nr		= i;
 		iocb.u.v.offset		= bio->bi_iter.bi_sector << 9;
 
-		if (io_submit(aio_ctx, 1, &iocbp) != 1)
-			die("io_submit err: %m");
+		ret = io_submit(aio_ctx, 1, &iocbp);
+		if (ret != 1)
+			die("io_submit err: %s", strerror(-ret));
 		break;
 	case REQ_OP_WRITE:
 		iocb.aio_lio_opcode	= IO_CMD_PWRITEV;
@@ -74,8 +75,9 @@ void generic_make_request(struct bio *bio)
 		iocb.u.v.nr		= i;
 		iocb.u.v.offset		= bio->bi_iter.bi_sector << 9;
 
-		if (io_submit(aio_ctx, 1, &iocbp) != 1)
-			die("io_submit err: %m");
+		ret = io_submit(aio_ctx, 1, &iocbp);
+		if (ret != 1)
+			die("io_submit err: %s", strerror(-ret));
 		break;
 	default:
 		BUG();
@@ -219,10 +221,10 @@ static int aio_completion_thread(void *arg)
 		ret = io_getevents(aio_ctx, 1, ARRAY_SIZE(events),
 				   events, NULL);
 
-		if (ret < 0 && errno == EINTR)
+		if (ret < 0 && ret == -EINTR)
 			continue;
 		if (ret < 0)
-			die("io_getevents() error: %m");
+			die("io_getevents() error: %s", strerror(-ret));
 
 		for (ev = events; ev < events + ret; ev++) {
 			struct bio *bio = (struct bio *) ev->data;
