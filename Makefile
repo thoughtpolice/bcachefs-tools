@@ -1,7 +1,7 @@
 
 PREFIX=/usr
 INSTALL=install
-CFLAGS+=-std=gnu99 -O2 -g -MMD -Wall				\
+CFLAGS+=-std=gnu89 -O2 -g -MMD -Wall				\
 	-Wno-pointer-sign					\
 	-fno-strict-aliasing					\
 	-I. -Iinclude -Ilibbcachefs				\
@@ -31,6 +31,7 @@ endif
 
 ifdef D
 	CFLAGS+=-Werror
+	CFLAGS+=-DCONFIG_BCACHEFS_DEBUG=y
 endif
 
 PKGCONFIG_LIBS="blkid uuid liburcu libsodium zlib"

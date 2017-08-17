@@ -247,7 +247,8 @@ void bch2_super_write(int fd, struct bch_sb *sb)
 {
 	struct nonce nonce = { 0 };
 
-	for (unsigned i = 0; i < sb->layout.nr_superblocks; i++) {
+	unsigned i;
+	for (i = 0; i < sb->layout.nr_superblocks; i++) {
 		sb->offset = sb->layout.sb_offset[i];
 
 		if (sb->offset == BCH_SB_SECTOR) {

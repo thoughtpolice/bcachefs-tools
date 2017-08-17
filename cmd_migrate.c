@@ -225,7 +225,8 @@ static void copy_xattrs(struct bch_fs *c, struct bch_inode_unpacked *dst,
 	if (attrs_size < 0)
 		die("listxattr error: %m");
 
-	for (const char *next, *attr = attrs;
+	const char *next, *attr;
+	for (attr = attrs;
 	     attr < attrs + attrs_size;
 	     attr = next) {
 		next = attr + strlen(attr) + 1;
@@ -827,7 +828,8 @@ int cmd_migrate_superblock(int argc, char *argv[])
 	if (sb->layout.nr_superblocks >= ARRAY_SIZE(sb->layout.sb_offset))
 		die("Can't add superblock: no space left in superblock layout");
 
-	for (unsigned i = 0; i < sb->layout.nr_superblocks; i++)
+	unsigned i;
+	for (i = 0; i < sb->layout.nr_superblocks; i++)
 		if (le64_to_cpu(sb->layout.sb_offset[i]) == BCH_SB_SECTOR)
 			die("Superblock layout already has default superblock");
 

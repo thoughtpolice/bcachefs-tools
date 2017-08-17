@@ -23,7 +23,8 @@ int cmd_assemble(int argc, char *argv[])
 	memset(assemble, 0, sizeof(*assemble));
 	assemble->nr_devs = nr_devs;
 
-	for (unsigned i = 1; i < argc; i++)
+	unsigned i;
+	for (i = 1; i < argc; i++)
 	     assemble->devs[i] = (__u64) argv[i];
 
 	xioctl(bcachectl_open(), BCH_IOCTL_ASSEMBLE, assemble);

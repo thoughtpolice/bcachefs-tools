@@ -54,7 +54,7 @@ struct units_buf {
 	char	b[20];
 };
 
-#define pr_units(_v, _u)	__pr_units(_v, _u).b
+#define pr_units(_v, _u)	&(__pr_units(_v, _u).b[0])
 
 char *read_file_str(int, const char *);
 u64 read_file_u64(int, const char *);
