@@ -79,6 +79,12 @@ void generic_make_request(struct bio *bio)
 		if (ret != 1)
 			die("io_submit err: %s", strerror(-ret));
 		break;
+	case REQ_OP_FLUSH:
+		ret = fsync(bio->bi_bdev->bd_fd);
+		if (ret)
+			die("fsync error: %m");
+		bio_endio(bio);
+		break;
 	default:
 		BUG();
 	}
