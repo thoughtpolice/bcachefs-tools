@@ -401,9 +401,6 @@ unsigned hatoi_validate(const char *s, const char *msg)
 	if (bch2_strtoull_h(s, &v))
 		die("bad %s %s", msg, s);
 
-	if (v & (v - 1))
-		die("%s must be a power of two", msg);
-
 	v /= 512;
 
 	if (v > USHRT_MAX)

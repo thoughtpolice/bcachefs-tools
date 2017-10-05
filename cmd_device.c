@@ -203,8 +203,8 @@ int cmd_device_add(int argc, char *argv[])
 		{ "force",		no_argument,		NULL, 'f' },
 		{ NULL }
 	};
-	struct format_opts format_opts = format_opts_default();
-	struct dev_opts dev_opts = { 0 };
+	struct format_opts format_opts	= format_opts_default();
+	struct dev_opts dev_opts	= dev_opts_default();
 	bool force = false;
 	int opt;
 

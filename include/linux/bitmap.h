@@ -46,32 +46,11 @@ static inline void bitmap_or(unsigned long *dst, const unsigned long *src1,
 		__bitmap_or(dst, src1, src2, nbits);
 }
 
-/**
- * bitmap_alloc - Allocate bitmap
- * @nr: Bit to set
- */
 static inline unsigned long *bitmap_alloc(int nbits)
 {
 	return calloc(1, BITS_TO_LONGS(nbits) * sizeof(unsigned long));
 }
 
-/*
- * bitmap_scnprintf - print bitmap list into buffer
- * @bitmap: bitmap
- * @nbits: size of bitmap
- * @buf: buffer to store output
- * @size: size of @buf
- */
-size_t bitmap_scnprintf(unsigned long *bitmap, int nbits,
-			char *buf, size_t size);
-
-/**
- * bitmap_and - Do logical and on bitmaps
- * @dst: resulting bitmap
- * @src1: operand 1
- * @src2: operand 2
- * @nbits: size of bitmap
- */
 static inline int bitmap_and(unsigned long *dst, const unsigned long *src1,
 			     const unsigned long *src2, unsigned int nbits)
 {
@@ -117,16 +96,7 @@ static inline unsigned long find_next_zero_bit(const unsigned long *addr, unsign
 	return _find_next_bit(addr, size, offset, ~0UL);
 }
 
-static inline unsigned long find_first_zero_bit(const unsigned long *addr, unsigned long size)
-{
-	unsigned long idx;
-
-	for (idx = 0; idx * BITS_PER_LONG < size; idx++) {
-		if (addr[idx] != ~0UL)
-			return min(idx * BITS_PER_LONG + ffz(addr[idx]), size);
-	}
-
-	return size;
-}
+#define find_first_bit(addr, size) find_next_bit((addr), (size), 0)
+#define find_first_zero_bit(addr, size) find_next_zero_bit((addr), (size), 0)
 
 #endif /* _PERF_BITOPS_H */

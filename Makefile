@@ -9,9 +9,9 @@ CFLAGS+=-std=gnu89 -O2 -g -MMD -Wall				\
 	-D_GNU_SOURCE						\
 	-D_LGPL_SOURCE						\
 	-DRCU_MEMBARRIER					\
-	-DNO_BCACHE_CHARDEV					\
-	-DNO_BCACHE_FS						\
-	-DNO_BCACHE_SYSFS					\
+	-DNO_BCACHEFS_CHARDEV					\
+	-DNO_BCACHEFS_FS					\
+	-DNO_BCACHEFS_SYSFS					\
 	$(EXTRA_CFLAGS)
 LDFLAGS+=-O2 -g
 
@@ -44,60 +44,7 @@ endif
 .PHONY: all
 all: bcachefs
 
-SRCS=bcachefs.c				\
-     cmd_assemble.c			\
-     cmd_debug.c			\
-     cmd_device.c			\
-     cmd_fs.c				\
-     cmd_fsck.c				\
-     cmd_format.c			\
-     cmd_key.c				\
-     cmd_migrate.c			\
-     cmd_run.c				\
-     crypto.c				\
-     libbcachefs.c			\
-     qcow2.c				\
-     tools-util.c			\
-     libbcachefs/alloc.c		\
-     libbcachefs/bkey.c			\
-     libbcachefs/bkey_methods.c		\
-     libbcachefs/bset.c			\
-     libbcachefs/btree_cache.c		\
-     libbcachefs/btree_gc.c		\
-     libbcachefs/btree_io.c		\
-     libbcachefs/btree_iter.c		\
-     libbcachefs/btree_update_interior.c\
-     libbcachefs/btree_update_leaf.c	\
-     libbcachefs/buckets.c		\
-     libbcachefs/checksum.c		\
-     libbcachefs/clock.c		\
-     libbcachefs/compress.c		\
-     libbcachefs/debug.c		\
-     libbcachefs/dirent.c		\
-     libbcachefs/error.c		\
-     libbcachefs/extents.c		\
-     libbcachefs/fsck.c			\
-     libbcachefs/inode.c		\
-     libbcachefs/io.c			\
-     libbcachefs/journal.c		\
-     libbcachefs/keylist.c		\
-     libbcachefs/lz4_compress.c		\
-     libbcachefs/lz4_decompress.c	\
-     libbcachefs/migrate.c		\
-     libbcachefs/move.c			\
-     libbcachefs/movinggc.c		\
-     libbcachefs/opts.c			\
-     libbcachefs/siphash.c		\
-     libbcachefs/six.c			\
-     libbcachefs/super.c		\
-     libbcachefs/super-io.c		\
-     libbcachefs/tier.c			\
-     libbcachefs/trace.c		\
-     libbcachefs/util.c			\
-     libbcachefs/xattr.c		\
-     $(wildcard linux/*.c linux/*/*.c)	\
-     $(wildcard ccan/*/*.c)
-
+SRCS=$(shell git ls-files '*.c')
 DEPS=$(SRCS:.c=.d)
 -include $(DEPS)
 
@@ -128,11 +75,12 @@ deb: all
 
 .PHONE: update-bcachefs-sources
 update-bcachefs-sources:
-	echo `cd $(LINUX_DIR); git rev-parse HEAD` > .bcachefs_revision
+	git rm -rf libbcachefs
 	cp $(LINUX_DIR)/fs/bcachefs/*.[ch] libbcachefs/
 	cp $(LINUX_DIR)/include/trace/events/bcachefs.h include/trace/events/
+	echo `cd $(LINUX_DIR); git rev-parse HEAD` > .bcachefs_revision
+	git add libbcachefs/*.[ch] include/trace/events/bcachefs.h .bcachefs_revision
 
 .PHONE: update-commit-bcachefs-sources
 update-commit-bcachefs-sources: update-bcachefs-sources
-	git commit -m "Update bcachefs sources to `cd $(LINUX_DIR); git show --oneline --no-patch`"\
-		.bcachefs_revision libbcachefs/
+	git commit -m "Update bcachefs sources to `cd $(LINUX_DIR); git show --oneline --no-patch`"

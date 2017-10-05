@@ -162,18 +162,15 @@ static struct bch_inode_unpacked create_file(struct bch_fs *c,
 					     mode_t mode, dev_t rdev)
 {
 	struct bch_inode_unpacked new_inode;
-	struct bkey_inode_buf packed;
 	int ret;
 
 	bch2_inode_init(c, &new_inode, uid, gid, mode, rdev);
-	bch2_inode_pack(&packed, &new_inode);
 
-	ret = bch2_inode_create(c, &packed.inode.k_i, BLOCKDEV_INODE_MAX, 0,
+	ret = bch2_inode_create(c, &new_inode, BLOCKDEV_INODE_MAX, 0,
 				&c->unused_inode_hint);
 	if (ret)
 		die("error creating file: %s", strerror(-ret));
 
-	new_inode.inum = packed.inode.k.p.inode;
 	create_dirent(c, parent, name, new_inode.inum, mode);
 
 	return new_inode;
@@ -574,7 +571,7 @@ static void copy_fs(struct bch_fs *c, int src_fd, const char *src_path,
 	syncfs(src_fd);
 
 	struct bch_inode_unpacked root_inode;
-	int ret = bch2_inode_find_by_inum(c, BCACHE_ROOT_INO, &root_inode);
+	int ret = bch2_inode_find_by_inum(c, BCACHEFS_ROOT_INO, &root_inode);
 	if (ret)
 		die("error looking up root directory: %s", strerror(-ret));
 
@@ -682,7 +679,7 @@ int cmd_migrate(int argc, char *argv[])
 	if (!S_ISDIR(stat.st_mode))
 		die("%s is not a directory", fs_path);
 
-	struct dev_opts dev = { 0 };
+	struct dev_opts dev = dev_opts_default();
 
 	dev.path = dev_t_to_path(stat.st_dev);
 	dev.fd = xopen(dev.path, O_RDWR);

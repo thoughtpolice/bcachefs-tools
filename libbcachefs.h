@@ -16,6 +16,7 @@ struct format_opts {
 
 	unsigned	block_size;
 	unsigned	btree_node_size;
+	unsigned	encoded_extent_max;
 
 	unsigned	meta_replicas;
 	unsigned	data_replicas;
@@ -35,6 +36,7 @@ static inline struct format_opts format_opts_default()
 {
 	return (struct format_opts) {
 		.on_error_action	= BCH_ON_ERROR_RO,
+		.encoded_extent_max	= 128,
 		.meta_csum_type		= BCH_CSUM_CRC32C,
 		.data_csum_type		= BCH_CSUM_CRC32C,
 		.meta_replicas		= 1,
@@ -50,6 +52,7 @@ struct dev_opts {
 	u64		size; /* 512 byte sectors */
 	unsigned	bucket_size;
 	unsigned	tier;
+	unsigned	data_allowed;
 	bool		discard;
 
 	u64		nbuckets;
@@ -57,6 +60,13 @@ struct dev_opts {
 	u64		sb_offset;
 	u64		sb_end;
 };
+
+static inline struct dev_opts dev_opts_default()
+{
+	return (struct dev_opts) {
+		.data_allowed		= ~0 << 2,
+	};
+}
 
 void bch2_pick_bucket_size(struct format_opts, struct dev_opts *);
 struct bch_sb *bch2_format(struct format_opts, struct dev_opts *, size_t);

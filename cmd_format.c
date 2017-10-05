@@ -50,6 +50,7 @@ x(0,	fs_size,		"size",			"Size of filesystem on device")\
 x(0,	bucket_size,		"size",			"Bucket size")		\
 x('t',	tier,			"#",			"Higher tier indicates slower devices")\
 x(0,	discard,		NULL,			NULL)			\
+x(0,	data_allowed,		"journal,btree,data",	"Allowed types of data on this device")\
 t("Device specific options must come before corresponding devices, e.g.")	\
 t("  bcachefs format --tier 0 /dev/sdb --tier 1 /dev/sdc")			\
 t("")										\
@@ -121,11 +122,21 @@ static const struct option format_opts[] = {
 	{ NULL }
 };
 
+u64 read_flag_list_or_die(char *opt, const char * const list[],
+			  const char *msg)
+{
+	u64 v = bch2_read_flag_list(opt, list);
+	if (v == (u64) -1)
+		die("Bad %s %s", msg, opt);
+
+	return v;
+}
+
 int cmd_format(int argc, char *argv[])
 {
 	darray(struct dev_opts) devices;
-	struct format_opts opts = format_opts_default();
-	struct dev_opts dev_opts = { 0 }, *dev;
+	struct format_opts opts	= format_opts_default();
+	struct dev_opts dev_opts = dev_opts_default(), *dev;
 	bool force = false, no_passphrase = false, quiet = false;
 	int opt;
 
@@ -214,6 +225,11 @@ int cmd_format(int argc, char *argv[])
 			break;
 		case O_discard:
 			dev_opts.discard = true;
+			break;
+		case O_data_allowed:
+			dev_opts.data_allowed =
+				read_flag_list_or_die(optarg,
+					bch2_data_types, "data type");
 			break;
 		case O_no_opt:
 			dev_opts.path = strdup(optarg);

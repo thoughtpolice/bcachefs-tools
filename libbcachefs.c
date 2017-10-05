@@ -149,6 +149,12 @@ struct bch_sb *bch2_format(struct format_opts opts,
 				min(opts.btree_node_size, i->bucket_size);
 	}
 
+	if (!is_power_of_2(opts.block_size))
+		die("block size must be power of 2");
+
+	if (!is_power_of_2(opts.btree_node_size))
+		die("btree node size must be power of 2");
+
 	if (uuid_is_null(opts.uuid.b))
 		uuid_generate(opts.uuid.b);
 
@@ -157,7 +163,7 @@ struct bch_sb *bch2_format(struct format_opts opts,
 		    sizeof(struct bch_member) * nr_devs +
 		    sizeof(struct bch_sb_field_crypt));
 
-	sb->version	= cpu_to_le64(BCACHE_SB_VERSION_CDEV_V4);
+	sb->version	= cpu_to_le64(BCH_SB_VERSION_MAX);
 	sb->magic	= BCACHE_MAGIC;
 	sb->block_size	= cpu_to_le16(opts.block_size);
 	sb->user_uuid	= opts.uuid;
@@ -181,6 +187,7 @@ struct bch_sb *bch2_format(struct format_opts opts,
 	SET_BCH_SB_DATA_REPLICAS_REQ(sb,	opts.data_replicas_required);
 	SET_BCH_SB_ERROR_ACTION(sb,		opts.on_error_action);
 	SET_BCH_SB_STR_HASH_TYPE(sb,		BCH_STR_HASH_SIPHASH);
+	SET_BCH_SB_ENCODED_EXTENT_MAX_BITS(sb,	ilog2(opts.encoded_extent_max));
 
 	struct timespec now;
 	if (clock_gettime(CLOCK_REALTIME, &now))
@@ -221,6 +228,7 @@ struct bch_sb *bch2_format(struct format_opts opts,
 		SET_BCH_MEMBER_TIER(m,		i->tier);
 		SET_BCH_MEMBER_REPLACEMENT(m,	CACHE_REPLACEMENT_LRU);
 		SET_BCH_MEMBER_DISCARD(m,	i->discard);
+		SET_BCH_MEMBER_DATA_ALLOWED(m,	i->data_allowed);
 	}
 
 	for (i = devs; i < devs + nr_devs; i++) {
@@ -291,10 +299,27 @@ struct bch_sb *bch2_super_read(const char *path)
 	return sb;
 }
 
+static unsigned get_dev_has_data(struct bch_sb *sb, unsigned dev)
+{
+	struct bch_sb_field_replicas *replicas;
+	struct bch_replicas_entry *r;
+	unsigned i, data_has = 0;
+
+	replicas = bch2_sb_get_replicas(sb);
+
+	if (replicas)
+		for_each_replicas_entry(replicas, r)
+			for (i = 0; i < r->nr; i++)
+				if (r->devs[i] == dev)
+					data_has |= 1 << r->data_type;
+
+	return data_has;
+}
+
 void bch2_super_print(struct bch_sb *sb, int units)
 {
 	struct bch_sb_field_members *mi;
-	char user_uuid_str[40], internal_uuid_str[40], member_uuid_str[40];
+	char user_uuid_str[40], internal_uuid_str[40];
 	char label[BCH_SB_LABEL_SIZE + 1];
 	unsigned i;
 
@@ -374,8 +399,24 @@ void bch2_super_print(struct bch_sb *sb, int units)
 	for (i = 0; i < sb->nr_devices; i++) {
 		struct bch_member *m = mi->members + i;
 		time_t last_mount = le64_to_cpu(m->last_mount);
+		char member_uuid_str[40];
+		char data_allowed_str[100];
+		char data_has_str[100];
 
 		uuid_unparse(m->uuid.b, member_uuid_str);
+		bch2_scnprint_flag_list(data_allowed_str,
+					sizeof(data_allowed_str),
+					bch2_data_types,
+					BCH_MEMBER_DATA_ALLOWED(m));
+		if (!data_allowed_str[0])
+			strcpy(data_allowed_str, "(none)");
+
+		bch2_scnprint_flag_list(data_has_str,
+					sizeof(data_has_str),
+					bch2_data_types,
+					get_dev_has_data(sb, i));
+		if (!data_has_str[0])
+			strcpy(data_has_str, "(none)");
 
 		printf("\n"
 		       "Device %u:\n"
@@ -387,8 +428,10 @@ void bch2_super_print(struct bch_sb *sb, int units)
 		       "  Last mount:			%s\n"
 		       "  State:			%s\n"
 		       "  Tier:				%llu\n"
-		       "  Has metadata:			%llu\n"
-		       "  Has data:			%llu\n"
+		       "  Data allowed:			%s\n"
+
+		       "  Has data:			%s\n"
+
 		       "  Replacement policy:		%s\n"
 		       "  Discard:			%llu\n",
 		       i, member_uuid_str,
@@ -404,8 +447,8 @@ void bch2_super_print(struct bch_sb *sb, int units)
 		       : "unknown",
 
 		       BCH_MEMBER_TIER(m),
-		       0LLU, //BCH_MEMBER_HAS_METADATA(m),
-		       0LLU, //BCH_MEMBER_HAS_DATA(m),
+		       data_allowed_str,
+		       data_has_str,
 
 		       BCH_MEMBER_REPLACEMENT(m) < CACHE_REPLACEMENT_NR
 		       ? bch2_cache_replacement_policies[BCH_MEMBER_REPLACEMENT(m)]
