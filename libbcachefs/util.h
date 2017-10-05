@@ -1,5 +1,5 @@
-#ifndef _BCACHE_UTIL_H
-#define _BCACHE_UTIL_H
+#ifndef _BCACHEFS_UTIL_H
+#define _BCACHEFS_UTIL_H
 
 #include <linux/bio.h>
 #include <linux/blkdev.h>
@@ -356,10 +356,12 @@ ssize_t bch2_hprint(char *buf, s64 v);
 
 bool bch2_is_zero(const void *, size_t);
 
-ssize_t bch2_snprint_string_list(char *buf, size_t size, const char * const list[],
-			    size_t selected);
+ssize_t bch2_scnprint_string_list(char *, size_t, const char * const[], size_t);
 
-ssize_t bch2_read_string_list(const char *buf, const char * const list[]);
+ssize_t bch2_read_string_list(const char *, const char * const[]);
+
+ssize_t bch2_scnprint_flag_list(char *, size_t, const char * const[], u64);
+u64 bch2_read_flag_list(char *, const char * const[]);
 
 struct time_stats {
 	spinlock_t	lock;
@@ -787,4 +789,4 @@ void sort_cmp_size(void *base, size_t num, size_t size,
 	  int (*cmp_func)(const void *, const void *, size_t),
 	  void (*swap_func)(void *, void *, size_t));
 
-#endif /* _BCACHE_UTIL_H */
+#endif /* _BCACHEFS_UTIL_H */

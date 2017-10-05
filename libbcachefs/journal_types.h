@@ -1,10 +1,11 @@
-#ifndef _BCACHE_JOURNAL_TYPES_H
-#define _BCACHE_JOURNAL_TYPES_H
+#ifndef _BCACHEFS_JOURNAL_TYPES_H
+#define _BCACHEFS_JOURNAL_TYPES_H
 
 #include <linux/cache.h>
 #include <linux/workqueue.h>
 
 #include "alloc_types.h"
+#include "super_types.h"
 #include "fifo.h"
 
 struct journal_res;
@@ -176,7 +177,7 @@ struct journal {
 	struct list_head	seq_blacklist;
 
 	BKEY_PADDED(key);
-	struct dev_group	devs;
+	struct write_point	wp;
 
 	struct delayed_work	reclaim_work;
 	unsigned long		last_flushed;
@@ -234,4 +235,4 @@ struct journal_device {
 	struct closure		read;
 };
 
-#endif /* _BCACHE_JOURNAL_TYPES_H */
+#endif /* _BCACHEFS_JOURNAL_TYPES_H */

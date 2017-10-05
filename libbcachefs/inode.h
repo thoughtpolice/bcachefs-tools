@@ -1,5 +1,5 @@
-#ifndef _BCACHE_INODE_H
-#define _BCACHE_INODE_H
+#ifndef _BCACHEFS_INODE_H
+#define _BCACHEFS_INODE_H
 
 #include <linux/math64.h>
 
@@ -29,7 +29,8 @@ int bch2_inode_unpack(struct bkey_s_c_inode, struct bch_inode_unpacked *);
 
 void bch2_inode_init(struct bch_fs *, struct bch_inode_unpacked *,
 		    uid_t, gid_t, umode_t, dev_t);
-int bch2_inode_create(struct bch_fs *, struct bkey_i *, u64, u64, u64 *);
+int bch2_inode_create(struct bch_fs *, struct bch_inode_unpacked *,
+		      u64, u64, u64 *);
 int bch2_inode_truncate(struct bch_fs *, u64, u64,
 		       struct extent_insert_hook *, u64 *);
 int bch2_inode_rm(struct bch_fs *, u64);
@@ -60,4 +61,4 @@ void bch2_inode_pack_test(void);
 static inline void bch2_inode_pack_test(void) {}
 #endif
 
-#endif
+#endif /* _BCACHEFS_INODE_H */

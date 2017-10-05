@@ -1,3 +1,4 @@
+#ifndef NO_BCACHEFS_FS
 
 #include "bcachefs.h"
 #include "btree_update.h"
@@ -520,7 +521,7 @@ int bch2_set_page_dirty(struct page *page)
 
 static bool bio_can_add_page_contig(struct bio *bio, struct page *page)
 {
-	sector_t offset = (sector_t) page->index << (PAGE_SHIFT - 9);
+	sector_t offset = (sector_t) page->index << PAGE_SECTOR_SHIFT;
 
 	return bio->bi_vcnt < bio->bi_max_vecs &&
 		bio_end_sector(bio) == offset;
@@ -539,7 +540,7 @@ static void __bio_add_page(struct bio *bio, struct page *page)
 
 static int bio_add_page_contig(struct bio *bio, struct page *page)
 {
-	sector_t offset = (sector_t) page->index << (PAGE_SHIFT - 9);
+	sector_t offset = (sector_t) page->index << PAGE_SECTOR_SHIFT;
 
 	BUG_ON(!bio->bi_max_vecs);
 
@@ -798,9 +799,10 @@ int bch2_readpages(struct file *file, struct address_space *mapping,
 		pagecache_add_get(&mapping->add_lock);
 
 	while ((page = readpage_iter_next(&readpages_iter))) {
-		unsigned n = max(min_t(unsigned, readpages_iter.nr_pages + 1,
-				       BIO_MAX_PAGES),
-				 BCH_ENCODED_EXTENT_MAX >> PAGE_SECTOR_SHIFT);
+		unsigned n = max_t(unsigned,
+				   min_t(unsigned, readpages_iter.nr_pages + 1,
+					 BIO_MAX_PAGES),
+				   c->sb.encoded_extent_max >> PAGE_SECTOR_SHIFT);
 
 		struct bch_read_bio *rbio =
 			to_rbio(bio_alloc_bioset(GFP_NOFS, n, &c->bio_read));
@@ -976,9 +978,10 @@ alloc_io:
 				  (struct disk_reservation) {
 					.nr_replicas = c->opts.data_replicas,
 				  },
-				  foreground_write_point(c, inum),
+				  foreground_write_point(c, ei->last_dirtied),
 				  POS(inum, 0),
-				  &ei->journal_seq, 0);
+				  &ei->journal_seq,
+				  BCH_WRITE_THROTTLE);
 		w->io->op.op.index_update_fn = bchfs_write_index_update;
 	}
 
@@ -1327,6 +1330,7 @@ int bch2_write_end(struct file *filp, struct address_space *mapping,
 		   struct page *page, void *fsdata)
 {
 	struct inode *inode = page->mapping->host;
+	struct bch_inode_info *ei = to_bch_ei(inode);
 	struct bch_fs *c = inode->i_sb->s_fs_info;
 
 	lockdep_assert_held(&inode->i_rwsem);
@@ -1350,6 +1354,8 @@ int bch2_write_end(struct file *filp, struct address_space *mapping,
 			SetPageUptodate(page);
 		if (!PageDirty(page))
 			set_page_dirty(page);
+
+		ei->last_dirtied = (unsigned long) current;
 	} else {
 		bch2_put_page_reservation(c, page);
 	}
@@ -1546,9 +1552,10 @@ static void bch2_do_direct_IO_write(struct dio_write *dio)
 	dio->iop.is_dio		= true;
 	dio->iop.new_i_size	= U64_MAX;
 	bch2_write_op_init(&dio->iop.op, dio->c, dio->res,
-			  foreground_write_point(dio->c, inode->i_ino),
+			  foreground_write_point(dio->c, (unsigned long) current),
 			  POS(inode->i_ino, (dio->offset + dio->written) >> 9),
-			  &ei->journal_seq, flags);
+			  &ei->journal_seq,
+			  flags|BCH_WRITE_THROTTLE);
 	dio->iop.op.index_update_fn = bchfs_write_index_update;
 
 	dio->res.sectors -= bio_sectors(bio);
@@ -1900,10 +1907,10 @@ static int __bch2_truncate_page(struct address_space *mapping,
 		 */
 		for_each_btree_key(&iter, c, BTREE_ID_EXTENTS,
 				   POS(inode->i_ino,
-				       index << (PAGE_SHIFT - 9)), 0, k) {
+				       index << PAGE_SECTOR_SHIFT), 0, k) {
 			if (bkey_cmp(bkey_start_pos(k.k),
 				     POS(inode->i_ino,
-					 (index + 1) << (PAGE_SHIFT - 9))) >= 0)
+					 (index + 1) << PAGE_SECTOR_SHIFT)) >= 0)
 				break;
 
 			if (k.k->type != KEY_TYPE_DISCARD &&
@@ -2022,17 +2029,12 @@ int bch2_truncate(struct inode *inode, struct iattr *iattr)
 	mutex_lock(&ei->update_lock);
 	setattr_copy(inode, iattr);
 	inode->i_mtime = inode->i_ctime = current_fs_time(inode->i_sb);
-
+err:
 	/* clear I_SIZE_DIRTY: */
 	i_size_dirty_put(ei);
 	ret = bch2_write_inode_size(c, ei, inode->i_size);
 	mutex_unlock(&ei->update_lock);
 
-	pagecache_block_put(&mapping->add_lock);
-
-	return 0;
-err:
-	i_size_dirty_put(ei);
 err_put_pagecache:
 	pagecache_block_put(&mapping->add_lock);
 	return ret;
@@ -2566,3 +2568,5 @@ loff_t bch2_llseek(struct file *file, loff_t offset, int whence)
 
 	return -EINVAL;
 }
+
+#endif /* NO_BCACHEFS_FS */

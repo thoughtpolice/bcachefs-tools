@@ -284,7 +284,6 @@ do {									\
 #include "clock_types.h"
 #include "journal_types.h"
 #include "keylist_types.h"
-#include "move_types.h"
 #include "super_types.h"
 
 /* 256k, in sectors */
@@ -330,6 +329,7 @@ struct bch_member_cpu {
 	u8			tier;
 	u8			replacement;
 	u8			discard;
+	u8			data_allowed;
 	u8			valid;
 };
 
@@ -343,6 +343,10 @@ struct bch_replicas_cpu {
 	unsigned		nr;
 	unsigned		entry_size;
 	struct bch_replicas_cpu_entry entries[];
+};
+
+struct io_count {
+	u64			sectors[2][BCH_DATA_NR];
 };
 
 struct bch_dev {
@@ -366,7 +370,7 @@ struct bch_dev {
 	struct bcache_superblock disk_sb;
 	int			sb_write_error;
 
-	struct dev_group	self;
+	struct bch_devs_mask	self;
 
 	/* biosets used in cloned bios for replicas and moving_gc */
 	struct bio_set		replica_set;
@@ -387,7 +391,6 @@ struct bch_dev {
 	spinlock_t		freelist_lock;
 	unsigned		nr_invalidated;
 	bool			alloc_thread_started;
-	bool			need_alloc_write;
 
 	size_t			fifo_last_bucket;
 
@@ -396,7 +399,7 @@ struct bch_dev {
 	/* most out of date gen in the btree */
 	u8			*oldest_gens;
 	struct bucket		*buckets;
-	unsigned short		bucket_bits;	/* ilog2(bucket_size) */
+	unsigned long		*bucket_dirty;
 
 	/* last calculated minimum prio */
 	u16			min_prio[2];
@@ -423,9 +426,6 @@ struct bch_dev {
 
 	struct bch_pd_controller moving_gc_pd;
 
-	/* Tiering: */
-	struct write_point	tiering_write_point;
-
 	struct write_point	copygc_write_point;
 
 	struct journal_device	journal;
@@ -433,9 +433,7 @@ struct bch_dev {
 	struct work_struct	io_error_work;
 
 	/* The rest of this all shows up in sysfs */
-	atomic64_t		meta_sectors_written;
-	atomic64_t		btree_sectors_written;
-	u64 __percpu		*sectors_written;
+	struct io_count __percpu *io_done;
 };
 
 /*
@@ -472,7 +470,8 @@ struct bch_tier {
 	struct task_struct	*migrate;
 	struct bch_pd_controller pd;
 
-	struct dev_group	devs;
+	struct bch_devs_mask	devs;
+	struct write_point	wp;
 };
 
 enum bch_fs_state {
@@ -520,6 +519,7 @@ struct bch_fs {
 
 		u16		block_size;
 		u16		btree_node_size;
+		u16		encoded_extent_max;
 
 		u8		nr_devices;
 		u8		clean;
@@ -621,7 +621,7 @@ struct bch_fs {
 	 * These contain all r/w devices - i.e. devices we can currently
 	 * allocate from:
 	 */
-	struct dev_group	all_devs;
+	struct bch_devs_mask	rw_devs[BCH_DATA_NR];
 	struct bch_tier		tiers[BCH_TIER_MAX];
 	/* NULL if we only have devices in one tier: */
 	struct bch_tier		*fastest_tier;
@@ -787,11 +787,6 @@ struct bch_fs {
 static inline bool bch2_fs_running(struct bch_fs *c)
 {
 	return c->state == BCH_FS_RO || c->state == BCH_FS_RW;
-}
-
-static inline unsigned bucket_pages(const struct bch_dev *ca)
-{
-	return ca->mi.bucket_size / PAGE_SECTORS;
 }
 
 static inline unsigned bucket_bytes(const struct bch_dev *ca)

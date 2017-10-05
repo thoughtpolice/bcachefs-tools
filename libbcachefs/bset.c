@@ -691,7 +691,7 @@ static void make_bfloat(struct btree *b, struct bset_tree *t,
 	struct bkey_packed *l, *r;
 	unsigned bits = j < BFLOAT_32BIT_NR ? 32 : 16;
 	unsigned mantissa;
-	int shift, exponent;
+	int shift, exponent, high_bit;
 
 	EBUG_ON(bkey_next(p) != m);
 
@@ -737,7 +737,8 @@ static void make_bfloat(struct btree *b, struct bset_tree *t,
 	 */
 
 	if (!bkey_packed(l) || !bkey_packed(r) ||
-	    !bkey_packed(p) || !bkey_packed(m)) {
+	    !bkey_packed(p) || !bkey_packed(m) ||
+	    !b->nr_key_bits) {
 		f->exponent = BFLOAT_FAILED_UNPACKED;
 		return;
 	}
@@ -752,7 +753,9 @@ static void make_bfloat(struct btree *b, struct bset_tree *t,
 	 * Note that this may be negative - we may be running off the low end
 	 * of the key: we handle this later:
 	 */
-	exponent = (int) bch2_bkey_greatest_differing_bit(b, l, r) - (bits - 1);
+	high_bit = max(bch2_bkey_greatest_differing_bit(b, l, r),
+		       min_t(unsigned, bits, b->nr_key_bits) - 1);
+	exponent = high_bit - (bits - 1);
 
 	/*
 	 * Then we calculate the actual shift value, from the start of the key
@@ -761,16 +764,16 @@ static void make_bfloat(struct btree *b, struct bset_tree *t,
 #ifdef __LITTLE_ENDIAN
 	shift = (int) (b->format.key_u64s * 64 - b->nr_key_bits) + exponent;
 
-	EBUG_ON(shift + bits > b->format.key_u64s * 64);
+	BUG_ON(shift + bits > b->format.key_u64s * 64);
 #else
 	shift = high_bit_offset +
 		b->nr_key_bits -
 		exponent -
 		bits;
 
-	EBUG_ON(shift < KEY_PACKED_BITS_START);
+	BUG_ON(shift < KEY_PACKED_BITS_START);
 #endif
-	EBUG_ON(shift < 0 || shift >= BFLOAT_FAILED);
+	BUG_ON(shift < 0 || shift >= BFLOAT_FAILED);
 
 	f->exponent = shift;
 	mantissa = bkey_mantissa(m, f, j);

@@ -1,3 +1,4 @@
+#ifndef NO_BCACHEFS_FS
 
 #include "bcachefs.h"
 #include "acl.h"
@@ -18,8 +19,10 @@
 #include <linux/aio.h>
 #include <linux/backing-dev.h>
 #include <linux/compat.h>
+#include <linux/exportfs.h>
 #include <linux/module.h>
 #include <linux/mount.h>
+#include <linux/posix_acl.h>
 #include <linux/random.h>
 #include <linux/statfs.h>
 #include <linux/xattr.h>
@@ -208,7 +211,6 @@ static struct inode *bch2_vfs_inode_create(struct bch_fs *c,
 	struct posix_acl *default_acl = NULL, *acl = NULL;
 	struct bch_inode_info *ei;
 	struct bch_inode_unpacked inode_u;
-	struct bkey_inode_buf inode_p;
 	int ret;
 
 	inode = new_inode(parent->i_sb);
@@ -227,9 +229,7 @@ static struct inode *bch2_vfs_inode_create(struct bch_fs *c,
 
 	bch2_inode_init(c, &inode_u, i_uid_read(inode),
 		       i_gid_read(inode), inode->i_mode, rdev);
-	bch2_inode_pack(&inode_p, &inode_u);
-
-	ret = bch2_inode_create(c, &inode_p.inode.k_i,
+	ret = bch2_inode_create(c, &inode_u,
 			       BLOCKDEV_INODE_MAX, 0,
 			       &c->unused_inode_hint);
 	if (unlikely(ret)) {
@@ -241,7 +241,6 @@ static struct inode *bch2_vfs_inode_create(struct bch_fs *c,
 		goto err;
 	}
 
-	inode_u.inum = inode_p.inode.k.p.inode;
 	bch2_vfs_inode_init(c, ei, &inode_u);
 
 	if (default_acl) {
@@ -1022,6 +1021,45 @@ static const struct address_space_operations bch_address_space_operations = {
 	.error_remove_page = generic_error_remove_page,
 };
 
+static struct inode *bch2_nfs_get_inode(struct super_block *sb,
+		u64 ino, u32 generation)
+{
+	struct inode *inode;
+
+	if (ino < BCACHEFS_ROOT_INO)
+		return ERR_PTR(-ESTALE);
+
+	inode = bch2_vfs_inode_get(sb, ino);
+	if (IS_ERR(inode))
+		return ERR_CAST(inode);
+	if (generation && inode->i_generation != generation) {
+		/* we didn't find the right inode.. */
+		iput(inode);
+		return ERR_PTR(-ESTALE);
+	}
+	return inode;
+}
+
+static struct dentry *bch2_fh_to_dentry(struct super_block *sb, struct fid *fid,
+		int fh_len, int fh_type)
+{
+	return generic_fh_to_dentry(sb, fid, fh_len, fh_type,
+				    bch2_nfs_get_inode);
+}
+
+static struct dentry *bch2_fh_to_parent(struct super_block *sb, struct fid *fid,
+		int fh_len, int fh_type)
+{
+	return generic_fh_to_parent(sb, fid, fh_len, fh_type,
+				    bch2_nfs_get_inode);
+}
+
+static const struct export_operations bch_export_ops = {
+	.fh_to_dentry	= bch2_fh_to_dentry,
+	.fh_to_parent	= bch2_fh_to_parent,
+	//.get_parent	= bch2_get_parent,
+};
+
 static void bch2_vfs_inode_init(struct bch_fs *c,
 				struct bch_inode_info *ei,
 				struct bch_inode_unpacked *bi)
@@ -1154,7 +1192,7 @@ static int bch2_statfs(struct dentry *dentry, struct kstatfs *buf)
 	struct bch_fs *c = sb->s_fs_info;
 	u64 fsid;
 
-	buf->f_type	= BCACHE_STATFS_MAGIC;
+	buf->f_type	= BCACHEFS_STATFS_MAGIC;
 	buf->f_bsize	= sb->s_blocksize;
 	buf->f_blocks	= c->capacity >> PAGE_SECTOR_SHIFT;
 	buf->f_bfree	= (c->capacity - bch2_fs_sectors_used(c)) >> PAGE_SECTOR_SHIFT;
@@ -1371,8 +1409,9 @@ static struct dentry *bch2_mount(struct file_system_type *fs_type,
 	sb->s_blocksize_bits	= PAGE_SHIFT;
 	sb->s_maxbytes		= MAX_LFS_FILESIZE;
 	sb->s_op		= &bch_super_operations;
+	sb->s_export_op		= &bch_export_ops;
 	sb->s_xattr		= bch2_xattr_handlers;
-	sb->s_magic		= BCACHE_STATFS_MAGIC;
+	sb->s_magic		= BCACHEFS_STATFS_MAGIC;
 	sb->s_time_gran		= c->sb.time_precision;
 	c->vfs_sb		= sb;
 	sb->s_bdi		= &c->bdi;
@@ -1393,7 +1432,7 @@ static struct dentry *bch2_mount(struct file_system_type *fs_type,
 	else
 		sb->s_flags	|= opts.posix_acl ? MS_POSIXACL : 0;
 
-	inode = bch2_vfs_inode_get(sb, BCACHE_ROOT_INO);
+	inode = bch2_vfs_inode_get(sb, BCACHEFS_ROOT_INO);
 	if (IS_ERR(inode)) {
 		ret = PTR_ERR(inode);
 		goto err_put_super;
@@ -1480,3 +1519,5 @@ err:
 	bch2_vfs_exit();
 	return ret;
 }
+
+#endif /* NO_BCACHEFS_FS */

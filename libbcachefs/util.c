@@ -98,44 +98,95 @@ ssize_t bch2_hprint(char *buf, s64 v)
 	 * to turn it into [-9, 9]
 	 */
 	if (v < 100 && v > -100)
-		snprintf(dec, sizeof(dec), ".%i", t / 103);
+		scnprintf(dec, sizeof(dec), ".%i", t / 103);
 
 	return sprintf(buf, "%lli%s%c", v, dec, units[u]);
 }
 
-ssize_t bch2_snprint_string_list(char *buf, size_t size, const char * const list[],
-			    size_t selected)
+ssize_t bch2_scnprint_string_list(char *buf, size_t size,
+				  const char * const list[],
+				  size_t selected)
 {
 	char *out = buf;
 	size_t i;
 
-	for (i = 0; list[i]; i++)
-		out += snprintf(out, buf + size - out,
-				i == selected ? "[%s] " : "%s ", list[i]);
+	if (size)
+		*out = '\0';
 
-	out[-1] = '\n';
+	for (i = 0; list[i]; i++)
+		out += scnprintf(out, buf + size - out,
+				 i == selected ? "[%s] " : "%s ", list[i]);
+
+	if (out != buf)
+		*--out = '\0';
+
 	return out - buf;
 }
 
 ssize_t bch2_read_string_list(const char *buf, const char * const list[])
 {
-	size_t i;
-	char *s, *d = kstrndup(buf, PAGE_SIZE - 1, GFP_KERNEL);
+	size_t i, len;
+
+	buf = skip_spaces(buf);
+
+	len = strlen(buf);
+	while (len && isspace(buf[len - 1]))
+		--len;
+
+	for (i = 0; list[i]; i++)
+		if (strlen(list[i]) == len &&
+		    !memcmp(buf, list[i], len))
+			break;
+
+	return list[i] ? i : -EINVAL;
+}
+
+ssize_t bch2_scnprint_flag_list(char *buf, size_t size,
+				const char * const list[], u64 flags)
+{
+	char *out = buf, *end = buf + size;
+	unsigned bit, nr = 0;
+
+	while (list[nr])
+		nr++;
+
+	if (size)
+		*out = '\0';
+
+	while (flags && (bit = __ffs(flags)) < nr) {
+		out += scnprintf(out, end - out, "%s,", list[bit]);
+		flags ^= 1 << bit;
+	}
+
+	if (out != buf)
+		*--out = '\0';
+
+	return out - buf;
+}
+
+u64 bch2_read_flag_list(char *opt, const char * const list[])
+{
+	u64 ret = 0;
+	char *p, *s, *d = kstrndup(opt, PAGE_SIZE - 1, GFP_KERNEL);
+
 	if (!d)
 		return -ENOMEM;
 
 	s = strim(d);
 
-	for (i = 0; list[i]; i++)
-		if (!strcmp(list[i], s))
+	while ((p = strsep(&s, ","))) {
+		int flag = bch2_read_string_list(p, list);
+		if (flag < 0) {
+			ret = -1;
 			break;
+		}
+
+		ret |= 1 << flag;
+	}
 
 	kfree(d);
 
-	if (!list[i])
-		return -EINVAL;
-
-	return i;
+	return ret;
 }
 
 bool bch2_is_zero(const void *_p, size_t n)

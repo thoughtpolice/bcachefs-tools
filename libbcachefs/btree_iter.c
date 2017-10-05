@@ -249,10 +249,10 @@ fail:
 
 static void __bch2_btree_iter_unlock(struct btree_iter *iter)
 {
+	iter->flags &= ~BTREE_ITER_UPTODATE;
+
 	while (iter->nodes_locked)
 		btree_node_unlock(iter, __ffs(iter->nodes_locked));
-
-	iter->flags &= ~BTREE_ITER_UPTODATE;
 }
 
 int bch2_btree_iter_unlock(struct btree_iter *iter)
@@ -627,9 +627,9 @@ void bch2_btree_iter_node_drop(struct btree_iter *iter, struct btree *b)
 	unsigned level = b->level;
 
 	if (iter->nodes[level] == b) {
+		iter->flags &= ~BTREE_ITER_UPTODATE;
 		btree_node_unlock(iter, level);
 		iter->nodes[level] = BTREE_ITER_NOT_END;
-		iter->flags &= ~BTREE_ITER_UPTODATE;
 	}
 }
 
@@ -840,6 +840,11 @@ int __must_check __bch2_btree_iter_traverse(struct btree_iter *iter)
 {
 	unsigned depth_want = iter->level;
 
+	if (unlikely(!iter->nodes[iter->level]))
+		return 0;
+
+	iter->flags &= ~(BTREE_ITER_UPTODATE|BTREE_ITER_AT_END_OF_LEAF);
+
 	/* make sure we have all the intent locks we need - ugh */
 	if (unlikely(iter->nodes[iter->level] &&
 		     iter->level + 1 < iter->locks_want)) {
@@ -893,6 +898,7 @@ int __must_check __bch2_btree_iter_traverse(struct btree_iter *iter)
 			: btree_iter_lock_root(iter, depth_want);
 		if (unlikely(ret)) {
 			iter->level = depth_want;
+			iter->nodes[iter->level] = BTREE_ITER_NOT_END;
 			return ret;
 		}
 	}
@@ -903,13 +909,6 @@ int __must_check __bch2_btree_iter_traverse(struct btree_iter *iter)
 int __must_check bch2_btree_iter_traverse(struct btree_iter *iter)
 {
 	int ret;
-
-	iter->flags &= ~BTREE_ITER_UPTODATE;
-
-	if (unlikely(!iter->nodes[iter->level]))
-		return 0;
-
-	iter->flags &= ~BTREE_ITER_AT_END_OF_LEAF;
 
 	ret = __bch2_btree_iter_traverse(iter);
 	if (unlikely(ret))
@@ -1067,6 +1066,8 @@ struct bkey_s_c bch2_btree_iter_peek(struct btree_iter *iter)
 			.k = &iter->k,
 			.v = bkeyp_val(&b->format, k)
 		};
+
+		EBUG_ON(!btree_node_locked(iter, 0));
 
 		if (debug_check_bkeys(iter->c))
 			bch2_bkey_debugcheck(iter->c, b, ret);

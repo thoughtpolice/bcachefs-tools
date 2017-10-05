@@ -1,5 +1,5 @@
-#ifndef _BCACHE_BTREE_CACHE_H
-#define _BCACHE_BTREE_CACHE_H
+#ifndef _BCACHEFS_BTREE_CACHE_H
+#define _BCACHEFS_BTREE_CACHE_H
 
 #include "bcachefs.h"
 #include "btree_types.h"
@@ -59,14 +59,14 @@ static inline size_t btree_max_u64s(struct bch_fs *c)
 	return (btree_bytes(c) - sizeof(struct btree_node)) / sizeof(u64);
 }
 
-static inline size_t btree_pages(struct bch_fs *c)
-{
-	return c->sb.btree_node_size >> (PAGE_SHIFT - 9);
-}
-
 static inline size_t btree_page_order(struct bch_fs *c)
 {
-	return ilog2(btree_pages(c));
+	return get_order(btree_bytes(c));
+}
+
+static inline size_t btree_pages(struct bch_fs *c)
+{
+	return 1 << btree_page_order(c);
 }
 
 static inline unsigned btree_blocks(struct bch_fs *c)
@@ -86,4 +86,4 @@ static inline unsigned btree_blocks(struct bch_fs *c)
 int bch2_print_btree_node(struct bch_fs *, struct btree *,
 			 char *, size_t);
 
-#endif /* _BCACHE_BTREE_CACHE_H */
+#endif /* _BCACHEFS_BTREE_CACHE_H */

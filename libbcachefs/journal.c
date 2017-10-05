@@ -1274,9 +1274,14 @@ static int journal_entry_sectors(struct journal *j)
 
 	lockdep_assert_held(&j->lock);
 
-	spin_lock(&j->devs.lock);
-	group_for_each_dev(ca, &j->devs, i) {
+	rcu_read_lock();
+	for_each_member_device_rcu(ca, c, i,
+				   &c->rw_devs[BCH_DATA_JOURNAL]) {
+		struct journal_device *ja = &ca->journal;
 		unsigned buckets_required = 0;
+
+		if (!ja->nr)
+			continue;
 
 		sectors_available = min_t(unsigned, sectors_available,
 					  ca->mi.bucket_size);
@@ -1288,11 +1293,11 @@ static int journal_entry_sectors(struct journal *j)
 		 * it too:
 		 */
 		if (bch2_extent_has_device(e.c, ca->dev_idx)) {
-			if (j->prev_buf_sectors > ca->journal.sectors_free)
+			if (j->prev_buf_sectors > ja->sectors_free)
 				buckets_required++;
 
 			if (j->prev_buf_sectors + sectors_available >
-			    ca->journal.sectors_free)
+			    ja->sectors_free)
 				buckets_required++;
 		} else {
 			if (j->prev_buf_sectors + sectors_available >
@@ -1306,7 +1311,7 @@ static int journal_entry_sectors(struct journal *j)
 			nr_devs++;
 		nr_online++;
 	}
-	spin_unlock(&j->devs.lock);
+	rcu_read_unlock();
 
 	if (nr_online < c->opts.metadata_replicas_required)
 		return -EROFS;
@@ -1542,7 +1547,7 @@ static int bch2_set_nr_journal_buckets(struct bch_fs *c, struct bch_dev *ca,
 	 */
 
 	if (bch2_disk_reservation_get(c, &disk_res,
-			(nr - ja->nr) << ca->bucket_bits, 0))
+			bucket_to_sector(ca, nr - ja->nr), 0))
 		return -ENOSPC;
 
 	mutex_lock(&c->sb_lock);
@@ -1566,7 +1571,7 @@ static int bch2_set_nr_journal_buckets(struct bch_fs *c, struct bch_dev *ca,
 
 	while (ja->nr < nr) {
 		/* must happen under journal lock, to avoid racing with gc: */
-		long b = bch2_bucket_alloc(c, ca, RESERVE_NONE);
+		long b = bch2_bucket_alloc(c, ca, RESERVE_ALLOC);
 		if (b < 0) {
 			if (!closure_wait(&c->freelist_wait, &cl)) {
 				spin_unlock(&j->lock);
@@ -1969,7 +1974,7 @@ static int journal_write_alloc(struct journal *j, unsigned sectors)
 	struct bch_extent_ptr *ptr;
 	struct journal_device *ja;
 	struct bch_dev *ca;
-	bool swapped;
+	struct dev_alloc_list devs_sorted;
 	unsigned i, replicas, replicas_want =
 		READ_ONCE(c->opts.metadata_replicas);
 
@@ -1996,26 +2001,18 @@ static int journal_write_alloc(struct journal *j, unsigned sectors)
 
 	replicas = bch2_extent_nr_ptrs(e.c);
 
-	spin_lock(&j->devs.lock);
+	rcu_read_lock();
+	devs_sorted = bch2_wp_alloc_list(c, &j->wp,
+					 &c->rw_devs[BCH_DATA_JOURNAL]);
 
-	/* Sort by tier: */
-	do {
-		swapped = false;
+	for (i = 0; i < devs_sorted.nr; i++) {
+		ca = rcu_dereference(c->devs[devs_sorted.devs[i]]);
+		if (!ca)
+			continue;
 
-		for (i = 0; i + 1 < j->devs.nr; i++)
-			if (j->devs.d[i + 0].dev->mi.tier >
-			    j->devs.d[i + 1].dev->mi.tier) {
-				swap(j->devs.d[i], j->devs.d[i + 1]);
-				swapped = true;
-			}
-	} while (swapped);
-
-	/*
-	 * Pick devices for next journal write:
-	 * XXX: sort devices by free journal space?
-	 */
-	group_for_each_dev(ca, &j->devs, i) {
 		ja = &ca->journal;
+		if (!ja->nr)
+			continue;
 
 		if (replicas >= replicas_want)
 			break;
@@ -2029,6 +2026,9 @@ static int journal_write_alloc(struct journal *j, unsigned sectors)
 		    sectors > ca->mi.bucket_size)
 			continue;
 
+		j->wp.next_alloc[ca->dev_idx] += U32_MAX;
+		bch2_wp_rescale(c, ca, &j->wp);
+
 		ja->sectors_free = ca->mi.bucket_size - sectors;
 		ja->cur_idx = (ja->cur_idx + 1) % ja->nr;
 		ja->bucket_seq[ja->cur_idx] = atomic64_read(&j->seq);
@@ -2041,7 +2041,7 @@ static int journal_write_alloc(struct journal *j, unsigned sectors)
 		});
 		replicas++;
 	}
-	spin_unlock(&j->devs.lock);
+	rcu_read_unlock();
 
 	j->prev_buf_sectors = 0;
 	spin_unlock(&j->lock);
@@ -2280,7 +2280,8 @@ static void journal_write(struct closure *cl)
 			continue;
 		}
 
-		atomic64_add(sectors, &ca->meta_sectors_written);
+		this_cpu_add(ca->io_done->sectors[WRITE][BCH_DATA_JOURNAL],
+			     sectors);
 
 		ca->journal.ptr_idx	= ptr_idx++;
 		bio = ca->journal.bio;
@@ -2682,6 +2683,7 @@ int bch2_journal_flush(struct journal *j)
 
 ssize_t bch2_journal_print_debug(struct journal *j, char *buf)
 {
+	struct bch_fs *c = container_of(j, struct bch_fs, journal);
 	union journal_res_state *s = &j->reservations;
 	struct bch_dev *ca;
 	unsigned iter;
@@ -2714,9 +2716,12 @@ ssize_t bch2_journal_print_debug(struct journal *j, char *buf)
 			 journal_entry_is_open(j),
 			 test_bit(JOURNAL_REPLAY_DONE,	&j->flags));
 
-	spin_lock(&j->devs.lock);
-	group_for_each_dev(ca, &j->devs, iter) {
+	for_each_member_device_rcu(ca, c, iter,
+				   &c->rw_devs[BCH_DATA_JOURNAL]) {
 		struct journal_device *ja = &ca->journal;
+
+		if (!ja->nr)
+			continue;
 
 		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 				 "dev %u:\n"
@@ -2727,7 +2732,6 @@ ssize_t bch2_journal_print_debug(struct journal *j, char *buf)
 				 ja->cur_idx,	ja->bucket_seq[ja->cur_idx],
 				 ja->last_idx,	ja->bucket_seq[ja->last_idx]);
 	}
-	spin_unlock(&j->devs.lock);
 
 	spin_unlock(&j->lock);
 	rcu_read_unlock();
@@ -2911,7 +2915,6 @@ int bch2_fs_journal_init(struct journal *j)
 	INIT_DELAYED_WORK(&j->reclaim_work, journal_reclaim_work);
 	mutex_init(&j->blacklist_lock);
 	INIT_LIST_HEAD(&j->seq_blacklist);
-	spin_lock_init(&j->devs.lock);
 	mutex_init(&j->reclaim_lock);
 
 	lockdep_init_map(&j->res_map, "journal res", &res_key, 0);

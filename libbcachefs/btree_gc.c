@@ -129,7 +129,7 @@ static u8 bch2_btree_mark_key(struct bch_fs *c, enum bkey_type type,
 int bch2_btree_mark_key_initial(struct bch_fs *c, enum bkey_type type,
 				struct bkey_s_c k)
 {
-	enum bch_data_types data_type = type == BKEY_TYPE_BTREE
+	enum bch_data_type data_type = type == BKEY_TYPE_BTREE
 		? BCH_DATA_BTREE : BCH_DATA_USER;
 	int ret = 0;
 
@@ -152,20 +152,23 @@ int bch2_btree_mark_key_initial(struct bch_fs *c, enum bkey_type type,
 			struct bch_dev *ca = c->devs[ptr->dev];
 			struct bucket *g = PTR_BUCKET(ca, ptr);
 
-			if (!g->mark.gen_valid) {
+			if (mustfix_fsck_err_on(!g->mark.gen_valid, c,
+					"found ptr with missing gen in alloc btree,\n"
+					"type %s gen %u",
+					bch2_data_types[data_type],
+					ptr->gen)) {
 				g->_mark.gen = ptr->gen;
 				g->_mark.gen_valid = 1;
-				ca->need_alloc_write = true;
+				set_bit(g - ca->buckets, ca->bucket_dirty);
 			}
 
-			if (fsck_err_on(gen_cmp(ptr->gen, g->mark.gen) > 0, c,
+			if (mustfix_fsck_err_on(gen_cmp(ptr->gen, g->mark.gen) > 0, c,
 					"%s ptr gen in the future: %u > %u",
-					type == BKEY_TYPE_BTREE
-					? "btree" : "data",
+					bch2_data_types[data_type],
 					ptr->gen, g->mark.gen)) {
 				g->_mark.gen = ptr->gen;
 				g->_mark.gen_valid = 1;
-				ca->need_alloc_write = true;
+				set_bit(g - ca->buckets, ca->bucket_dirty);
 				set_bit(BCH_FS_FIXED_GENS, &c->flags);
 			}
 
@@ -308,12 +311,12 @@ static void bch2_mark_allocator_buckets(struct bch_fs *c)
 static void mark_metadata_sectors(struct bch_dev *ca, u64 start, u64 end,
 				  enum bucket_data_type type)
 {
-	u64 b = start >> ca->bucket_bits;
+	u64 b = sector_to_bucket(ca, start);
 
 	do {
 		bch2_mark_metadata_bucket(ca, ca->buckets + b, type, true);
 		b++;
-	} while (b < end >> ca->bucket_bits);
+	} while (b < sector_to_bucket(ca, end));
 }
 
 static void bch2_dev_mark_superblocks(struct bch_dev *ca)
@@ -608,7 +611,7 @@ static void bch2_coalesce_nodes(struct bch_fs *c, struct btree_iter *iter,
 		return;
 	}
 
-	trace_btree_gc_coalesce(c, parent, nr_old_nodes);
+	trace_btree_gc_coalesce(c, old_nodes[0]);
 
 	for (i = 0; i < nr_old_nodes; i++)
 		bch2_btree_interior_update_will_free_node(as, old_nodes[i]);

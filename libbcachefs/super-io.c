@@ -314,16 +314,12 @@ const char *bch2_sb_validate(struct bcache_superblock *disk_sb)
 	const char *err;
 	u16 block_size;
 
-	switch (le64_to_cpu(sb->version)) {
-	case BCACHE_SB_VERSION_CDEV_V4:
-		break;
-	default:
+	if (le64_to_cpu(sb->version) < BCH_SB_VERSION_MIN ||
+	    le64_to_cpu(sb->version) > BCH_SB_VERSION_MAX)
 		return"Unsupported superblock version";
-	}
 
-	if (BCH_SB_INITIALIZED(sb) &&
-	    le64_to_cpu(sb->version) != BCACHE_SB_VERSION_CDEV_V4)
-		return "Unsupported superblock version";
+	if (le64_to_cpu(sb->version) < BCH_SB_VERSION_EXTENT_MAX)
+		SET_BCH_SB_ENCODED_EXTENT_MAX_BITS(sb, 7);
 
 	block_size = le16_to_cpu(sb->block_size);
 
@@ -397,15 +393,22 @@ const char *bch2_sb_validate(struct bcache_superblock *disk_sb)
 	sb_mi = bch2_sb_get_members(sb);
 	mi = bch2_mi_to_cpu(sb_mi->members + sb->dev_idx);
 
+	if (le64_to_cpu(sb->version) < BCH_SB_VERSION_EXTENT_MAX) {
+		struct bch_member *m;
+
+		for (m = sb_mi->members;
+		     m < sb_mi->members + sb->nr_devices;
+		     m++)
+			SET_BCH_MEMBER_DATA_ALLOWED(m, ~0);
+	}
+
 	if (mi.nbuckets > LONG_MAX)
 		return "Too many buckets";
 
 	if (mi.nbuckets - mi.first_bucket < 1 << 10)
 		return "Not enough buckets";
 
-	if (!is_power_of_2(mi.bucket_size) ||
-	    mi.bucket_size < PAGE_SECTORS ||
-	    mi.bucket_size < block_size)
+	if (mi.bucket_size < block_size)
 		return "Bad bucket size";
 
 	if (get_capacity(disk_sb->bdev->bd_disk) <
@@ -419,6 +422,8 @@ const char *bch2_sb_validate(struct bcache_superblock *disk_sb)
 	err = bch2_sb_validate_replicas(sb);
 	if (err)
 		return err;
+
+	sb->version = cpu_to_le64(BCH_SB_VERSION_MAX);
 
 	return NULL;
 }
@@ -463,6 +468,7 @@ static void bch2_sb_update(struct bch_fs *c)
 	c->sb.clean		= BCH_SB_CLEAN(src);
 	c->sb.str_hash_type	= BCH_SB_STR_HASH_TYPE(src);
 	c->sb.encryption_type	= BCH_SB_ENCRYPTION_TYPE(src);
+	c->sb.encoded_extent_max= 1 << BCH_SB_ENCODED_EXTENT_MAX_BITS(src);
 	c->sb.time_base_lo	= le64_to_cpu(src->time_base_lo);
 	c->sb.time_base_hi	= le32_to_cpu(src->time_base_hi);
 	c->sb.time_precision	= le32_to_cpu(src->time_precision);
@@ -570,8 +576,9 @@ reread:
 	if (uuid_le_cmp(sb->sb->magic, BCACHE_MAGIC))
 		return "Not a bcachefs superblock";
 
-	if (le64_to_cpu(sb->sb->version) != BCACHE_SB_VERSION_CDEV_V4)
-		return "Unsupported superblock version";
+	if (le64_to_cpu(sb->sb->version) < BCH_SB_VERSION_MIN ||
+	    le64_to_cpu(sb->sb->version) > BCH_SB_VERSION_MAX)
+		return"Unsupported superblock version";
 
 	bytes = vstruct_bytes(sb->sb);
 
@@ -729,6 +736,9 @@ static void write_one_super(struct bch_fs *c, struct bch_dev *ca, unsigned idx)
 	bio_set_op_attrs(bio, REQ_OP_WRITE, REQ_SYNC|REQ_META);
 	bch2_bio_map(bio, sb);
 
+	this_cpu_add(ca->io_done->sectors[WRITE][BCH_DATA_SB],
+		     bio_sectors(bio));
+
 	percpu_ref_get(&ca->io_ref);
 	closure_bio_submit(bio, &c->sb_write);
 }
@@ -784,7 +794,7 @@ void bch2_write_super(struct bch_fs *c)
 		if (ca->sb_write_error)
 			__clear_bit(ca->dev_idx, sb_written.d);
 
-	nr_wrote = bitmap_weight(sb_written.d, BCH_SB_MEMBERS_MAX);
+	nr_wrote = dev_mask_nr(&sb_written);
 
 	can_mount_with_written =
 		bch2_have_enough_devs(c,
@@ -823,17 +833,6 @@ cpu_replicas_entry(struct bch_replicas_cpu *r, unsigned i)
 {
 	return (void *) r->entries + r->entry_size * i;
 }
-
-static inline struct bch_replicas_entry *
-replicas_entry_next(struct bch_replicas_entry *i)
-{
-	return (void *) i + offsetof(struct bch_replicas_entry, devs) + i->nr;
-}
-
-#define for_each_replicas_entry(_r, _i)					\
-	for (_i = (_r)->entries;					\
-	     (void *) (_i) < vstruct_end(&(_r)->field) && (_i)->data_type;\
-	     (_i) = replicas_entry_next(_i))
 
 static inline bool replicas_test_dev(struct bch_replicas_cpu_entry *e,
 				     unsigned dev)
@@ -939,7 +938,7 @@ static int bch2_sb_replicas_to_cpu_replicas(struct bch_fs *c)
 }
 
 static void bkey_to_replicas(struct bkey_s_c_extent e,
-			     enum bch_data_types data_type,
+			     enum bch_data_type data_type,
 			     struct bch_replicas_cpu_entry *r,
 			     unsigned *max_dev)
 {
@@ -967,7 +966,7 @@ static void bkey_to_replicas(struct bkey_s_c_extent e,
 static int bch2_update_gc_replicas(struct bch_fs *c,
 				   struct bch_replicas_cpu *gc_r,
 				   struct bkey_s_c_extent e,
-				   enum bch_data_types data_type)
+				   enum bch_data_type data_type)
 {
 	struct bch_replicas_cpu_entry new_e;
 	struct bch_replicas_cpu *new;
@@ -1009,7 +1008,7 @@ static int bch2_update_gc_replicas(struct bch_fs *c,
 
 static bool replicas_has_extent(struct bch_replicas_cpu *r,
 				struct bkey_s_c_extent e,
-				enum bch_data_types data_type)
+				enum bch_data_type data_type)
 {
 	struct bch_replicas_cpu_entry search;
 	unsigned max_dev;
@@ -1023,7 +1022,7 @@ static bool replicas_has_extent(struct bch_replicas_cpu *r,
 }
 
 bool bch2_sb_has_replicas(struct bch_fs *c, struct bkey_s_c_extent e,
-			  enum bch_data_types data_type)
+			  enum bch_data_type data_type)
 {
 	bool ret;
 
@@ -1038,7 +1037,7 @@ bool bch2_sb_has_replicas(struct bch_fs *c, struct bkey_s_c_extent e,
 noinline
 static int bch2_check_mark_super_slowpath(struct bch_fs *c,
 					  struct bkey_s_c_extent e,
-					  enum bch_data_types data_type)
+					  enum bch_data_type data_type)
 {
 	struct bch_replicas_cpu *gc_r;
 	const struct bch_extent_ptr *ptr;
@@ -1103,7 +1102,7 @@ err:
 }
 
 int bch2_check_mark_super(struct bch_fs *c, struct bkey_s_c_extent e,
-			  enum bch_data_types data_type)
+			  enum bch_data_type data_type)
 {
 	struct bch_replicas_cpu *gc_r;
 	bool marked;

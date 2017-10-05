@@ -1292,6 +1292,9 @@ void bch2_btree_node_read(struct bch_fs *c, struct btree *b,
 	bio->bi_iter.bi_size	= btree_bytes(c);
 	bch2_bio_map(bio, b->data);
 
+	this_cpu_add(pick.ca->io_done->sectors[READ][BCH_DATA_BTREE],
+		     bio_sectors(bio));
+
 	set_btree_node_read_in_flight(b);
 
 	if (sync) {
@@ -1702,13 +1705,9 @@ void __bch2_btree_node_write(struct bch_fs *c, struct btree *b,
 	extent_for_each_ptr(e, ptr)
 		ptr->offset += b->written;
 
-	extent_for_each_ptr(e, ptr)
-		atomic64_add(sectors_to_write,
-			     &c->devs[ptr->dev]->btree_sectors_written);
-
 	b->written += sectors_to_write;
 
-	bch2_submit_wbio_replicas(wbio, c, &k.key);
+	bch2_submit_wbio_replicas(wbio, c, BCH_DATA_BTREE, &k.key);
 	return;
 err:
 	set_btree_node_noevict(b);

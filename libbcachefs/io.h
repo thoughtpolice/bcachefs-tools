@@ -1,5 +1,5 @@
-#ifndef _BCACHE_IO_H
-#define _BCACHE_IO_H
+#ifndef _BCACHEFS_IO_H
+#define _BCACHEFS_IO_H
 
 #include <linux/hash.h>
 #include "io_types.h"
@@ -14,19 +14,19 @@ void bch2_bio_free_pages_pool(struct bch_fs *, struct bio *);
 void bch2_bio_alloc_pages_pool(struct bch_fs *, struct bio *, size_t);
 
 void bch2_submit_wbio_replicas(struct bch_write_bio *, struct bch_fs *,
-			       const struct bkey_i *);
+			       enum bch_data_type, const struct bkey_i *);
 
 enum bch_write_flags {
 	BCH_WRITE_ALLOC_NOWAIT		= (1 << 0),
 	BCH_WRITE_CACHED		= (1 << 1),
 	BCH_WRITE_FLUSH			= (1 << 2),
 	BCH_WRITE_DATA_COMPRESSED	= (1 << 3),
+	BCH_WRITE_THROTTLE		= (1 << 4),
 
 	/* Internal: */
-	BCH_WRITE_JOURNAL_SEQ_PTR	= (1 << 4),
-	BCH_WRITE_DONE			= (1 << 5),
-	BCH_WRITE_LOOPED		= (1 << 6),
-	__BCH_WRITE_KEYLIST_LOCKED	= 8,
+	BCH_WRITE_JOURNAL_SEQ_PTR	= (1 << 5),
+	BCH_WRITE_DONE			= (1 << 6),
+	BCH_WRITE_LOOPED		= (1 << 7),
 };
 
 static inline u64 *op_journal_seq(struct bch_write_op *op)
@@ -105,4 +105,4 @@ static inline struct bch_read_bio *rbio_init(struct bio *bio)
 	return rbio;
 }
 
-#endif /* _BCACHE_IO_H */
+#endif /* _BCACHEFS_IO_H */

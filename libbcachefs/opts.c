@@ -32,6 +32,15 @@ const char * const bch2_str_hash_types[] = {
 	NULL
 };
 
+const char * const bch2_data_types[] = {
+	"none",
+	"sb",
+	"journal",
+	"btree",
+	"data",
+	NULL
+};
+
 const char * const bch2_cache_replacement_policies[] = {
 	"lru",
 	"fifo",
@@ -224,7 +233,7 @@ enum bch_opt_id bch2_parse_sysfs_opt(const char *name, const char *val,
 }
 
 ssize_t bch2_opt_show(struct bch_opts *opts, const char *name,
-		     char *buf, size_t size)
+		      char *buf, size_t size)
 {
 	int id = bch2_opt_lookup(name);
 	const struct bch_option *opt;
@@ -237,6 +246,6 @@ ssize_t bch2_opt_show(struct bch_opts *opts, const char *name,
 	opt = &bch2_opt_table[id];
 
 	return opt->type == BCH_OPT_STR
-		? bch2_snprint_string_list(buf, size, opt->choices, v)
-		: snprintf(buf, size, "%lli\n", v);
+		? bch2_scnprint_string_list(buf, size, opt->choices, v)
+		: scnprintf(buf, size, "%lli", v);
 }

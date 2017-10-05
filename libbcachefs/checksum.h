@@ -1,5 +1,5 @@
-#ifndef _BCACHE_CHECKSUM_H
-#define _BCACHE_CHECKSUM_H
+#ifndef _BCACHEFS_CHECKSUM_H
+#define _BCACHEFS_CHECKSUM_H
 
 #include "bcachefs.h"
 #include "super-io.h"
@@ -46,21 +46,51 @@ int bch2_enable_encryption(struct bch_fs *, bool);
 void bch2_fs_encryption_exit(struct bch_fs *);
 int bch2_fs_encryption_init(struct bch_fs *);
 
-static inline unsigned bch2_data_checksum_type(struct bch_fs *c)
+static inline enum bch_csum_type bch2_csum_opt_to_type(enum bch_csum_opts type)
+{
+	switch (type) {
+	case BCH_CSUM_OPT_NONE:
+	     return BCH_CSUM_NONE;
+	case BCH_CSUM_OPT_CRC32C:
+	     return BCH_CSUM_CRC32C;
+	case BCH_CSUM_OPT_CRC64:
+	     return BCH_CSUM_CRC64;
+	default:
+	     BUG();
+	}
+}
+
+static inline enum bch_csum_type bch2_data_checksum_type(struct bch_fs *c)
 {
 	if (c->sb.encryption_type)
 		return c->opts.wide_macs
 			? BCH_CSUM_CHACHA20_POLY1305_128
 			: BCH_CSUM_CHACHA20_POLY1305_80;
 
-	return c->opts.data_checksum;
+	return bch2_csum_opt_to_type(c->opts.data_checksum);
 }
 
-static inline unsigned bch2_meta_checksum_type(struct bch_fs *c)
+static inline enum bch_csum_type bch2_meta_checksum_type(struct bch_fs *c)
 {
-	return c->sb.encryption_type
-		? BCH_CSUM_CHACHA20_POLY1305_128
-		: c->opts.metadata_checksum;
+	if (c->sb.encryption_type)
+		return BCH_CSUM_CHACHA20_POLY1305_128;
+
+	return bch2_csum_opt_to_type(c->opts.metadata_checksum);
+}
+
+static inline enum bch_compression_type
+bch2_compression_opt_to_type(enum bch_compression_opts type)
+{
+	switch (type) {
+	case BCH_COMPRESSION_OPT_NONE:
+		return BCH_COMPRESSION_NONE;
+	case BCH_COMPRESSION_OPT_LZ4:
+		return BCH_COMPRESSION_LZ4;
+	case BCH_COMPRESSION_OPT_GZIP:
+		return BCH_COMPRESSION_GZIP;
+	default:
+	     BUG();
+	}
 }
 
 static inline bool bch2_checksum_type_valid(const struct bch_fs *c,
@@ -130,4 +160,4 @@ static inline struct nonce bch2_sb_key_nonce(struct bch_fs *c)
 	}};
 }
 
-#endif /* _BCACHE_CHECKSUM_H */
+#endif /* _BCACHEFS_CHECKSUM_H */

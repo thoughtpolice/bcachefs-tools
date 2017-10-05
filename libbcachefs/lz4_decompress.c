@@ -43,7 +43,110 @@
 #endif
 
 #include "lz4.h"
-#include "lz4defs.h"
+
+/*
+ * Detects 64 bits mode
+ */
+#if defined(CONFIG_64BIT)
+#define LZ4_ARCH64 1
+#else
+#define LZ4_ARCH64 0
+#endif
+
+#include <asm/unaligned.h>
+#include <linux/log2.h>
+#include <linux/string.h>
+
+#define A32(_p) get_unaligned((u32 *) (_p))
+#define A16(_p) get_unaligned((u16 *) (_p))
+
+#define GET_LE16_ADVANCE(_src)				\
+({							\
+	u16 _r = get_unaligned_le16(_src);		\
+	(_src) += 2;					\
+	_r;						\
+})
+
+#define PUT_LE16_ADVANCE(_dst, _v)			\
+do {							\
+	put_unaligned_le16((_v), (_dst));		\
+	(_dst) += 2;					\
+} while (0)
+
+#define LENGTH_LONG		15
+#define COPYLENGTH		8
+#define ML_BITS			4
+#define ML_MASK			((1U << ML_BITS) - 1)
+#define RUN_BITS		(8 - ML_BITS)
+#define RUN_MASK		((1U << RUN_BITS) - 1)
+#define MEMORY_USAGE		14
+#define MINMATCH		4
+#define SKIPSTRENGTH		6
+#define LASTLITERALS		5
+#define MFLIMIT			(COPYLENGTH + MINMATCH)
+#define MINLENGTH		(MFLIMIT + 1)
+#define MAXD_LOG		16
+#define MAXD			(1 << MAXD_LOG)
+#define MAXD_MASK		(u32)(MAXD - 1)
+#define MAX_DISTANCE		(MAXD - 1)
+#define HASH_LOG		(MAXD_LOG - 1)
+#define HASHTABLESIZE		(1 << HASH_LOG)
+#define MAX_NB_ATTEMPTS		256
+#define OPTIMAL_ML		(int)((ML_MASK-1)+MINMATCH)
+#define LZ4_64KLIMIT		((1<<16) + (MFLIMIT - 1))
+
+#define __HASH_VALUE(p, bits)				\
+	(((A32(p)) * 2654435761U) >> (32 - (bits)))
+
+#define HASH_VALUE(p)		__HASH_VALUE(p, HASH_LOG)
+
+#define MEMCPY_ADVANCE(_dst, _src, length)		\
+do {							\
+	typeof(length) _length = (length);		\
+	memcpy(_dst, _src, _length);			\
+	_src += _length;				\
+	_dst += _length;				\
+} while (0)
+
+#define MEMCPY_ADVANCE_BYTES(_dst, _src, _length)	\
+do {							\
+	const u8 *_end = (_src) + (_length);		\
+	while ((_src) < _end)				\
+		*_dst++ = *_src++;			\
+} while (0)
+
+#define STEPSIZE		__SIZEOF_LONG__
+
+#define LZ4_COPYPACKET(_src, _dst)			\
+do {							\
+	MEMCPY_ADVANCE(_dst, _src, STEPSIZE);		\
+	MEMCPY_ADVANCE(_dst, _src, COPYLENGTH - STEPSIZE);\
+} while (0)
+
+/*
+ * Equivalent to MEMCPY_ADVANCE - except may overrun @_dst and @_src by
+ * COPYLENGTH:
+ *
+ * Note: src and dst may overlap (with src < dst) - we must do the copy in
+ * STEPSIZE chunks for correctness
+ *
+ * Note also: length may be negative - we must not call memcpy if length is
+ * negative, but still adjust dst and src by length
+ */
+#define MEMCPY_ADVANCE_CHUNKED(_dst, _src, _length)	\
+do {							\
+	u8 *_end = (_dst) + (_length);			\
+	while ((_dst) < _end)				\
+		LZ4_COPYPACKET(_src, _dst);		\
+	_src -= (_dst) - _end;				\
+	_dst = _end;					\
+} while (0)
+
+#define MEMCPY_ADVANCE_CHUNKED_NOFIXUP(_dst, _src, _end)\
+do {							\
+	while ((_dst) < (_end))				\
+		LZ4_COPYPACKET((_src), (_dst));		\
+} while (0)
 
 static const int dec32table[8] = {0, 3, 2, 3, 0, 0, 0, 0};
 #if LZ4_ARCH64
@@ -157,124 +260,8 @@ _output_error:
 	return -1;
 }
 
-static inline ssize_t get_length_safe(const u8 **ip, ssize_t length)
-{
-	if (length == 15) {
-		size_t len;
-
-		do {
-			length += (len = *(*ip)++);
-			if (unlikely((ssize_t) length < 0))
-				return -1;
-
-			length += len;
-		} while (len == 255);
-	}
-
-	return length;
-}
-
-static int lz4_uncompress_unknownoutputsize(const u8 *source, u8 *dest,
-				int isize, size_t maxoutputsize)
-{
-	const u8 *ip = source;
-	const u8 *const iend = ip + isize;
-	const u8 *ref;
-	u8 *op = dest;
-	u8 * const oend = op + maxoutputsize;
-	u8 *cpy;
-	unsigned token, offset;
-	size_t length;
-
-	/* Main Loop */
-	while (ip < iend) {
-		/* get runlength */
-		token = *ip++;
-		length = get_length_safe(&ip, token >> ML_BITS);
-		if (unlikely((ssize_t) length < 0))
-			goto _output_error;
-
-		/* copy literals */
-		if ((op + length > oend - COPYLENGTH) ||
-		    (ip + length > iend - COPYLENGTH)) {
-
-			if (op + length > oend)
-				goto _output_error;/* writes beyond buffer */
-
-			if (ip + length != iend)
-				goto _output_error;/*
-						    * Error: LZ4 format requires
-						    * to consume all input
-						    * at this stage
-						    */
-			MEMCPY_ADVANCE(op, ip, length);
-			break;/* Necessarily EOF, due to parsing restrictions */
-		}
-		MEMCPY_ADVANCE_CHUNKED(op, ip, length);
-
-		/* get match offset */
-		offset = GET_LE16_ADVANCE(ip);
-		ref = op - offset;
-
-		/* Error: offset create reference outside destination buffer */
-		if (ref < (u8 * const) dest)
-			goto _output_error;
-
-		/* get match length */
-		length = get_length_safe(&ip, token & ML_MASK);
-		if (unlikely((ssize_t) length < 0))
-			goto _output_error;
-
-		length += MINMATCH;
-
-		/* copy first STEPSIZE bytes of match: */
-		if (unlikely(offset < STEPSIZE)) {
-			MEMCPY_ADVANCE_BYTES(op, ref, 4);
-			ref -= dec32table[offset];
-
-			memcpy(op, ref, 4);
-			op += STEPSIZE - 4;
-			ref -= dec64table[offset];
-		} else {
-			MEMCPY_ADVANCE(op, ref, STEPSIZE);
-		}
-		length -= STEPSIZE;
-
-		/* copy rest of match: */
-		cpy = op + length;
-		if (cpy > oend - COPYLENGTH) {
-			/* Error: request to write beyond destination buffer */
-			if (cpy              > oend ||
-			    ref + COPYLENGTH > oend)
-				goto _output_error;
-#if !LZ4_ARCH64
-			if (op  + COPYLENGTH > oend)
-				goto _output_error;
-#endif
-			MEMCPY_ADVANCE_CHUNKED_NOFIXUP(op, ref, oend - COPYLENGTH);
-			while (op < cpy)
-				*op++ = *ref++;
-			op = cpy;
-			/*
-			 * Check EOF (should never happen, since last 5 bytes
-			 * are supposed to be literals)
-			 */
-			if (op == oend)
-				goto _output_error;
-		} else {
-			MEMCPY_ADVANCE_CHUNKED(op, ref, length);
-		}
-	}
-	/* end of decoding */
-	return op - dest;
-
-	/* write overflow error detected */
-_output_error:
-	return -1;
-}
-
-int lz4_decompress(const unsigned char *src, size_t *src_len,
-		unsigned char *dest, size_t actual_dest_len)
+int bch2_lz4_decompress(const unsigned char *src, size_t *src_len,
+			unsigned char *dest, size_t actual_dest_len)
 {
 	int ret = -1;
 	int input_len = 0;
@@ -288,29 +275,3 @@ int lz4_decompress(const unsigned char *src, size_t *src_len,
 exit_0:
 	return ret;
 }
-#ifndef STATIC
-EXPORT_SYMBOL(lz4_decompress);
-#endif
-
-int lz4_decompress_unknownoutputsize(const unsigned char *src, size_t src_len,
-		unsigned char *dest, size_t *dest_len)
-{
-	int ret = -1;
-	int out_len = 0;
-
-	out_len = lz4_uncompress_unknownoutputsize(src, dest, src_len,
-					*dest_len);
-	if (out_len < 0)
-		goto exit_0;
-	*dest_len = out_len;
-
-	return 0;
-exit_0:
-	return ret;
-}
-#ifndef STATIC
-EXPORT_SYMBOL(lz4_decompress_unknownoutputsize);
-
-MODULE_LICENSE("Dual BSD/GPL");
-MODULE_DESCRIPTION("LZ4 Decompressor");
-#endif

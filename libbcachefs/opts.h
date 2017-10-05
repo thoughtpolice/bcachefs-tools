@@ -1,5 +1,5 @@
-#ifndef _BCACHE_OPTS_H
-#define _BCACHE_OPTS_H
+#ifndef _BCACHEFS_OPTS_H
+#define _BCACHEFS_OPTS_H
 
 #include <linux/bug.h>
 #include <linux/log2.h>
@@ -10,6 +10,7 @@ extern const char * const bch2_error_actions[];
 extern const char * const bch2_csum_types[];
 extern const char * const bch2_compression_types[];
 extern const char * const bch2_str_hash_types[];
+extern const char * const bch2_data_types[];
 extern const char * const bch2_cache_replacement_policies[];
 extern const char * const bch2_cache_modes[];
 extern const char * const bch2_dev_state[];
@@ -167,4 +168,4 @@ enum bch_opt_id bch2_parse_sysfs_opt(const char *, const char *, u64 *);
 
 ssize_t bch2_opt_show(struct bch_opts *, const char *, char *, size_t);
 
-#endif /* _BCACHE_OPTS_H */
+#endif /* _BCACHEFS_OPTS_H */

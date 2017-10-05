@@ -1,35 +1,28 @@
-#ifndef _BCACHE_SUPER_H
-#define _BCACHE_SUPER_H
+#ifndef _BCACHEFS_SUPER_H
+#define _BCACHEFS_SUPER_H
 
 #include "extents.h"
 
 #include "bcachefs_ioctl.h"
 
+#include <linux/math64.h>
+
 static inline size_t sector_to_bucket(const struct bch_dev *ca, sector_t s)
 {
-	return s >> ca->bucket_bits;
+	return div_u64(s, ca->mi.bucket_size);
 }
 
 static inline sector_t bucket_to_sector(const struct bch_dev *ca, size_t b)
 {
-	return ((sector_t) b) << ca->bucket_bits;
+	return ((sector_t) b) * ca->mi.bucket_size;
 }
 
 static inline sector_t bucket_remainder(const struct bch_dev *ca, sector_t s)
 {
-	return s & (ca->mi.bucket_size - 1);
-}
+	u32 remainder;
 
-static inline struct bch_dev *__bch2_next_dev(struct bch_fs *c, unsigned *iter)
-{
-	struct bch_dev *ca = NULL;
-
-	while (*iter < c->sb.nr_devices &&
-	       !(ca = rcu_dereference_check(c->devs[*iter],
-					    lockdep_is_held(&c->state_lock))))
-		(*iter)++;
-
-	return ca;
+	div_u64_rem(s, ca->mi.bucket_size, &remainder);
+	return remainder;
 }
 
 static inline bool bch2_dev_is_online(struct bch_dev *ca)
@@ -37,18 +30,38 @@ static inline bool bch2_dev_is_online(struct bch_dev *ca)
 	return !percpu_ref_is_zero(&ca->io_ref);
 }
 
-#define __for_each_member_device(ca, c, iter)				\
-	for ((iter) = 0; ((ca) = __bch2_next_dev((c), &(iter))); (iter)++)
+static inline unsigned dev_mask_nr(struct bch_devs_mask *devs)
+{
+	return bitmap_weight(devs->d, BCH_SB_MEMBERS_MAX);
+}
 
-#define for_each_member_device_rcu(ca, c, iter)				\
-	__for_each_member_device(ca, c, iter)
+static inline struct bch_dev *__bch2_next_dev(struct bch_fs *c, unsigned *iter,
+					      struct bch_devs_mask *mask)
+{
+	struct bch_dev *ca = NULL;
+
+	while ((*iter = mask
+		? find_next_bit(mask->d, c->sb.nr_devices, *iter)
+		: *iter) < c->sb.nr_devices &&
+	       !(ca = rcu_dereference_check(c->devs[*iter],
+					    lockdep_is_held(&c->state_lock))))
+		(*iter)++;
+
+	return ca;
+}
+
+#define __for_each_member_device(ca, c, iter, mask)			\
+	for ((iter) = 0; ((ca) = __bch2_next_dev((c), &(iter), mask)); (iter)++)
+
+#define for_each_member_device_rcu(ca, c, iter, mask)			\
+	__for_each_member_device(ca, c, iter, mask)
 
 static inline struct bch_dev *bch2_get_next_dev(struct bch_fs *c, unsigned *iter)
 {
 	struct bch_dev *ca;
 
 	rcu_read_lock();
-	if ((ca = __bch2_next_dev(c, iter)))
+	if ((ca = __bch2_next_dev(c, iter, NULL)))
 		percpu_ref_get(&ca->ref);
 	rcu_read_unlock();
 
@@ -70,7 +83,7 @@ static inline struct bch_dev *bch2_get_next_online_dev(struct bch_fs *c,
 	struct bch_dev *ca;
 
 	rcu_read_lock();
-	while ((ca = __bch2_next_dev(c, iter)) &&
+	while ((ca = __bch2_next_dev(c, iter, NULL)) &&
 	       (!((1 << ca->mi.state) & state_mask) ||
 		!percpu_ref_tryget(&ca->io_ref)))
 		(*iter)++;
@@ -94,6 +107,7 @@ static inline struct bch_dev *bch2_get_next_online_dev(struct bch_fs *c,
 	__for_each_online_member(ca, c, iter,				\
 		(1 << BCH_MEMBER_STATE_RW)|(1 << BCH_MEMBER_STATE_RO))
 
+/* XXX kill, move to struct bch_fs */
 static inline struct bch_devs_mask bch2_online_devs(struct bch_fs *c)
 {
 	struct bch_devs_mask devs;
@@ -135,4 +149,4 @@ const char *bch2_fs_open(char * const *, unsigned, struct bch_opts,
 			struct bch_fs **);
 const char *bch2_fs_open_incremental(const char *path);
 
-#endif /* _BCACHE_SUPER_H */
+#endif /* _BCACHEFS_SUPER_H */

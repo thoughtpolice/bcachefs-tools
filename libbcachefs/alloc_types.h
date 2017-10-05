@@ -1,5 +1,5 @@
-#ifndef _BCACHE_ALLOC_TYPES_H
-#define _BCACHE_ALLOC_TYPES_H
+#ifndef _BCACHEFS_ALLOC_TYPES_H
+#define _BCACHEFS_ALLOC_TYPES_H
 
 #include <linux/mutex.h>
 
@@ -42,16 +42,6 @@ enum alloc_reserve {
 	RESERVE_NR		= 3,
 };
 
-struct dev_group {
-	spinlock_t		lock;
-	unsigned		nr;
-	unsigned		cur_device;
-	struct {
-		u64		weight;
-		struct bch_dev	*dev;
-	}			d[BCH_SB_MEMBERS_MAX];
-};
-
 /* Enough for 16 cache devices, 2 tiers and some left over for pipelining */
 #define OPEN_BUCKETS_COUNT	256
 
@@ -74,22 +64,18 @@ struct open_bucket {
 
 struct write_point {
 	struct open_bucket	*b;
-
-	/*
-	 * Throttle writes to this write point if tier 0 is full?
-	 */
-	bool			throttle;
+	enum bch_data_type	type;
 
 	/*
 	 * If not NULL, cache group for tiering, promotion and moving GC -
 	 * always allocates a single replica
-	 */
-	struct dev_group	*group;
-
-	/*
+	 *
 	 * Otherwise do a normal replicated bucket allocation that could come
 	 * from any device in tier 0 (foreground write)
 	 */
+	struct bch_devs_mask	*group;
+
+	u64			next_alloc[BCH_SB_MEMBERS_MAX];
 };
 
 struct alloc_heap_entry {
@@ -99,4 +85,4 @@ struct alloc_heap_entry {
 
 typedef HEAP(struct alloc_heap_entry) alloc_heap;
 
-#endif /* _BCACHE_ALLOC_TYPES_H */
+#endif /* _BCACHEFS_ALLOC_TYPES_H */

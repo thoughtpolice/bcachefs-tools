@@ -5,6 +5,8 @@
  * Copyright 2012 Google, Inc.
  */
 
+#ifndef NO_BCACHEFS_SYSFS
+
 #include "bcachefs.h"
 #include "alloc.h"
 #include "compress.h"
@@ -53,7 +55,7 @@ static ssize_t fn ## _store(struct kobject *kobj, struct attribute *attr,\
 #define sysfs_printf(file, fmt, ...)					\
 do {									\
 	if (attr == &sysfs_ ## file)					\
-		return snprintf(buf, PAGE_SIZE, fmt "\n", __VA_ARGS__);	\
+		return scnprintf(buf, PAGE_SIZE, fmt "\n", __VA_ARGS__);\
 } while (0)
 
 #define sysfs_print(file, var)						\
@@ -134,6 +136,7 @@ read_attribute(block_size);
 read_attribute(btree_node_size);
 read_attribute(first_bucket);
 read_attribute(nbuckets);
+read_attribute(iostats);
 read_attribute(read_priority_stats);
 read_attribute(write_priority_stats);
 read_attribute(fragmentation_stats);
@@ -141,9 +144,6 @@ read_attribute(oldest_gen_stats);
 read_attribute(reserve_stats);
 read_attribute(btree_cache_size);
 read_attribute(compression_stats);
-read_attribute(written);
-read_attribute(btree_written);
-read_attribute(metadata_written);
 read_attribute(journal_debug);
 read_attribute(journal_pins);
 
@@ -160,7 +160,6 @@ read_attribute(cached_buckets);
 read_attribute(meta_buckets);
 read_attribute(alloc_buckets);
 read_attribute(has_data);
-read_attribute(has_metadata);
 read_attribute(alloc_debug);
 
 read_attribute(read_realloc_races);
@@ -301,7 +300,7 @@ static ssize_t bch2_compression_stats(struct bch_fs *c, char *buf)
 		}
 	bch2_btree_iter_unlock(&iter);
 
-	return snprintf(buf, PAGE_SIZE,
+	return scnprintf(buf, PAGE_SIZE,
 			"uncompressed data:\n"
 			"	nr extents:			%llu\n"
 			"	size (bytes):			%llu\n"
@@ -527,9 +526,13 @@ struct attribute *bch2_fs_internal_files[] = {
 
 SHOW(bch2_fs_opts_dir)
 {
+	char *out = buf, *end = buf + PAGE_SIZE;
 	struct bch_fs *c = container_of(kobj, struct bch_fs, opts_dir);
 
-	return bch2_opt_show(&c->opts, attr->name, buf, PAGE_SIZE);
+	out += bch2_opt_show(&c->opts, attr->name, out, end - out);
+	out += scnprintf(out, end - out, "\n");
+
+	return out - buf;
 }
 
 STORE(bch2_fs_opts_dir)
@@ -728,15 +731,32 @@ static ssize_t show_dev_alloc_debug(struct bch_dev *ca, char *buf)
 		c->open_buckets_wait.list.first		? "waiting" : "empty");
 }
 
-static u64 sectors_written(struct bch_dev *ca)
+const char * const bch2_rw[] = {
+	"read",
+	"write",
+	NULL
+};
+
+static ssize_t show_dev_iostats(struct bch_dev *ca, char *buf)
 {
-	u64 ret = 0;
-	int cpu;
+	char *out = buf, *end = buf + PAGE_SIZE;
+	int rw, i, cpu;
 
-	for_each_possible_cpu(cpu)
-		ret += *per_cpu_ptr(ca->sectors_written, cpu);
+	for (rw = 0; rw < 2; rw++) {
+		out += scnprintf(out, end - out, "%s:\n", bch2_rw[rw]);
 
-	return ret;
+		for (i = 1; i < BCH_DATA_NR; i++) {
+			u64 n = 0;
+
+			for_each_possible_cpu(cpu)
+				n += per_cpu_ptr(ca->io_done, cpu)->sectors[rw][i];
+
+			out += scnprintf(out, end - out, "%-12s:%12llu\n",
+					 bch2_data_types[i], n << 9);
+		}
+	}
+
+	return out - buf;
 }
 
 SHOW(bch2_dev)
@@ -744,6 +764,7 @@ SHOW(bch2_dev)
 	struct bch_dev *ca = container_of(kobj, struct bch_dev, kobj);
 	struct bch_fs *c = ca->fs;
 	struct bch_dev_usage stats = bch2_dev_usage_read(ca);
+	char *out = buf, *end = buf + PAGE_SIZE;
 
 	sysfs_printf(uuid,		"%pU\n", ca->uuid.b);
 
@@ -752,12 +773,6 @@ SHOW(bch2_dev)
 	sysfs_print(first_bucket,	ca->mi.first_bucket);
 	sysfs_print(nbuckets,		ca->mi.nbuckets);
 	sysfs_print(discard,		ca->mi.discard);
-	sysfs_hprint(written, sectors_written(ca) << 9);
-	sysfs_hprint(btree_written,
-		     atomic64_read(&ca->btree_sectors_written) << 9);
-	sysfs_hprint(metadata_written,
-		     (atomic64_read(&ca->meta_sectors_written) +
-		      atomic64_read(&ca->btree_sectors_written)) << 9);
 
 	sysfs_hprint(dirty_data,	stats.sectors[S_DIRTY] << 9);
 	sysfs_print(dirty_bytes,	stats.sectors[S_DIRTY] << 9);
@@ -769,26 +784,37 @@ SHOW(bch2_dev)
 	sysfs_print(alloc_buckets,	stats.buckets_alloc);
 	sysfs_print(available_buckets,	dev_buckets_available(ca));
 	sysfs_print(free_buckets,	dev_buckets_free(ca));
-	sysfs_print(has_data,		bch2_dev_has_data(c, ca) &
-		    (1 << BCH_DATA_USER));
-	sysfs_print(has_metadata,	bch2_dev_has_data(c, ca) &
-		    ((1 << BCH_DATA_JOURNAL)|
-		     (1 << BCH_DATA_BTREE)));
+
+	if (attr == &sysfs_has_data) {
+		out += bch2_scnprint_flag_list(out, end - out,
+					       bch2_data_types,
+					       bch2_dev_has_data(c, ca));
+		out += scnprintf(out, end - out, "\n");
+		return out - buf;
+	}
 
 	sysfs_pd_controller_show(copy_gc, &ca->moving_gc_pd);
 
-	if (attr == &sysfs_cache_replacement_policy)
-		return bch2_snprint_string_list(buf, PAGE_SIZE,
-						bch2_cache_replacement_policies,
-						ca->mi.replacement);
+	if (attr == &sysfs_cache_replacement_policy) {
+		out += bch2_scnprint_string_list(out, end - out,
+						 bch2_cache_replacement_policies,
+						 ca->mi.replacement);
+		out += scnprintf(out, end - out, "\n");
+		return out - buf;
+	}
 
 	sysfs_print(tier,		ca->mi.tier);
 
-	if (attr == &sysfs_state_rw)
-		return bch2_snprint_string_list(buf, PAGE_SIZE,
-						bch2_dev_state,
-						ca->mi.state);
+	if (attr == &sysfs_state_rw) {
+		out += bch2_scnprint_string_list(out, end - out,
+						 bch2_dev_state,
+						 ca->mi.state);
+		out += scnprintf(out, end - out, "\n");
+		return out - buf;
+	}
 
+	if (attr == &sysfs_iostats)
+		return show_dev_iostats(ca, buf);
 	if (attr == &sysfs_read_priority_stats)
 		return show_quantiles(ca, buf, bucket_priority_fn, (void *) 0);
 	if (attr == &sysfs_write_priority_stats)
@@ -859,8 +885,8 @@ STORE(bch2_dev)
 		SET_BCH_MEMBER_TIER(mi, v);
 		bch2_write_super(c);
 
-		bch2_dev_group_remove(&c->tiers[prev_tier].devs, ca);
-		bch2_dev_group_add(&c->tiers[ca->mi.tier].devs, ca);
+		clear_bit(ca->dev_idx, c->tiers[prev_tier].devs.d);
+		set_bit(ca->dev_idx, c->tiers[ca->mi.tier].devs.d);
 		mutex_unlock(&c->sb_lock);
 
 		bch2_recalc_capacity(c);
@@ -885,12 +911,7 @@ struct attribute *bch2_dev_files[] = {
 	&sysfs_state_rw,
 
 	&sysfs_has_data,
-	&sysfs_has_metadata,
-
-	/* io stats: */
-	&sysfs_written,
-	&sysfs_btree_written,
-	&sysfs_metadata_written,
+	&sysfs_iostats,
 
 	/* alloc info - data: */
 	&sysfs_dirty_data,
@@ -919,3 +940,5 @@ struct attribute *bch2_dev_files[] = {
 	sysfs_pd_controller_files(copy_gc),
 	NULL
 };
+
+#endif  /* _BCACHEFS_SYSFS_H_ */

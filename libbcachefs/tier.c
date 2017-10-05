@@ -24,7 +24,7 @@ struct tiering_state {
 };
 
 static bool tiering_pred(struct bch_fs *c,
-			 struct tiering_state *s,
+			 struct bch_tier *tier,
 			 struct bkey_s_c k)
 {
 	if (bkey_extent_is_data(k.k)) {
@@ -38,7 +38,7 @@ static bool tiering_pred(struct bch_fs *c,
 			return false;
 
 		extent_for_each_ptr(e, ptr)
-			if (c->devs[ptr->dev]->mi.tier >= s->tier->idx)
+			if (c->devs[ptr->dev]->mi.tier >= tier->idx)
 				replicas++;
 
 		return replicas < c->opts.data_replicas;
@@ -47,49 +47,18 @@ static bool tiering_pred(struct bch_fs *c,
 	return false;
 }
 
-static void tier_put_device(struct tiering_state *s)
-{
-	if (s->ca)
-		percpu_ref_put(&s->ca->io_ref);
-	s->ca = NULL;
-}
-
-/**
- * refill_next - move on to refilling the next cache's tiering keylist
- */
-static void tier_next_device(struct bch_fs *c, struct tiering_state *s)
-{
-	if (!s->ca || s->sectors > s->stripe_size) {
-		tier_put_device(s);
-		s->sectors = 0;
-		s->dev_idx++;
-
-		spin_lock(&s->tier->devs.lock);
-		if (s->dev_idx >= s->tier->devs.nr)
-			s->dev_idx = 0;
-
-		if (s->tier->devs.nr) {
-			s->ca = s->tier->devs.d[s->dev_idx].dev;
-			percpu_ref_get(&s->ca->io_ref);
-		}
-		spin_unlock(&s->tier->devs.lock);
-	}
-}
-
 static int issue_tiering_move(struct bch_fs *c,
-			      struct tiering_state *s,
+			      struct bch_tier *tier,
 			      struct moving_context *ctxt,
 			      struct bkey_s_c k)
 {
 	int ret;
 
-	ret = bch2_data_move(c, ctxt, &s->ca->tiering_write_point, k, NULL);
-	if (!ret) {
+	ret = bch2_data_move(c, ctxt, &tier->wp, k, NULL);
+	if (!ret)
 		trace_tiering_copy(k.k);
-		s->sectors += k.k->size;
-	} else {
+	else
 		trace_tiering_alloc_fail(c, k.k->size);
-	}
 
 	return ret;
 }
@@ -101,20 +70,15 @@ static int issue_tiering_move(struct bch_fs *c,
 static s64 read_tiering(struct bch_fs *c, struct bch_tier *tier)
 {
 	struct moving_context ctxt;
-	struct tiering_state s;
 	struct btree_iter iter;
 	struct bkey_s_c k;
-	unsigned nr_devices = READ_ONCE(tier->devs.nr);
+	unsigned nr_devices = dev_mask_nr(&tier->devs);
 	int ret;
 
 	if (!nr_devices)
 		return 0;
 
 	trace_tiering_start(c);
-
-	memset(&s, 0, sizeof(s));
-	s.tier		= tier;
-	s.stripe_size	= 2048; /* 1 mb for now */
 
 	bch2_move_ctxt_init(&ctxt, &tier->pd.rate,
 			   nr_devices * SECTORS_IN_FLIGHT_PER_DEVICE);
@@ -125,14 +89,10 @@ static s64 read_tiering(struct bch_fs *c, struct bch_tier *tier)
 	       !bch2_move_ctxt_wait(&ctxt) &&
 	       (k = bch2_btree_iter_peek(&iter)).k &&
 	       !btree_iter_err(k)) {
-		if (!tiering_pred(c, &s, k))
+		if (!tiering_pred(c, tier, k))
 			goto next;
 
-		tier_next_device(c, &s);
-		if (!s.ca)
-			break;
-
-		ret = issue_tiering_move(c, &s, &ctxt, k);
+		ret = issue_tiering_move(c, tier, &ctxt, k);
 		if (ret) {
 			bch2_btree_iter_unlock(&iter);
 
@@ -150,7 +110,6 @@ next:
 	}
 
 	bch2_btree_iter_unlock(&iter);
-	tier_put_device(&s);
 	bch2_move_ctxt_exit(&ctxt);
 	trace_tiering_end(c, ctxt.sectors_moved, ctxt.keys_moved);
 
@@ -171,7 +130,7 @@ static int bch2_tiering_thread(void *arg)
 
 	while (!kthread_should_stop()) {
 		if (kthread_wait_freezable(c->tiering_enabled &&
-					   tier->devs.nr))
+					   dev_mask_nr(&tier->devs)))
 			break;
 
 		while (1) {
@@ -183,15 +142,18 @@ static int bch2_tiering_thread(void *arg)
 			for (faster_tier = c->tiers;
 			     faster_tier != tier;
 			     faster_tier++) {
-				spin_lock(&faster_tier->devs.lock);
-				group_for_each_dev(ca, &faster_tier->devs, i) {
+				rcu_read_lock();
+				for_each_member_device_rcu(ca, c, i,
+						&faster_tier->devs) {
 					tier_capacity +=
-						(ca->mi.nbuckets -
-						 ca->mi.first_bucket) << ca->bucket_bits;
+						bucket_to_sector(ca,
+							ca->mi.nbuckets -
+							ca->mi.first_bucket);
 					available_sectors +=
-						dev_buckets_available(ca) << ca->bucket_bits;
+						bucket_to_sector(ca,
+							dev_buckets_available(ca));
 				}
-				spin_unlock(&faster_tier->devs.lock);
+				rcu_read_unlock();
 			}
 
 			if (available_sectors < (tier_capacity >> 1))
@@ -255,7 +217,7 @@ int bch2_tiering_start(struct bch_fs *c)
 		return 0;
 
 	for (tier = c->tiers; tier < c->tiers + ARRAY_SIZE(c->tiers); tier++) {
-		if (!tier->devs.nr)
+		if (!dev_mask_nr(&tier->devs))
 			continue;
 
 		if (have_faster_tier) {
@@ -279,5 +241,6 @@ void bch2_fs_tiering_init(struct bch_fs *c)
 	for (i = 0; i < ARRAY_SIZE(c->tiers); i++) {
 		c->tiers[i].idx = i;
 		bch2_pd_controller_init(&c->tiers[i].pd);
+		c->tiers[i].wp.group = &c->tiers[i].devs;
 	}
 }

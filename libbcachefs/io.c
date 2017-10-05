@@ -79,6 +79,7 @@ void bch2_bio_alloc_pages_pool(struct bch_fs *c, struct bio *bio,
 /* Bios with headers */
 
 void bch2_submit_wbio_replicas(struct bch_write_bio *wbio, struct bch_fs *c,
+			       enum bch_data_type type,
 			       const struct bkey_i *k)
 {
 	struct bkey_s_c_extent e = bkey_i_to_s_c_extent(k);
@@ -122,6 +123,9 @@ void bch2_submit_wbio_replicas(struct bch_write_bio *wbio, struct bch_fs *c,
 			n->bio.bi_opf |= REQ_FUA;
 
 		if (likely(percpu_ref_tryget(&ca->io_ref))) {
+			this_cpu_add(ca->io_done->sectors[WRITE][type],
+				     bio_sectors(&n->bio));
+
 			n->have_io_ref		= true;
 			n->bio.bi_bdev		= ca->disk_sb.bdev;
 			submit_bio(&n->bio);
@@ -423,17 +427,12 @@ static int bch2_write_extent(struct bch_write_op *op, struct open_bucket *ob)
 					 orig, &src_len,
 					 &fragment_compression_type);
 
-			BUG_ON(!dst_len || dst_len > bio->bi_iter.bi_size);
-			BUG_ON(!src_len || src_len > orig->bi_iter.bi_size);
-			BUG_ON(dst_len & (block_bytes(c) - 1));
-			BUG_ON(src_len & (block_bytes(c) - 1));
-
-			swap(bio->bi_iter.bi_size, dst_len);
 			nonce = extent_nonce(op->version,
 					     crc_nonce,
 					     src_len >> 9,
-					     fragment_compression_type),
+					     fragment_compression_type);
 
+			swap(bio->bi_iter.bi_size, dst_len);
 			bch2_encrypt_bio(c, csum_type, nonce, bio);
 
 			csum = bch2_checksum_bio(c, csum_type, nonce, bio);
@@ -496,7 +495,8 @@ static int bch2_write_extent(struct bch_write_op *op, struct open_bucket *ob)
 
 	closure_get(bio->bi_private);
 
-	bch2_submit_wbio_replicas(to_wbio(bio), c, key_to_write);
+	bch2_submit_wbio_replicas(to_wbio(bio), c, BCH_DATA_USER,
+				  key_to_write);
 	return more;
 }
 
@@ -661,9 +661,9 @@ void bch2_write(struct closure *cl)
 
 	/* Don't call bch2_next_delay() if rate is >= 1 GB/sec */
 
-	if (c->foreground_write_ratelimit_enabled &&
-	    c->foreground_write_pd.rate.rate < (1 << 30) &&
-	    op->wp->throttle) {
+	if ((op->flags & BCH_WRITE_THROTTLE) &&
+	    c->foreground_write_ratelimit_enabled &&
+	    c->foreground_write_pd.rate.rate < (1 << 30)) {
 		unsigned long flags;
 		u64 delay;
 
@@ -715,7 +715,8 @@ void bch2_write_op_init(struct bch_write_op *op, struct bch_fs *c,
 	op->error	= 0;
 	op->flags	= flags;
 	op->csum_type	= bch2_data_checksum_type(c);
-	op->compression_type = c->opts.compression;
+	op->compression_type =
+		bch2_compression_opt_to_type(c->opts.compression);
 	op->nr_replicas	= res.nr_replicas;
 	op->alloc_reserve = RESERVE_NONE;
 	op->nonce	= 0;
@@ -1202,6 +1203,9 @@ int __bch2_read_extent(struct bch_fs *c, struct bch_read_bio *orig,
 
 	if (bounce)
 		trace_read_bounce(&rbio->bio);
+
+	this_cpu_add(pick->ca->io_done->sectors[READ][BCH_DATA_USER],
+		     bio_sectors(&rbio->bio));
 
 	if (likely(!(flags & BCH_READ_IN_RETRY))) {
 		submit_bio(&rbio->bio);

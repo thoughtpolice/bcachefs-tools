@@ -100,7 +100,7 @@ struct bch_fs *bch2_bdev_to_fs(struct block_device *bdev)
 	rcu_read_lock();
 
 	list_for_each_entry(c, &bch_fs_list, list)
-		for_each_member_device_rcu(ca, c, i)
+		for_each_member_device_rcu(ca, c, i, NULL)
 			if (ca->disk_sb.bdev == bdev) {
 				closure_get(&c->cl);
 				goto found;
@@ -159,10 +159,11 @@ int bch2_congested(struct bch_fs *c, int bdi_bits)
 	} else {
 		/* Writes prefer fastest tier: */
 		struct bch_tier *tier = READ_ONCE(c->fastest_tier);
-		struct dev_group *grp = tier ? &tier->devs : &c->all_devs;
+		struct bch_devs_mask *devs =
+			tier ? &tier->devs : &c->rw_devs[BCH_DATA_USER];
 
 		rcu_read_lock();
-		group_for_each_dev(ca, grp, i) {
+		for_each_member_device_rcu(ca, c, i, devs) {
 			bdi = ca->disk_sb.bdev->bd_bdi;
 
 			if (bdi_congested(bdi, bdi_bits)) {
@@ -554,6 +555,8 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 		goto err;
 	}
 
+	c->block_bits		= ilog2(c->sb.block_size);
+
 	mutex_unlock(&c->sb_lock);
 
 	scnprintf(c->name, sizeof(c->name), "%pU", &c->sb.user_uuid);
@@ -563,8 +566,6 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 
 	c->opts.nochanges	|= c->opts.noreplay;
 	c->opts.read_only	|= c->opts.nochanges;
-
-	c->block_bits		= ilog2(c->sb.block_size);
 
 	if (bch2_fs_init_fault("fs_alloc"))
 		goto err;
@@ -590,7 +591,7 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	    mempool_init_page_pool(&c->bio_bounce_pages,
 				   max_t(unsigned,
 					 c->sb.btree_node_size,
-					 BCH_ENCODED_EXTENT_MAX) /
+					 c->sb.encoded_extent_max) /
 				   PAGE_SECTORS, 0) ||
 	    !(c->usage_percpu = alloc_percpu(struct bch_fs_usage)) ||
 	    lg_lock_init(&c->usage_lock) ||
@@ -662,7 +663,7 @@ static const char *__bch2_fs_online(struct bch_fs *c)
 	mutex_lock(&c->state_lock);
 
 	err = "error creating sysfs objects";
-	__for_each_member_device(ca, c, i)
+	__for_each_member_device(ca, c, i, NULL)
 		if (bch2_dev_sysfs_online(ca))
 			goto err;
 
@@ -692,7 +693,6 @@ static const char *__bch2_fs_start(struct bch_fs *c)
 	LIST_HEAD(journal);
 	struct jset *j;
 	struct closure cl;
-	u64 journal_seq = 0;
 	time64_t now;
 	unsigned i;
 	int ret = -EINVAL;
@@ -790,17 +790,6 @@ static const char *__bch2_fs_start(struct bch_fs *c)
 		if (ret)
 			goto err;
 		bch_verbose(c, "fsck done");
-
-		for_each_rw_member(ca, c, i)
-			if (ca->need_alloc_write) {
-				ret = bch2_alloc_write(c, ca, &journal_seq);
-				if (ret) {
-					percpu_ref_put(&ca->io_ref);
-					goto err;
-				}
-			}
-
-		bch2_journal_flush_seq(&c->journal, journal_seq);
 	} else {
 		struct bch_inode_unpacked inode;
 		struct bkey_inode_buf packed_inode;
@@ -842,7 +831,7 @@ static const char *__bch2_fs_start(struct bch_fs *c)
 
 		bch2_inode_init(c, &inode, 0, 0,
 			       S_IFDIR|S_IRWXU|S_IRUGO|S_IXUGO, 0);
-		inode.inum = BCACHE_ROOT_INO;
+		inode.inum = BCACHEFS_ROOT_INO;
 
 		bch2_inode_pack(&packed_inode, &inode);
 
@@ -878,7 +867,6 @@ recovery_done:
 
 	SET_BCH_SB_INITIALIZED(c->disk_sb, true);
 	SET_BCH_SB_CLEAN(c->disk_sb, false);
-	c->disk_sb->version = BCACHE_SB_VERSION_CDEV;
 
 	bch2_write_super(c);
 	mutex_unlock(&c->sb_lock);
@@ -988,9 +976,10 @@ static void bch2_dev_free(struct bch_dev *ca)
 	bch2_free_super(&ca->disk_sb);
 	bch2_dev_journal_exit(ca);
 
-	free_percpu(ca->sectors_written);
+	free_percpu(ca->io_done);
 	bioset_exit(&ca->replica_set);
 	free_percpu(ca->usage_percpu);
+	kvpfree(ca->bucket_dirty, BITS_TO_LONGS(ca->mi.nbuckets) * sizeof(unsigned long));
 	kvpfree(ca->buckets,	 ca->mi.nbuckets * sizeof(struct bucket));
 	kvpfree(ca->oldest_gens, ca->mi.nbuckets * sizeof(u8));
 	free_heap(&ca->copygc_heap);
@@ -1108,10 +1097,10 @@ static int bch2_dev_alloc(struct bch_fs *c, unsigned dev_idx)
 	init_completion(&ca->stop_complete);
 	init_completion(&ca->offline_complete);
 
-	spin_lock_init(&ca->self.lock);
-	ca->self.nr = 1;
-	rcu_assign_pointer(ca->self.d[0].dev, ca);
 	ca->dev_idx = dev_idx;
+	__set_bit(ca->dev_idx, ca->self.d);
+
+	ca->copygc_write_point.type = BCH_DATA_USER;
 
 	spin_lock_init(&ca->freelist_lock);
 	bch2_dev_moving_gc_init(ca);
@@ -1125,7 +1114,6 @@ static int bch2_dev_alloc(struct bch_fs *c, unsigned dev_idx)
 
 	ca->mi = bch2_mi_to_cpu(member);
 	ca->uuid = member->uuid;
-	ca->bucket_bits = ilog2(ca->mi.bucket_size);
 	scnprintf(ca->name, sizeof(ca->name), "dev-%u", dev_idx);
 
 	/* XXX: tune these */
@@ -1161,10 +1149,13 @@ static int bch2_dev_alloc(struct bch_fs *c, unsigned dev_idx)
 	    !(ca->buckets	= kvpmalloc(ca->mi.nbuckets *
 					    sizeof(struct bucket),
 					    GFP_KERNEL|__GFP_ZERO)) ||
+	    !(ca->bucket_dirty	= kvpmalloc(BITS_TO_LONGS(ca->mi.nbuckets) *
+					    sizeof(unsigned long),
+					    GFP_KERNEL|__GFP_ZERO)) ||
 	    !(ca->usage_percpu = alloc_percpu(struct bch_dev_usage)) ||
 	    bioset_init(&ca->replica_set, 4,
 			offsetof(struct bch_write_bio, bio)) ||
-	    !(ca->sectors_written = alloc_percpu(*ca->sectors_written)))
+	    !(ca->io_done	= alloc_percpu(*ca->io_done)))
 		goto err;
 
 	total_reserve = ca->free_inc.size;
@@ -1172,7 +1163,6 @@ static int bch2_dev_alloc(struct bch_fs *c, unsigned dev_idx)
 		total_reserve += ca->free[i].size;
 
 	ca->copygc_write_point.group = &ca->self;
-	ca->tiering_write_point.group = &ca->self;
 
 	ca->fs = c;
 	rcu_assign_pointer(c->devs[ca->dev_idx], ca);
@@ -1238,19 +1228,8 @@ static int __bch2_dev_online(struct bch_fs *c, struct bcache_superblock *sb)
 		bch2_mark_dev_metadata(c, ca);
 	lg_local_unlock(&c->usage_lock);
 
-	if (ca->mi.state == BCH_MEMBER_STATE_RW) {
-		struct bch_sb_field_journal *journal_buckets =
-			bch2_sb_get_journal(ca->disk_sb.sb);
-		bool has_journal =
-			bch2_nr_journal_buckets(journal_buckets) >=
-			BCH_JOURNAL_BUCKETS_MIN;
-
-		bch2_dev_group_add(&c->tiers[ca->mi.tier].devs, ca);
-		bch2_dev_group_add(&c->all_devs, ca);
-
-		if (has_journal)
-			bch2_dev_group_add(&c->journal.devs, ca);
-	}
+	if (ca->mi.state == BCH_MEMBER_STATE_RW)
+		bch2_dev_allocator_add(c, ca);
 
 	percpu_ref_reinit(&ca->io_ref);
 	return 0;

@@ -1,5 +1,5 @@
-#ifndef _BCACHE_BTREE_LOCKING_H
-#define _BCACHE_BTREE_LOCKING_H
+#ifndef _BCACHEFS_BTREE_LOCKING_H
+#define _BCACHEFS_BTREE_LOCKING_H
 
 /*
  * Only for internal btree use:
@@ -91,6 +91,8 @@ static inline void btree_node_unlock(struct btree_iter *iter, unsigned level)
 {
 	int lock_type = btree_node_locked_type(iter, level);
 
+	EBUG_ON(iter->flags & BTREE_ITER_UPTODATE);
+
 	if (lock_type != BTREE_NODE_UNLOCKED)
 		six_unlock_type(&iter->nodes[level]->lock, lock_type);
 	mark_btree_node_unlocked(iter, level);
@@ -113,4 +115,4 @@ bool bch2_btree_node_relock(struct btree_iter *, unsigned);
 void bch2_btree_node_unlock_write(struct btree *, struct btree_iter *);
 void bch2_btree_node_lock_write(struct btree *, struct btree_iter *);
 
-#endif /* _BCACHE_BTREE_LOCKING_H */
+#endif /* _BCACHEFS_BTREE_LOCKING_H */
