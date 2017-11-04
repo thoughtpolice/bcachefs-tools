@@ -575,7 +575,7 @@ static const char *bch2_btree_ptr_invalid(const struct bch_fs *c,
 
 		extent_for_each_ptr_crc(e, ptr, crc) {
 			reason = extent_ptr_invalid(c, e, ptr,
-						    c->sb.btree_node_size,
+						    c->opts.btree_node_size,
 						    true);
 			if (reason)
 				return reason;
@@ -609,6 +609,9 @@ static void btree_ptr_debugcheck(struct bch_fs *c, struct btree *b,
 		ca = c->devs[ptr->dev];
 		g = PTR_BUCKET(ca, ptr);
 		replicas++;
+
+		if (!test_bit(BCH_FS_ALLOC_READ_DONE, &c->flags))
+			continue;
 
 		err = "stale";
 		if (ptr_stale(ca, ptr))

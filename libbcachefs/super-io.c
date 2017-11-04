@@ -32,7 +32,7 @@ struct bch_sb_field *bch2_sb_field_get(struct bch_sb *sb,
 	return NULL;
 }
 
-void bch2_free_super(struct bcache_superblock *sb)
+void bch2_free_super(struct bch_sb_handle *sb)
 {
 	if (sb->bio)
 		bio_put(sb->bio);
@@ -43,7 +43,7 @@ void bch2_free_super(struct bcache_superblock *sb)
 	memset(sb, 0, sizeof(*sb));
 }
 
-static int __bch2_super_realloc(struct bcache_superblock *sb, unsigned order)
+static int __bch2_super_realloc(struct bch_sb_handle *sb, unsigned order)
 {
 	struct bch_sb *new_sb;
 	struct bio *bio;
@@ -77,7 +77,7 @@ static int __bch2_super_realloc(struct bcache_superblock *sb, unsigned order)
 	return 0;
 }
 
-static int bch2_sb_realloc(struct bcache_superblock *sb, unsigned u64s)
+static int bch2_sb_realloc(struct bch_sb_handle *sb, unsigned u64s)
 {
 	u64 new_bytes = __vstruct_bytes(struct bch_sb, u64s);
 	u64 max_bytes = 512 << sb->sb->layout.sb_max_size_bits;
@@ -145,9 +145,9 @@ static struct bch_sb_field *__bch2_sb_field_resize(struct bch_sb *sb,
 	return f;
 }
 
-struct bch_sb_field *bch2_sb_field_resize(struct bcache_superblock *sb,
-					 enum bch_sb_field_type type,
-					 unsigned u64s)
+struct bch_sb_field *bch2_sb_field_resize(struct bch_sb_handle *sb,
+					  enum bch_sb_field_type type,
+					  unsigned u64s)
 {
 	struct bch_sb_field *f = bch2_sb_field_get(sb->sb, type);
 	ssize_t old_u64s = f ? le32_to_cpu(f->u64s) : 0;
@@ -179,7 +179,7 @@ struct bch_sb_field *bch2_fs_sb_field_resize(struct bch_fs *c,
 	/* XXX: we're not checking that offline device have enough space */
 
 	for_each_online_member(ca, c, i) {
-		struct bcache_superblock *sb = &ca->disk_sb;
+		struct bch_sb_handle *sb = &ca->disk_sb;
 
 		if (bch2_sb_realloc(sb, le32_to_cpu(sb->sb->u64s) + d)) {
 			percpu_ref_put(&ca->ref);
@@ -305,7 +305,7 @@ static const char *bch2_sb_validate_members(struct bch_sb *sb)
 	return NULL;
 }
 
-const char *bch2_sb_validate(struct bcache_superblock *disk_sb)
+const char *bch2_sb_validate(struct bch_sb_handle *disk_sb)
 {
 	struct bch_sb *sb = disk_sb->sb;
 	struct bch_sb_field *f;
@@ -318,8 +318,10 @@ const char *bch2_sb_validate(struct bcache_superblock *disk_sb)
 	    le64_to_cpu(sb->version) > BCH_SB_VERSION_MAX)
 		return"Unsupported superblock version";
 
-	if (le64_to_cpu(sb->version) < BCH_SB_VERSION_EXTENT_MAX)
+	if (le64_to_cpu(sb->version) < BCH_SB_VERSION_EXTENT_MAX) {
 		SET_BCH_SB_ENCODED_EXTENT_MAX_BITS(sb, 7);
+		SET_BCH_SB_POSIX_ACL(sb, 1);
+	}
 
 	block_size = le16_to_cpu(sb->block_size);
 
@@ -462,11 +464,8 @@ static void bch2_sb_update(struct bch_fs *c)
 
 	c->sb.uuid		= src->uuid;
 	c->sb.user_uuid		= src->user_uuid;
-	c->sb.block_size	= le16_to_cpu(src->block_size);
-	c->sb.btree_node_size	= BCH_SB_BTREE_NODE_SIZE(src);
 	c->sb.nr_devices	= src->nr_devices;
 	c->sb.clean		= BCH_SB_CLEAN(src);
-	c->sb.str_hash_type	= BCH_SB_STR_HASH_TYPE(src);
 	c->sb.encryption_type	= BCH_SB_ENCRYPTION_TYPE(src);
 	c->sb.encoded_extent_max= 1 << BCH_SB_ENCODED_EXTENT_MAX_BITS(src);
 	c->sb.time_base_lo	= le64_to_cpu(src->time_base_lo);
@@ -557,7 +556,7 @@ int bch2_sb_from_fs(struct bch_fs *c, struct bch_dev *ca)
 
 /* read superblock: */
 
-static const char *read_one_super(struct bcache_superblock *sb, u64 offset)
+static const char *read_one_super(struct bch_sb_handle *sb, u64 offset)
 {
 	struct bch_csum csum;
 	size_t bytes;
@@ -605,37 +604,37 @@ reread:
 	return NULL;
 }
 
-const char *bch2_read_super(struct bcache_superblock *sb,
-			   struct bch_opts opts,
-			   const char *path)
+const char *bch2_read_super(const char *path,
+			    struct bch_opts opts,
+			    struct bch_sb_handle *ret)
 {
-	u64 offset = opt_defined(opts.sb) ? opts.sb : BCH_SB_SECTOR;
+	u64 offset = opt_get(opts, sb);
 	struct bch_sb_layout layout;
 	const char *err;
 	unsigned i;
 
-	memset(sb, 0, sizeof(*sb));
-	sb->mode = FMODE_READ;
+	memset(ret, 0, sizeof(*ret));
+	ret->mode = FMODE_READ;
 
-	if (!(opt_defined(opts.noexcl) && opts.noexcl))
-		sb->mode |= FMODE_EXCL;
+	if (!opt_get(opts, noexcl))
+		ret->mode |= FMODE_EXCL;
 
-	if (!(opt_defined(opts.nochanges) && opts.nochanges))
-		sb->mode |= FMODE_WRITE;
+	if (!opt_get(opts, nochanges))
+		ret->mode |= FMODE_WRITE;
 
-	err = bch2_blkdev_open(path, sb->mode, sb, &sb->bdev);
+	err = bch2_blkdev_open(path, ret->mode, ret, &ret->bdev);
 	if (err)
 		return err;
 
 	err = "cannot allocate memory";
-	if (__bch2_super_realloc(sb, 0))
+	if (__bch2_super_realloc(ret, 0))
 		goto err;
 
 	err = "dynamic fault";
 	if (bch2_fs_init_fault("read_super"))
 		goto err;
 
-	err = read_one_super(sb, offset);
+	err = read_one_super(ret, offset);
 	if (!err)
 		goto got_super;
 
@@ -650,22 +649,22 @@ const char *bch2_read_super(struct bcache_superblock *sb,
 	 * Error reading primary superblock - read location of backup
 	 * superblocks:
 	 */
-	bio_reset(sb->bio);
-	sb->bio->bi_bdev = sb->bdev;
-	sb->bio->bi_iter.bi_sector = BCH_SB_LAYOUT_SECTOR;
-	sb->bio->bi_iter.bi_size = sizeof(struct bch_sb_layout);
-	bio_set_op_attrs(sb->bio, REQ_OP_READ, REQ_SYNC|REQ_META);
+	bio_reset(ret->bio);
+	ret->bio->bi_bdev = ret->bdev;
+	ret->bio->bi_iter.bi_sector = BCH_SB_LAYOUT_SECTOR;
+	ret->bio->bi_iter.bi_size = sizeof(struct bch_sb_layout);
+	bio_set_op_attrs(ret->bio, REQ_OP_READ, REQ_SYNC|REQ_META);
 	/*
 	 * use sb buffer to read layout, since sb buffer is page aligned but
 	 * layout won't be:
 	 */
-	bch2_bio_map(sb->bio, sb->sb);
+	bch2_bio_map(ret->bio, ret->sb);
 
 	err = "IO error";
-	if (submit_bio_wait(sb->bio))
+	if (submit_bio_wait(ret->bio))
 		goto err;
 
-	memcpy(&layout, sb->sb, sizeof(layout));
+	memcpy(&layout, ret->sb, sizeof(layout));
 	err = validate_sb_layout(&layout);
 	if (err)
 		goto err;
@@ -676,26 +675,26 @@ const char *bch2_read_super(struct bcache_superblock *sb,
 		if (offset == BCH_SB_SECTOR)
 			continue;
 
-		err = read_one_super(sb, offset);
+		err = read_one_super(ret, offset);
 		if (!err)
 			goto got_super;
 	}
 	goto err;
 got_super:
 	pr_debug("read sb version %llu, flags %llu, seq %llu, journal size %u",
-		 le64_to_cpu(sb->sb->version),
-		 le64_to_cpu(sb->sb->flags),
-		 le64_to_cpu(sb->sb->seq),
-		 le16_to_cpu(sb->sb->u64s));
+		 le64_to_cpu(ret->sb->version),
+		 le64_to_cpu(ret->sb->flags),
+		 le64_to_cpu(ret->sb->seq),
+		 le16_to_cpu(ret->sb->u64s));
 
 	err = "Superblock block size smaller than device block size";
-	if (le16_to_cpu(sb->sb->block_size) << 9 <
-	    bdev_logical_block_size(sb->bdev))
+	if (le16_to_cpu(ret->sb->block_size) << 9 <
+	    bdev_logical_block_size(ret->bdev))
 		goto err;
 
 	return NULL;
 err:
-	bch2_free_super(sb);
+	bch2_free_super(ret);
 	return err;
 }
 

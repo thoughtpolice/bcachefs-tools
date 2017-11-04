@@ -75,7 +75,7 @@ deb: all
 
 .PHONE: update-bcachefs-sources
 update-bcachefs-sources:
-	git rm -rf libbcachefs
+	git rm -rf --ignore-unmatch libbcachefs
 	cp $(LINUX_DIR)/fs/bcachefs/*.[ch] libbcachefs/
 	cp $(LINUX_DIR)/include/trace/events/bcachefs.h include/trace/events/
 	echo `cd $(LINUX_DIR); git rev-parse HEAD` > .bcachefs_revision

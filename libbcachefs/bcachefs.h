@@ -367,7 +367,7 @@ struct bch_dev {
 	uuid_le			uuid;
 	char			name[BDEVNAME_SIZE];
 
-	struct bcache_superblock disk_sb;
+	struct bch_sb_handle	disk_sb;
 	int			sb_write_error;
 
 	struct bch_devs_mask	self;
@@ -445,6 +445,7 @@ struct bch_dev {
  * won't automatically reattach).
  */
 enum {
+	BCH_FS_ALLOC_READ_DONE,
 	BCH_FS_INITIAL_GC_DONE,
 	BCH_FS_EMERGENCY_RO,
 	BCH_FS_WRITE_DISABLE_COMPLETE,
@@ -517,14 +518,11 @@ struct bch_fs {
 		uuid_le		uuid;
 		uuid_le		user_uuid;
 
-		u16		block_size;
-		u16		btree_node_size;
 		u16		encoded_extent_max;
 
 		u8		nr_devices;
 		u8		clean;
 
-		u8		str_hash_type;
 		u8		encryption_type;
 
 		u64		time_base_lo;
@@ -796,7 +794,7 @@ static inline unsigned bucket_bytes(const struct bch_dev *ca)
 
 static inline unsigned block_bytes(const struct bch_fs *c)
 {
-	return c->sb.block_size << 9;
+	return c->opts.block_size << 9;
 }
 
 #endif /* _BCACHEFS_H */

@@ -241,13 +241,12 @@ static void bch2_writes_disabled(struct percpu_ref *writes)
 
 void bch2_fs_read_only(struct bch_fs *c)
 {
-	mutex_lock(&c->state_lock);
 	if (c->state != BCH_FS_STARTING &&
 	    c->state != BCH_FS_RW)
-		goto out;
+		return;
 
 	if (test_bit(BCH_FS_ERROR, &c->flags))
-		goto out;
+		return;
 
 	/*
 	 * Block new foreground-end write operations from starting - any new
@@ -296,8 +295,6 @@ void bch2_fs_read_only(struct bch_fs *c)
 	}
 
 	c->state = BCH_FS_RO;
-out:
-	mutex_unlock(&c->state_lock);
 }
 
 static void bch2_fs_read_only_work(struct work_struct *work)
@@ -305,7 +302,9 @@ static void bch2_fs_read_only_work(struct work_struct *work)
 	struct bch_fs *c =
 		container_of(work, struct bch_fs, read_only_work);
 
+	mutex_lock(&c->state_lock);
 	bch2_fs_read_only(c);
+	mutex_unlock(&c->state_lock);
 }
 
 static void bch2_fs_read_only_async(struct bch_fs *c)
@@ -330,10 +329,9 @@ const char *bch2_fs_read_write(struct bch_fs *c)
 	const char *err = NULL;
 	unsigned i;
 
-	mutex_lock(&c->state_lock);
 	if (c->state != BCH_FS_STARTING &&
 	    c->state != BCH_FS_RO)
-		goto out;
+		return NULL;
 
 	for_each_rw_member(ca, c, i)
 		bch2_dev_allocator_add(c, ca);
@@ -367,13 +365,10 @@ const char *bch2_fs_read_write(struct bch_fs *c)
 		percpu_ref_reinit(&c->writes);
 
 	c->state = BCH_FS_RW;
-	err = NULL;
-out:
-	mutex_unlock(&c->state_lock);
-	return err;
+	return NULL;
 err:
 	__bch2_fs_read_only(c);
-	goto out;
+	return err;
 }
 
 /* Filesystem startup/shutdown: */
@@ -452,7 +447,9 @@ static void bch2_fs_offline(struct bch_fs *c)
 	kobject_put(&c->opts_dir);
 	kobject_put(&c->internal);
 
+	mutex_lock(&c->state_lock);
 	__bch2_fs_read_only(c);
+	mutex_unlock(&c->state_lock);
 }
 
 static void bch2_fs_release(struct kobject *kobj)
@@ -555,14 +552,15 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 		goto err;
 	}
 
-	c->block_bits		= ilog2(c->sb.block_size);
-
 	mutex_unlock(&c->sb_lock);
 
 	scnprintf(c->name, sizeof(c->name), "%pU", &c->sb.user_uuid);
 
-	bch2_opts_apply(&c->opts, bch2_sb_opts(sb));
+	c->opts = bch2_opts_default;
+	bch2_opts_apply(&c->opts, bch2_opts_from_sb(sb));
 	bch2_opts_apply(&c->opts, opts);
+
+	c->block_bits		= ilog2(c->opts.block_size);
 
 	c->opts.nochanges	|= c->opts.noreplay;
 	c->opts.read_only	|= c->opts.nochanges;
@@ -590,7 +588,7 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	    bioset_init(&c->bio_write, 1, offsetof(struct bch_write_bio, bio)) ||
 	    mempool_init_page_pool(&c->bio_bounce_pages,
 				   max_t(unsigned,
-					 c->sb.btree_node_size,
+					 c->opts.btree_node_size,
 					 c->sb.encoded_extent_max) /
 				   PAGE_SECTORS, 0) ||
 	    !(c->usage_percpu = alloc_percpu(struct bch_fs_usage)) ||
@@ -657,7 +655,8 @@ static const char *__bch2_fs_online(struct bch_fs *c)
 	if (kobject_add(&c->kobj, NULL, "%pU", c->sb.user_uuid.b) ||
 	    kobject_add(&c->internal, &c->kobj, "internal") ||
 	    kobject_add(&c->opts_dir, &c->kobj, "options") ||
-	    kobject_add(&c->time_stats, &c->kobj, "time_stats"))
+	    kobject_add(&c->time_stats, &c->kobj, "time_stats") ||
+	    bch2_opts_create_sysfs_files(&c->opts_dir))
 		return "error creating sysfs objects";
 
 	mutex_lock(&c->state_lock);
@@ -698,6 +697,8 @@ static const char *__bch2_fs_start(struct bch_fs *c)
 	int ret = -EINVAL;
 
 	closure_init_stack(&cl);
+
+	mutex_lock(&c->state_lock);
 
 	BUG_ON(c->state != BCH_FS_STARTING);
 
@@ -741,6 +742,8 @@ static const char *__bch2_fs_start(struct bch_fs *c)
 		ret = bch2_alloc_read(c, &journal);
 		if (ret)
 			goto err;
+
+		set_bit(BCH_FS_ALLOC_READ_DONE, &c->flags);
 
 		bch_verbose(c, "starting mark and sweep:");
 		err = "error in recovery";
@@ -796,6 +799,8 @@ static const char *__bch2_fs_start(struct bch_fs *c)
 
 		bch_notice(c, "initializing new filesystem");
 
+		set_bit(BCH_FS_ALLOC_READ_DONE, &c->flags);
+
 		ret = bch2_initial_gc(c, &journal);
 		if (ret)
 			goto err;
@@ -831,7 +836,7 @@ static const char *__bch2_fs_start(struct bch_fs *c)
 
 		bch2_inode_init(c, &inode, 0, 0,
 			       S_IFDIR|S_IRWXU|S_IRUGO|S_IXUGO, 0);
-		inode.inum = BCACHEFS_ROOT_INO;
+		inode.bi_inum = BCACHEFS_ROOT_INO;
 
 		bch2_inode_pack(&packed_inode, &inode);
 
@@ -873,6 +878,7 @@ recovery_done:
 
 	err = NULL;
 out:
+	mutex_unlock(&c->state_lock);
 	bch2_journal_entries_free(&journal);
 	return err;
 err:
@@ -922,7 +928,7 @@ static const char *bch2_dev_may_add(struct bch_sb *sb, struct bch_fs *c)
 	if (!sb_mi)
 		return "Invalid superblock: member info area missing";
 
-	if (le16_to_cpu(sb->block_size) != c->sb.block_size)
+	if (le16_to_cpu(sb->block_size) != c->opts.block_size)
 		return "mismatched block size";
 
 	if (le16_to_cpu(sb_mi->members[sb->dev_idx].bucket_size) <
@@ -1129,7 +1135,7 @@ static int bch2_dev_alloc(struct bch_fs *c, unsigned dev_idx)
 
 	btree_node_reserve_buckets =
 		DIV_ROUND_UP(BTREE_NODE_RESERVE,
-			     ca->mi.bucket_size / c->sb.btree_node_size);
+			     ca->mi.bucket_size / c->opts.btree_node_size);
 
 	if (percpu_ref_init(&ca->ref, bch2_dev_ref_release,
 			    0, GFP_KERNEL) ||
@@ -1176,7 +1182,7 @@ err:
 	return -ENOMEM;
 }
 
-static int __bch2_dev_online(struct bch_fs *c, struct bcache_superblock *sb)
+static int __bch2_dev_online(struct bch_fs *c, struct bch_sb_handle *sb)
 {
 	struct bch_dev *ca;
 	int ret;
@@ -1462,7 +1468,7 @@ err:
 /* Add new device to running filesystem: */
 int bch2_dev_add(struct bch_fs *c, const char *path)
 {
-	struct bcache_superblock sb;
+	struct bch_sb_handle sb;
 	const char *err;
 	struct bch_dev *ca = NULL;
 	struct bch_sb_field_members *mi, *dev_mi;
@@ -1470,7 +1476,7 @@ int bch2_dev_add(struct bch_fs *c, const char *path)
 	unsigned dev_idx, nr_devices, u64s;
 	int ret = -EINVAL;
 
-	err = bch2_read_super(&sb, bch2_opts_empty(), path);
+	err = bch2_read_super(path, bch2_opts_empty(), &sb);
 	if (err)
 		return -EINVAL;
 
@@ -1572,14 +1578,14 @@ err:
 /* Hot add existing device to running filesystem: */
 int bch2_dev_online(struct bch_fs *c, const char *path)
 {
-	struct bcache_superblock sb = { 0 };
+	struct bch_sb_handle sb = { 0 };
 	struct bch_dev *ca;
 	unsigned dev_idx;
 	const char *err;
 
 	mutex_lock(&c->state_lock);
 
-	err = bch2_read_super(&sb, bch2_opts_empty(), path);
+	err = bch2_read_super(path, bch2_opts_empty(), &sb);
 	if (err)
 		goto err;
 
@@ -1673,7 +1679,7 @@ const char *bch2_fs_open(char * const *devices, unsigned nr_devices,
 {
 	const char *err;
 	struct bch_fs *c = NULL;
-	struct bcache_superblock *sb;
+	struct bch_sb_handle *sb;
 	unsigned i, best_sb = 0;
 
 	if (!nr_devices)
@@ -1688,7 +1694,7 @@ const char *bch2_fs_open(char * const *devices, unsigned nr_devices,
 		goto err;
 
 	for (i = 0; i < nr_devices; i++) {
-		err = bch2_read_super(&sb[i], opts, devices[i]);
+		err = bch2_read_super(devices[i], opts, &sb[i]);
 		if (err)
 			goto err;
 
@@ -1757,7 +1763,7 @@ err:
 	goto out;
 }
 
-static const char *__bch2_fs_open_incremental(struct bcache_superblock *sb,
+static const char *__bch2_fs_open_incremental(struct bch_sb_handle *sb,
 					      struct bch_opts opts)
 {
 	const char *err;
@@ -1821,11 +1827,11 @@ err:
 
 const char *bch2_fs_open_incremental(const char *path)
 {
-	struct bcache_superblock sb;
+	struct bch_sb_handle sb;
 	struct bch_opts opts = bch2_opts_empty();
 	const char *err;
 
-	err = bch2_read_super(&sb, opts, path);
+	err = bch2_read_super(path, opts, &sb);
 	if (err)
 		return err;
 

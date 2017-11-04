@@ -9,45 +9,29 @@
 #include <asm/byteorder.h>
 #include <linux/uuid.h>
 
-#define LE32_BITMASK(name, type, field, offset, end)			\
+#define LE_BITMASK(_bits, name, type, field, offset, end)		\
 static const unsigned	name##_OFFSET = offset;				\
 static const unsigned	name##_BITS = (end - offset);			\
-static const __u64	name##_MAX = (1ULL << (end - offset)) - 1;	\
+static const __u##_bits	name##_MAX = (1ULL << (end - offset)) - 1;	\
 									\
 static inline __u64 name(const type *k)					\
 {									\
-	return (__le32_to_cpu(k->field) >> offset) &			\
+	return (__le##_bits##_to_cpu(k->field) >> offset) &		\
 		~(~0ULL << (end - offset));				\
 }									\
 									\
 static inline void SET_##name(type *k, __u64 v)				\
 {									\
-	__u64 new = __le32_to_cpu(k->field);				\
+	__u##_bits new = __le##_bits##_to_cpu(k->field);		\
 									\
 	new &= ~(~(~0ULL << (end - offset)) << offset);			\
 	new |= (v & ~(~0ULL << (end - offset))) << offset;		\
-	k->field = __cpu_to_le32(new);					\
+	k->field = __cpu_to_le##_bits(new);				\
 }
 
-#define LE64_BITMASK(name, type, field, offset, end)			\
-static const unsigned	name##_OFFSET = offset;				\
-static const unsigned	name##_BITS = (end - offset);			\
-static const __u64	name##_MAX = (1ULL << (end - offset)) - 1;	\
-									\
-static inline __u64 name(const type *k)					\
-{									\
-	return (__le64_to_cpu(k->field) >> offset) &			\
-		~(~0ULL << (end - offset));				\
-}									\
-									\
-static inline void SET_##name(type *k, __u64 v)				\
-{									\
-	__u64 new = __le64_to_cpu(k->field);				\
-									\
-	new &= ~(~(~0ULL << (end - offset)) << offset);			\
-	new |= (v & ~(~0ULL << (end - offset))) << offset;		\
-	k->field = __cpu_to_le64(new);					\
-}
+#define LE16_BITMASK(n, t, f, o, e)	LE_BITMASK(16, n, t, f, o, e)
+#define LE32_BITMASK(n, t, f, o, e)	LE_BITMASK(32, n, t, f, o, e)
+#define LE64_BITMASK(n, t, f, o, e)	LE_BITMASK(64, n, t, f, o, e)
 
 struct bkey_format {
 	__u8		key_u64s;
@@ -592,9 +576,9 @@ enum bch_inode_types {
 struct bch_inode {
 	struct bch_val		v;
 
-	__le64			i_hash_seed;
-	__le32			i_flags;
-	__le16			i_mode;
+	__le64			bi_hash_seed;
+	__le32			bi_flags;
+	__le16			bi_mode;
 	__u8			fields[0];
 } __attribute__((packed, aligned(8)));
 BKEY_VAL_TYPE(inode,		BCH_INODE_FS);
@@ -602,24 +586,23 @@ BKEY_VAL_TYPE(inode,		BCH_INODE_FS);
 struct bch_inode_generation {
 	struct bch_val		v;
 
-	__le32			i_generation;
+	__le32			bi_generation;
 	__le32			pad;
 } __attribute__((packed, aligned(8)));
 BKEY_VAL_TYPE(inode_generation,	BCH_INODE_GENERATION);
 
-
 #define BCH_INODE_FIELDS()				\
-	BCH_INODE_FIELD(i_atime,	64)		\
-	BCH_INODE_FIELD(i_ctime,	64)		\
-	BCH_INODE_FIELD(i_mtime,	64)		\
-	BCH_INODE_FIELD(i_otime,	64)		\
-	BCH_INODE_FIELD(i_size,		64)		\
-	BCH_INODE_FIELD(i_sectors,	64)		\
-	BCH_INODE_FIELD(i_uid,		32)		\
-	BCH_INODE_FIELD(i_gid,		32)		\
-	BCH_INODE_FIELD(i_nlink,	32)		\
-	BCH_INODE_FIELD(i_generation,	32)		\
-	BCH_INODE_FIELD(i_dev,		32)
+	BCH_INODE_FIELD(bi_atime,	64)		\
+	BCH_INODE_FIELD(bi_ctime,	64)		\
+	BCH_INODE_FIELD(bi_mtime,	64)		\
+	BCH_INODE_FIELD(bi_otime,	64)		\
+	BCH_INODE_FIELD(bi_size,	64)		\
+	BCH_INODE_FIELD(bi_sectors,	64)		\
+	BCH_INODE_FIELD(bi_uid,		32)		\
+	BCH_INODE_FIELD(bi_gid,		32)		\
+	BCH_INODE_FIELD(bi_nlink,	32)		\
+	BCH_INODE_FIELD(bi_generation,	32)		\
+	BCH_INODE_FIELD(bi_dev,		32)
 
 enum {
 	/*
@@ -650,8 +633,8 @@ enum {
 #define BCH_INODE_I_SECTORS_DIRTY (1 << __BCH_INODE_I_SECTORS_DIRTY)
 #define BCH_INODE_HAS_XATTRS	(1 << __BCH_INODE_HAS_XATTRS)
 
-LE32_BITMASK(INODE_STR_HASH,	struct bch_inode, i_flags, 20, 24);
-LE32_BITMASK(INODE_NR_FIELDS,	struct bch_inode, i_flags, 24, 32);
+LE32_BITMASK(INODE_STR_HASH,	struct bch_inode, bi_flags, 20, 24);
+LE32_BITMASK(INODE_NR_FIELDS,	struct bch_inode, bi_flags, 24, 32);
 
 struct bch_inode_blockdev {
 	struct bch_val		v;
@@ -960,6 +943,8 @@ struct bch_sb {
  *			   algorithm in use, if/when we get more than one
  */
 
+LE16_BITMASK(BCH_SB_BLOCK_SIZE,		struct bch_sb, block_size, 0, 16);
+
 LE64_BITMASK(BCH_SB_INITIALIZED,	struct bch_sb, flags[0],  0,  1);
 LE64_BITMASK(BCH_SB_CLEAN,		struct bch_sb, flags[0],  1,  2);
 LE64_BITMASK(BCH_SB_CSUM_TYPE,		struct bch_sb, flags[0],  2,  8);
@@ -976,7 +961,7 @@ LE64_BITMASK(BCH_SB_DATA_CSUM_TYPE,	struct bch_sb, flags[0], 44, 48);
 LE64_BITMASK(BCH_SB_META_REPLICAS_WANT,	struct bch_sb, flags[0], 48, 52);
 LE64_BITMASK(BCH_SB_DATA_REPLICAS_WANT,	struct bch_sb, flags[0], 52, 56);
 
-/* 56-64 unused, was REPLICAS_HAVE */
+LE64_BITMASK(BCH_SB_POSIX_ACL,		struct bch_sb, flags[0], 56, 57);
 
 LE64_BITMASK(BCH_SB_STR_HASH_TYPE,	struct bch_sb, flags[1],  0,  4);
 LE64_BITMASK(BCH_SB_COMPRESSION_TYPE,	struct bch_sb, flags[1],  4,  8);

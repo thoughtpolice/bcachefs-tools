@@ -1,4 +1,4 @@
-#ifndef NO_BCACHEFS_FS
+#ifdef CONFIG_BCACHEFS_POSIX_ACL
 
 #include "bcachefs.h"
 
@@ -8,8 +8,9 @@
 #include <linux/sched.h>
 #include <linux/slab.h>
 
-#include "xattr.h"
 #include "acl.h"
+#include "fs.h"
+#include "xattr.h"
 
 /*
  * Convert from filesystem to in-memory representation.
@@ -134,9 +135,10 @@ fail:
 	return ERR_PTR(-EINVAL);
 }
 
-struct posix_acl *bch2_get_acl(struct inode *inode, int type)
+struct posix_acl *bch2_get_acl(struct inode *vinode, int type)
 {
-	struct bch_fs *c = inode->i_sb->s_fs_info;
+	struct bch_inode_info *inode = to_bch_ei(vinode);
+	struct bch_fs *c = inode->v.i_sb->s_fs_info;
 	int name_index;
 	char *value = NULL;
 	struct posix_acl *acl;
@@ -169,14 +171,15 @@ struct posix_acl *bch2_get_acl(struct inode *inode, int type)
 	kfree(value);
 
 	if (!IS_ERR(acl))
-		set_cached_acl(inode, type, acl);
+		set_cached_acl(&inode->v, type, acl);
 
 	return acl;
 }
 
-int bch2_set_acl(struct inode *inode, struct posix_acl *acl, int type)
+int bch2_set_acl(struct inode *vinode, struct posix_acl *acl, int type)
 {
-	struct bch_fs *c = inode->i_sb->s_fs_info;
+	struct bch_inode_info *inode = to_bch_ei(vinode);
+	struct bch_fs *c = inode->v.i_sb->s_fs_info;
 	int name_index;
 	void *value = NULL;
 	size_t size = 0;
@@ -186,12 +189,13 @@ int bch2_set_acl(struct inode *inode, struct posix_acl *acl, int type)
 	case ACL_TYPE_ACCESS:
 		name_index = BCH_XATTR_INDEX_POSIX_ACL_ACCESS;
 		if (acl) {
-			ret = posix_acl_equiv_mode(acl, &inode->i_mode);
+			ret = posix_acl_equiv_mode(acl, &inode->v.i_mode);
 			if (ret < 0)
 				return ret;
 			else {
-				inode->i_ctime = current_fs_time(inode->i_sb);
-				mark_inode_dirty(inode);
+				inode->v.i_ctime =
+					current_fs_time(inode->v.i_sb);
+				mark_inode_dirty(&inode->v);
 				if (ret == 0)
 					acl = NULL;
 			}
@@ -200,7 +204,7 @@ int bch2_set_acl(struct inode *inode, struct posix_acl *acl, int type)
 
 	case ACL_TYPE_DEFAULT:
 		name_index = BCH_XATTR_INDEX_POSIX_ACL_DEFAULT;
-		if (!S_ISDIR(inode->i_mode))
+		if (!S_ISDIR(inode->v.i_mode))
 			return acl ? -EACCES : 0;
 		break;
 
@@ -222,9 +226,9 @@ int bch2_set_acl(struct inode *inode, struct posix_acl *acl, int type)
 		ret = -E2BIG;
 
 	if (!ret)
-		set_cached_acl(inode, type, acl);
+		set_cached_acl(&inode->v, type, acl);
 
 	return ret;
 }
 
-#endif /* NO_BCACHEFS_FS */
+#endif /* CONFIG_BCACHEFS_POSIX_ACL */

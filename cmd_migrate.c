@@ -130,14 +130,14 @@ static void create_dirent(struct bch_fs *c,
 	struct bch_hash_info parent_hash_info = bch2_hash_info_init(c, parent);
 	struct qstr qname = { { { .len = strlen(name), } }, .name = name };
 
-	int ret = bch2_dirent_create(c, parent->inum, &parent_hash_info,
+	int ret = bch2_dirent_create(c, parent->bi_inum, &parent_hash_info,
 				     mode_to_type(mode), &qname,
 				     inum, NULL, BCH_HASH_SET_MUST_CREATE);
 	if (ret)
 		die("error creating file: %s", strerror(-ret));
 
 	if (S_ISDIR(mode))
-		parent->i_nlink++;
+		parent->bi_nlink++;
 }
 
 static void create_link(struct bch_fs *c,
@@ -149,7 +149,7 @@ static void create_link(struct bch_fs *c,
 	if (ret)
 		die("error looking up hardlink: %s", strerror(-ret));
 
-	inode.i_nlink++;
+	inode.bi_nlink++;
 	update_inode(c, &inode);
 
 	create_dirent(c, parent, name, inum, mode);
@@ -171,7 +171,7 @@ static struct bch_inode_unpacked create_file(struct bch_fs *c,
 	if (ret)
 		die("error creating file: %s", strerror(-ret));
 
-	create_dirent(c, parent, name, new_inode.inum, mode);
+	create_dirent(c, parent, name, new_inode.bi_inum, mode);
 
 	return new_inode;
 }
@@ -207,9 +207,9 @@ static const struct xattr_handler *xattr_resolve_name(const char **name)
 static void copy_times(struct bch_fs *c, struct bch_inode_unpacked *dst,
 		       struct stat *src)
 {
-	dst->i_atime = timespec_to_bch2_time(c, src->st_atim);
-	dst->i_mtime = timespec_to_bch2_time(c, src->st_mtim);
-	dst->i_ctime = timespec_to_bch2_time(c, src->st_ctim);
+	dst->bi_atime = timespec_to_bch2_time(c, src->st_atim);
+	dst->bi_mtime = timespec_to_bch2_time(c, src->st_mtim);
+	dst->bi_ctime = timespec_to_bch2_time(c, src->st_ctim);
 }
 
 static void copy_xattrs(struct bch_fs *c, struct bch_inode_unpacked *dst,
@@ -236,7 +236,7 @@ static void copy_xattrs(struct bch_fs *c, struct bch_inode_unpacked *dst,
 
 		const struct xattr_handler *h = xattr_resolve_name(&attr);
 
-		int ret = __bch2_xattr_set(c, dst->inum, &hash_info, attr,
+		int ret = __bch2_xattr_set(c, dst->bi_inum, &hash_info, attr,
 					   val, val_size, 0, h->flags, NULL);
 		if (ret < 0)
 			die("error creating xattr: %s", strerror(-ret));
@@ -266,11 +266,11 @@ static void write_data(struct bch_fs *c,
 		die("error reserving space in new filesystem: %s", strerror(-ret));
 
 	bch2_write_op_init(&op, c, res, c->write_points,
-			   POS(dst_inode->inum, dst_offset >> 9), NULL, 0);
+			   POS(dst_inode->bi_inum, dst_offset >> 9), NULL, 0);
 	closure_call(&op.cl, bch2_write, NULL, &cl);
 	closure_sync(&cl);
 
-	dst_inode->i_sectors += len >> 9;
+	dst_inode->bi_sectors += len >> 9;
 }
 
 static char buf[1 << 20] __aligned(PAGE_SIZE);
@@ -316,7 +316,7 @@ static void link_data(struct bch_fs *c, struct bch_inode_unpacked *dst,
 			      length);
 
 		e = bkey_extent_init(&k.k);
-		e->k.p.inode	= dst->inum;
+		e->k.p.inode	= dst->bi_inum;
 		e->k.p.offset	= logical + sectors;
 		e->k.size	= sectors;
 		extent_ptr_append(e, (struct bch_extent_ptr) {
@@ -340,7 +340,7 @@ static void link_data(struct bch_fs *c, struct bch_inode_unpacked *dst,
 
 		bch2_disk_reservation_put(c, &res);
 
-		dst->i_sectors	+= sectors;
+		dst->bi_sectors	+= sectors;
 		logical		+= sectors;
 		physical	+= sectors;
 		length		-= sectors;
@@ -453,7 +453,7 @@ static void copy_dir(struct copy_fs_state *s,
 				    stat.st_mode, stat.st_rdev);
 
 		if (dst_inum)
-			*dst_inum = inode.inum;
+			*dst_inum = inode.bi_inum;
 
 		copy_times(c, &inode, &stat);
 		copy_xattrs(c, &inode, d->d_name);
@@ -467,14 +467,14 @@ static void copy_dir(struct copy_fs_state *s,
 			close(fd);
 			break;
 		case DT_REG:
-			inode.i_size = stat.st_size;
+			inode.bi_size = stat.st_size;
 
 			fd = xopen(d->d_name, O_RDONLY|O_NOATIME);
 			copy_file(c, &inode, fd, child_path, &s->extents);
 			close(fd);
 			break;
 		case DT_LNK:
-			inode.i_size = stat.st_size;
+			inode.bi_size = stat.st_size;
 
 			copy_link(c, &inode, d->d_name);
 			break;
@@ -555,7 +555,7 @@ static void reserve_old_fs_space(struct bch_fs *c,
 
 	dst = create_file(c, root_inode, "old_migrated_filesystem",
 			  0, 0, S_IFREG|0400, 0);
-	dst.i_size = bucket_to_sector(ca, ca->mi.nbuckets) << 9;
+	dst.bi_size = bucket_to_sector(ca, ca->mi.nbuckets) << 9;
 
 	ranges_sort_merge(extents);
 

@@ -189,6 +189,8 @@ struct bch_sb *bch2_format(struct format_opts opts,
 	SET_BCH_SB_STR_HASH_TYPE(sb,		BCH_STR_HASH_SIPHASH);
 	SET_BCH_SB_ENCODED_EXTENT_MAX_BITS(sb,	ilog2(opts.encoded_extent_max));
 
+	SET_BCH_SB_POSIX_ACL(sb,		1);
+
 	struct timespec now;
 	if (clock_gettime(CLOCK_REALTIME, &now))
 		die("error getting current time: %m");
