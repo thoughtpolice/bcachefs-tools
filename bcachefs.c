@@ -36,7 +36,6 @@ static void usage(void)
 	     "  fsck             Check an existing filesystem for errors\n"
 	     "\n"
 	     "Startup/shutdown, assembly of multi device filesystems:\n"
-	     "  unlock           Unlock an encrypted filesystem prior to running/mounting\n"
 	     "  assemble         Assemble an existing multi device filesystem\n"
 	     "  incremental      Incrementally assemble an existing multi device filesystem\n"
 	     "  run              Start a partially assembled filesystem\n"
@@ -53,6 +52,11 @@ static void usage(void)
 	     "  device offline   Take a device offline, without removing it\n"
 	     "  device evacuate  Migrate data off of a specific device\n"
 	     "  device set-state Mark a device as failed\n"
+	     "\n"
+	     "Encryption:\n"
+	     "  unlock           Unlock an encrypted filesystem prior to running/mounting\n"
+	     "  set-passphrase   Change passphrase on an existing (unmounted) filesystem\n"
+	     "  remove-passphrase Remove passphrase on an existing (unmounted) filesystem\n"
 	     "\n"
 	     "Migrate:\n"
 	     "  migrate          Migrate an existing filesystem to bcachefs, in place\n"
@@ -133,8 +137,6 @@ int main(int argc, char *argv[])
 	if (!strcmp(cmd, "fsck"))
 		return cmd_fsck(argc, argv);
 
-	if (!strcmp(cmd, "unlock"))
-		return cmd_unlock(argc, argv);
 	if (!strcmp(cmd, "assemble"))
 		return cmd_assemble(argc, argv);
 	if (!strcmp(cmd, "incremental"))
@@ -149,6 +151,13 @@ int main(int argc, char *argv[])
 
 	if (!strcmp(cmd, "device"))
 		return device_cmds(argc, argv);
+
+	if (!strcmp(cmd, "unlock"))
+		return cmd_unlock(argc, argv);
+	if (!strcmp(cmd, "set-passphrase"))
+		return cmd_set_passphrase(argc, argv);
+	if (!strcmp(cmd, "remove-passphrase"))
+		return cmd_remove_passphrase(argc, argv);
 
 	if (!strcmp(cmd, "migrate"))
 		return cmd_migrate(argc, argv);

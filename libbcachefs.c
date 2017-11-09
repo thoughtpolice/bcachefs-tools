@@ -293,14 +293,6 @@ struct bch_sb *__bch2_super_read(int fd, u64 sector)
 	return ret;
 }
 
-struct bch_sb *bch2_super_read(const char *path)
-{
-	int fd = xopen(path, O_RDONLY);
-	struct bch_sb *sb = __bch2_super_read(fd, BCH_SB_SECTOR);
-	close(fd);
-	return sb;
-}
-
 static unsigned get_dev_has_data(struct bch_sb *sb, unsigned dev)
 {
 	struct bch_sb_field_replicas *replicas;

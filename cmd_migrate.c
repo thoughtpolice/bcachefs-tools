@@ -701,24 +701,8 @@ int cmd_migrate(int argc, char *argv[])
 
 	find_superblock_space(extents, &dev);
 
-	if (format_opts.encrypted && !no_passphrase) {
-		format_opts.passphrase = read_passphrase("Enter passphrase: ");
-
-		if (isatty(STDIN_FILENO)) {
-			char *pass2 =
-				read_passphrase("Enter same passphrase again: ");
-
-			if (strcmp(format_opts.passphrase, pass2)) {
-				memzero_explicit(format_opts.passphrase,
-						 strlen(format_opts.passphrase));
-				memzero_explicit(pass2, strlen(pass2));
-				die("Passphrases do not match");
-			}
-
-			memzero_explicit(pass2, strlen(pass2));
-			free(pass2);
-		}
-	}
+	if (format_opts.encrypted && !no_passphrase)
+		format_opts.passphrase = read_passphrase_twice("Enter passphrase: ");
 
 	struct bch_sb *sb = bch2_format(format_opts, &dev, 1);
 	u64 sb_offset = le64_to_cpu(sb->layout.sb_offset[0]);

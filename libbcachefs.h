@@ -73,7 +73,6 @@ struct bch_sb *bch2_format(struct format_opts, struct dev_opts *, size_t);
 
 void bch2_super_write(int, struct bch_sb *);
 struct bch_sb *__bch2_super_read(int, u64);
-struct bch_sb *bch2_super_read(const char *);
 
 void bch2_super_print(struct bch_sb *, int);
 

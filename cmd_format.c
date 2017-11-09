@@ -25,6 +25,7 @@
 #include "libbcachefs.h"
 #include "crypto.h"
 #include "opts.h"
+#include "super-io.h"
 #include "util.h"
 
 #define OPTS									\
@@ -250,24 +251,8 @@ int cmd_format(int argc, char *argv[])
 	if (!darray_size(devices))
 		die("Please supply a device");
 
-	if (opts.encrypted && !no_passphrase) {
-		opts.passphrase = read_passphrase("Enter passphrase: ");
-
-		if (isatty(STDIN_FILENO)) {
-			char *pass2 =
-				read_passphrase("Enter same passphrase again: ");
-
-			if (strcmp(opts.passphrase, pass2)) {
-				memzero_explicit(opts.passphrase,
-						 strlen(opts.passphrase));
-				memzero_explicit(pass2, strlen(pass2));
-				die("Passphrases do not match");
-			}
-
-			memzero_explicit(pass2, strlen(pass2));
-			free(pass2);
-		}
-	}
+	if (opts.encrypted && !no_passphrase)
+		opts.passphrase = read_passphrase_twice("Enter passphrase: ");
 
 	darray_foreach(dev, devices)
 		dev->fd = open_for_format(dev->path, force);
@@ -289,12 +274,16 @@ int cmd_format(int argc, char *argv[])
 
 int cmd_show_super(int argc, char *argv[])
 {
-	struct bch_sb *sb;
+	struct bch_sb_handle sb;
+	const char *err;
 
 	if (argc != 2)
 		die("please supply a single device");
 
-	sb = bch2_super_read(argv[1]);
-	bch2_super_print(sb, HUMAN_READABLE);
+	err = bch2_read_super(argv[1], bch2_opts_empty(), &sb);
+	if (err)
+		die("Error opening %s: %s", argv[1], err);
+
+	bch2_super_print(sb.sb, HUMAN_READABLE);
 	return 0;
 }

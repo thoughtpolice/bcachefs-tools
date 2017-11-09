@@ -54,11 +54,32 @@ char *read_passphrase(const char *prompt)
 	return buf;
 }
 
-void derive_passphrase(struct bch_sb_field_crypt *crypt,
-		       struct bch_key *key,
-		       const char *passphrase)
+char *read_passphrase_twice(const char *prompt)
+{
+	char *pass = read_passphrase(prompt);
+
+	if (!isatty(STDIN_FILENO))
+		return pass;
+
+	char *pass2 = read_passphrase("Enter same passphrase again: ");
+
+	if (strcmp(pass, pass2)) {
+		memzero_explicit(pass, strlen(pass));
+		memzero_explicit(pass2, strlen(pass2));
+		die("Passphrases do not match");
+	}
+
+	memzero_explicit(pass2, strlen(pass2));
+	free(pass2);
+
+	return pass;
+}
+
+struct bch_key derive_passphrase(struct bch_sb_field_crypt *crypt,
+				 const char *passphrase)
 {
 	const unsigned char salt[] = "bcache";
+	struct bch_key key;
 	int ret;
 
 	switch (BCH_CRYPT_KDF_TYPE(crypt)) {
@@ -68,35 +89,49 @@ void derive_passphrase(struct bch_sb_field_crypt *crypt,
 				       1ULL << BCH_KDF_SCRYPT_N(crypt),
 				       1ULL << BCH_KDF_SCRYPT_R(crypt),
 				       1ULL << BCH_KDF_SCRYPT_P(crypt),
-				       (void *) key, sizeof(*key));
+				       (void *) &key, sizeof(key));
 		if (ret)
 			die("scrypt error: %i", ret);
 		break;
 	default:
 		die("unknown kdf type %llu", BCH_CRYPT_KDF_TYPE(crypt));
 	}
+
+	return key;
 }
 
-void bch2_add_key(struct bch_sb *sb, const char *passphrase)
+void bch2_passphrase_check(struct bch_sb *sb, const char *passphrase,
+			   struct bch_key *passphrase_key,
+			   struct bch_encrypted_key *sb_key)
 {
 	struct bch_sb_field_crypt *crypt = bch2_sb_get_crypt(sb);
 	if (!crypt)
 		die("filesystem is not encrypted");
 
-	struct bch_encrypted_key sb_key = crypt->key;
-	if (!bch2_key_is_encrypted(&sb_key))
+	*sb_key = crypt->key;
+
+	if (!bch2_key_is_encrypted(sb_key))
 		die("filesystem does not have encryption key");
 
-	struct bch_key passphrase_key;
-	derive_passphrase(crypt, &passphrase_key, passphrase);
+	*passphrase_key = derive_passphrase(crypt, passphrase);
 
 	/* Check if the user supplied the correct passphrase: */
-	if (bch2_chacha_encrypt_key(&passphrase_key, __bch2_sb_key_nonce(sb),
-				   &sb_key, sizeof(sb_key)))
+	if (bch2_chacha_encrypt_key(passphrase_key, __bch2_sb_key_nonce(sb),
+				    sb_key, sizeof(*sb_key)))
 		die("error encrypting key");
 
-	if (bch2_key_is_encrypted(&sb_key))
+	if (bch2_key_is_encrypted(sb_key))
 		die("incorrect passphrase");
+}
+
+void bch2_add_key(struct bch_sb *sb, const char *passphrase)
+{
+	struct bch_key passphrase_key;
+	struct bch_encrypted_key sb_key;
+
+	bch2_passphrase_check(sb, passphrase,
+			      &passphrase_key,
+			      &sb_key);
 
 	char uuid[40];
 	uuid_unparse_lower(sb->user_uuid.b, uuid);
@@ -125,14 +160,13 @@ void bch_sb_crypt_init(struct bch_sb *sb,
 	get_random_bytes(&crypt->key.key, sizeof(crypt->key.key));
 
 	if (passphrase) {
-		struct bch_key passphrase_key;
 
 		SET_BCH_CRYPT_KDF_TYPE(crypt, BCH_KDF_SCRYPT);
 		SET_BCH_KDF_SCRYPT_N(crypt, ilog2(SCRYPT_N));
 		SET_BCH_KDF_SCRYPT_R(crypt, ilog2(SCRYPT_r));
 		SET_BCH_KDF_SCRYPT_P(crypt, ilog2(SCRYPT_p));
 
-		derive_passphrase(crypt, &passphrase_key, passphrase);
+		struct bch_key passphrase_key = derive_passphrase(crypt, passphrase);
 
 		assert(!bch2_key_is_encrypted(&crypt->key));
 
