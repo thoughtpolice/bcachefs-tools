@@ -749,9 +749,9 @@ int cmd_migrate(int argc, char *argv[])
 	char *path[1] = { dev.path };
 	const char *err;
 
-	opts.sb		= sb_offset;
-	opts.nostart	= true;
-	opts.noexcl	= true;
+	opt_set(opts, sb,	sb_offset);
+	opt_set(opts, nostart,	true);
+	opt_set(opts, noexcl,	true);
 
 	err = bch2_fs_open(path, 1, opts, &c);
 	if (err)
@@ -768,8 +768,8 @@ int cmd_migrate(int argc, char *argv[])
 	bch2_fs_stop(c);
 
 	printf("Migrate complete, running fsck:\n");
-	opts.nostart	= false;
-	opts.nochanges	= true;
+	opt_set(opts, nostart,	false);
+	opt_set(opts, nochanges, true);
 
 	err = bch2_fs_open(path, 1, opts, &c);
 	if (err)

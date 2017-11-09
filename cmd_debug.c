@@ -88,10 +88,10 @@ int cmd_dump(int argc, char *argv[])
 	bool force = false;
 	int fd, opt;
 
-	opts.nochanges	= true;
-	opts.noreplay	= true;
-	opts.errors	= BCH_ON_ERROR_CONTINUE;
-	opts.degraded	= true;
+	opt_set(opts, nochanges,	true);
+	opt_set(opts, noreplay,		true);
+	opt_set(opts, degraded,		true);
+	opt_set(opts, errors,		BCH_ON_ERROR_CONTINUE);
 
 	while ((opt = getopt(argc, argv, "o:fh")) != -1)
 		switch (opt) {
@@ -265,10 +265,10 @@ int cmd_list(int argc, char *argv[])
 	u64 inum;
 	int mode = 0, opt;
 
-	opts.nochanges	= true;
-	opts.norecovery	= true;
-	opts.errors	= BCH_ON_ERROR_CONTINUE;
-	opts.degraded	= true;
+	opt_set(opts, nochanges,	true);
+	opt_set(opts, norecovery,	true);
+	opt_set(opts, degraded,		true);
+	opt_set(opts, errors,		BCH_ON_ERROR_CONTINUE);
 
 	while ((opt = getopt(argc, argv, "b:s:e:i:m:fvh")) != -1)
 		switch (opt) {
