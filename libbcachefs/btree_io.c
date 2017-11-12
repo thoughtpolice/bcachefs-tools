@@ -1198,8 +1198,13 @@ int bch2_btree_node_read_done(struct bch_fs *c, struct btree *b, bool have_retry
 			goto err;
 		}
 
-		if (ret)
-			continue;
+		if (ret) {
+			btree_err_on(!b->written,
+				     BTREE_ERR_FIXABLE, c, b, i,
+				     "first btree node bset has blacklisted journal seq");
+			if (b->written)
+				continue;
+		}
 
 		__bch2_btree_node_iter_push(iter, b,
 					   i->start,
@@ -1267,6 +1272,7 @@ static void btree_node_read_work(struct work_struct *work)
 
 	goto start;
 	do {
+		bch_info(c, "retrying read");
 		bio_reset(bio);
 		bio->bi_opf		= REQ_OP_READ|REQ_SYNC|REQ_META;
 		bio->bi_bdev		= rb->pick.ca->disk_sb.bdev;
