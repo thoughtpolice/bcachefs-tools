@@ -13,7 +13,7 @@ CFLAGS+=-std=gnu89 -O2 -g -MMD -Wall				\
 	-DNO_BCACHEFS_FS					\
 	-DNO_BCACHEFS_SYSFS					\
 	$(EXTRA_CFLAGS)
-LDFLAGS+=-O2 -g
+LDFLAGS+=$(CFLAGS)
 
 CC_VERSION=$(shell $(CC) -v 2>&1|grep -E '(gcc|clang) version')
 

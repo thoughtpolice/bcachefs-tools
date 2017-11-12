@@ -64,7 +64,7 @@ struct dev_opts {
 static inline struct dev_opts dev_opts_default()
 {
 	return (struct dev_opts) {
-		.data_allowed		= ~0 << 2,
+		.data_allowed		= ~0U << 2,
 	};
 }
 

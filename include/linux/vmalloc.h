@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <sys/mman.h>
 
+#include "linux/slab.h"
 #include "tools-util.h"
 
 #define PAGE_KERNEL		0
@@ -13,16 +14,21 @@
 
 static inline void *__vmalloc(unsigned long size, gfp_t gfp_mask, unsigned prot)
 {
-	void *p = aligned_alloc(PAGE_SIZE, size);
+	void *p;
 
-	if (p && prot == PAGE_KERNEL_EXEC) {
-		if (mprotect(p, size, PROT_READ|PROT_WRITE|PROT_EXEC)) {
-			vfree(p);
-			p = NULL;
-		}
+	run_shrinkers();
+
+	p = aligned_alloc(PAGE_SIZE, size);
+	if (!p)
+		return NULL;
+
+	if (prot == PAGE_KERNEL_EXEC &&
+	    mprotect(p, size, PROT_READ|PROT_WRITE|PROT_EXEC)) {
+		vfree(p);
+		return NULL;
 	}
 
-	if (p && (gfp_mask & __GFP_ZERO))
+	if (gfp_mask & __GFP_ZERO)
 		memset(p, 0, size);
 
 	return p;

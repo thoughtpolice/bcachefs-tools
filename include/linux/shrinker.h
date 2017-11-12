@@ -19,7 +19,9 @@ struct shrinker {
 	struct list_head list;
 };
 
-static inline int register_shrinker(struct shrinker *shrinker) { return 0; }
-static inline void unregister_shrinker(struct shrinker *shrinker) {}
+int register_shrinker(struct shrinker *);
+void unregister_shrinker(struct shrinker *);
+
+void run_shrinkers(void);
 
 #endif /* __TOOLS_LINUX_SHRINKER_H */

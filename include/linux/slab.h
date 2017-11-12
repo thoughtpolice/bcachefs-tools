@@ -7,6 +7,7 @@
 
 #include <linux/kernel.h>
 #include <linux/page.h>
+#include <linux/shrinker.h>
 #include <linux/types.h>
 
 #define ARCH_KMALLOC_MINALIGN		16
@@ -14,8 +15,11 @@
 
 static inline void *kmalloc(size_t size, gfp_t flags)
 {
-	void *p = malloc(size);
+	void *p;
 
+	run_shrinkers();
+
+	p = malloc(size);
 	if (p && (flags & __GFP_ZERO))
 		memset(p, 0, size);
 
@@ -24,24 +28,31 @@ static inline void *kmalloc(size_t size, gfp_t flags)
 
 static inline void *krealloc(void *old, size_t size, gfp_t flags)
 {
-	void *new = kmalloc(size, flags);
+	void *new;
 
-	if (new && (flags & __GFP_ZERO))
+	run_shrinkers();
+
+	new = malloc(size);
+	if (!new)
+		return NULL;
+
+	if (flags & __GFP_ZERO)
 		memset(new, 0, size);
 
-	if (new) {
-		memcpy(new, old,
-		       min(malloc_usable_size(old),
-			   malloc_usable_size(new)));
-		free(old);
-	}
+	memcpy(new, old,
+	       min(malloc_usable_size(old),
+		   malloc_usable_size(new)));
+	free(old);
 
 	return new;
 }
 
-#define kzalloc(size, flags)		calloc(1, size)
-#define kcalloc(n, size, flags)		calloc(n, size)
-#define kmalloc_array(n, size, flags)	calloc(n, size)
+#define kzalloc(size, flags)		kmalloc(size, flags|__GFP_ZERO)
+#define kmalloc_array(n, size, flags)					\
+	((size) != 0 && (n) > SIZE_MAX / (size)				\
+	 ? NULL : kmalloc(n * size, flags))
+
+#define kcalloc(n, size, flags)		kmalloc_array(n, size, flags|__GFP_ZERO)
 
 #define kfree(p)			free(p)
 #define kvfree(p)			free(p)
@@ -50,8 +61,11 @@ static inline void *krealloc(void *old, size_t size, gfp_t flags)
 static inline struct page *alloc_pages(gfp_t flags, unsigned int order)
 {
 	size_t size = PAGE_SIZE << order;
-	void *p = memalign(PAGE_SIZE, size);
+	void *p;
 
+	run_shrinkers();
+
+	p = aligned_alloc(PAGE_SIZE, size);
 	if (p && (flags & __GFP_ZERO))
 		memset(p, 0, size);
 
@@ -91,7 +105,7 @@ static inline void vunmap(const void *addr) {}
 static inline void *vmap(struct page **pages, unsigned int count,
 			 unsigned long flags, unsigned prot)
 {
-	return page_address(pages[0]);
+	return NULL;
 }
 
 #define is_vmalloc_addr(page)		0
