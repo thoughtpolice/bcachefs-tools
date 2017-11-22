@@ -376,7 +376,7 @@ err:
 static void bch2_fs_free(struct bch_fs *c)
 {
 	bch2_fs_encryption_exit(c);
-	bch2_fs_btree_exit(c);
+	bch2_fs_btree_cache_exit(c);
 	bch2_fs_journal_exit(&c->journal);
 	bch2_io_clock_exit(&c->io_clock[WRITE]);
 	bch2_io_clock_exit(&c->io_clock[READ]);
@@ -491,7 +491,6 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	mutex_init(&c->state_lock);
 	mutex_init(&c->sb_lock);
 	mutex_init(&c->replicas_gc_lock);
-	mutex_init(&c->btree_cache_lock);
 	mutex_init(&c->bucket_lock);
 	mutex_init(&c->btree_root_lock);
 	INIT_WORK(&c->read_only_work, bch2_fs_read_only_work);
@@ -507,9 +506,6 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	bch2_fs_tiering_init(c);
 
 	INIT_LIST_HEAD(&c->list);
-	INIT_LIST_HEAD(&c->btree_cache);
-	INIT_LIST_HEAD(&c->btree_cache_freeable);
-	INIT_LIST_HEAD(&c->btree_cache_freed);
 
 	INIT_LIST_HEAD(&c->btree_interior_update_list);
 	mutex_init(&c->btree_reserve_cache_lock);
@@ -545,6 +541,8 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	c->journal.delay_time	= &c->journal_delay_time;
 	c->journal.blocked_time	= &c->journal_blocked_time;
 	c->journal.flush_seq_time = &c->journal_flush_seq_time;
+
+	bch2_fs_btree_cache_init_early(&c->btree_cache);
 
 	mutex_lock(&c->sb_lock);
 
@@ -599,7 +597,7 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	    bch2_io_clock_init(&c->io_clock[READ]) ||
 	    bch2_io_clock_init(&c->io_clock[WRITE]) ||
 	    bch2_fs_journal_init(&c->journal) ||
-	    bch2_fs_btree_init(c) ||
+	    bch2_fs_btree_cache_init(c) ||
 	    bch2_fs_encryption_init(c) ||
 	    bch2_fs_compress_init(c) ||
 	    bch2_check_set_has_compressed_data(c, c->opts.compression))
@@ -1107,8 +1105,6 @@ static int bch2_dev_alloc(struct bch_fs *c, unsigned dev_idx)
 	ca->dev_idx = dev_idx;
 	__set_bit(ca->dev_idx, ca->self.d);
 
-	ca->copygc_write_point.type = BCH_DATA_USER;
-
 	spin_lock_init(&ca->freelist_lock);
 	bch2_dev_moving_gc_init(ca);
 
@@ -1168,8 +1164,6 @@ static int bch2_dev_alloc(struct bch_fs *c, unsigned dev_idx)
 	total_reserve = ca->free_inc.size;
 	for (i = 0; i < RESERVE_NR; i++)
 		total_reserve += ca->free[i].size;
-
-	ca->copygc_write_point.group = &ca->self;
 
 	ca->fs = c;
 	rcu_assign_pointer(c->devs[ca->dev_idx], ca);

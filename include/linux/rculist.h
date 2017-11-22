@@ -1,8 +1,6 @@
 #ifndef _LINUX_RCULIST_H
 #define _LINUX_RCULIST_H
 
-#ifdef __KERNEL__
-
 /*
  * RCU-protected list version
  */
@@ -671,5 +669,4 @@ static inline void hlist_add_behind_rcu(struct hlist_node *n,
 	     pos = hlist_entry_safe(rcu_dereference_raw(hlist_next_rcu(	\
 			&(pos)->member)), typeof(*(pos)), member))
 
-#endif	/* __KERNEL__ */
 #endif

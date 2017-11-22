@@ -392,6 +392,9 @@ struct bch_dev {
 	unsigned		nr_invalidated;
 	bool			alloc_thread_started;
 
+	struct open_bucket_ptr	open_buckets_partial[BCH_REPLICAS_MAX * WRITE_POINT_COUNT];
+	unsigned		open_buckets_partial_nr;
+
 	size_t			fifo_last_bucket;
 
 	/* Allocation stuff: */
@@ -425,8 +428,6 @@ struct bch_dev {
 	struct task_struct	*moving_gc_read;
 
 	struct bch_pd_controller moving_gc_pd;
-
-	struct write_point	copygc_write_point;
 
 	struct journal_device	journal;
 
@@ -472,7 +473,6 @@ struct bch_tier {
 	struct bch_pd_controller pd;
 
 	struct bch_devs_mask	devs;
-	struct write_point	wp;
 };
 
 enum bch_fs_state {
@@ -546,40 +546,7 @@ struct bch_fs {
 	struct btree_root	btree_roots[BTREE_ID_NR];
 	struct mutex		btree_root_lock;
 
-	bool			btree_cache_table_init_done;
-	struct rhashtable	btree_cache_table;
-
-	/*
-	 * We never free a struct btree, except on shutdown - we just put it on
-	 * the btree_cache_freed list and reuse it later. This simplifies the
-	 * code, and it doesn't cost us much memory as the memory usage is
-	 * dominated by buffers that hold the actual btree node data and those
-	 * can be freed - and the number of struct btrees allocated is
-	 * effectively bounded.
-	 *
-	 * btree_cache_freeable effectively is a small cache - we use it because
-	 * high order page allocations can be rather expensive, and it's quite
-	 * common to delete and allocate btree nodes in quick succession. It
-	 * should never grow past ~2-3 nodes in practice.
-	 */
-	struct mutex		btree_cache_lock;
-	struct list_head	btree_cache;
-	struct list_head	btree_cache_freeable;
-	struct list_head	btree_cache_freed;
-
-	/* Number of elements in btree_cache + btree_cache_freeable lists */
-	unsigned		btree_cache_used;
-	unsigned		btree_cache_reserve;
-	struct shrinker		btree_cache_shrink;
-
-	/*
-	 * If we need to allocate memory for a new btree node and that
-	 * allocation fails, we can cannibalize another node in the btree cache
-	 * to satisfy the allocation - lock to guarantee only one thread does
-	 * this at a time:
-	 */
-	struct closure_waitlist	mca_wait;
-	struct task_struct	*btree_cache_alloc_lock;
+	struct btree_cache	btree_cache;
 
 	mempool_t		btree_reserve_pool;
 
@@ -606,6 +573,7 @@ struct bch_fs {
 	struct workqueue_struct	*copygc_wq;
 
 	/* ALLOCATION */
+	struct rw_semaphore	alloc_gc_lock;
 	struct bch_pd_controller foreground_write_pd;
 	struct delayed_work	pd_controllers_update;
 	unsigned		pd_controllers_update_seconds;
@@ -622,6 +590,7 @@ struct bch_fs {
 	struct bch_devs_mask	rw_devs[BCH_DATA_NR];
 	struct bch_tier		tiers[BCH_TIER_MAX];
 	/* NULL if we only have devices in one tier: */
+	struct bch_devs_mask	*fastest_devs;
 	struct bch_tier		*fastest_tier;
 
 	u64			capacity; /* sectors */
@@ -654,17 +623,17 @@ struct bch_fs {
 	struct io_clock		io_clock[2];
 
 	/* SECTOR ALLOCATOR */
-	struct list_head	open_buckets_open;
-	struct list_head	open_buckets_free;
-	unsigned		open_buckets_nr_free;
-	struct closure_waitlist	open_buckets_wait;
 	spinlock_t		open_buckets_lock;
+	u8			open_buckets_freelist;
+	u8			open_buckets_nr_free;
+	struct closure_waitlist	open_buckets_wait;
 	struct open_bucket	open_buckets[OPEN_BUCKETS_COUNT];
 
 	struct write_point	btree_write_point;
 
 	struct write_point	write_points[WRITE_POINT_COUNT];
-	struct write_point	promote_write_point;
+	struct hlist_head	write_points_hash[WRITE_POINT_COUNT];
+	struct mutex		write_points_hash_lock;
 
 	/*
 	 * This write point is used for migrating data off a device

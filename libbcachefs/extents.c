@@ -511,19 +511,19 @@ static void extent_pick_read_device(struct bch_fs *c,
 		struct bch_dev *ca = c->devs[ptr->dev];
 
 		if (ptr->cached && ptr_stale(ca, ptr))
-			return;
+			continue;
 
 		if (ca->mi.state == BCH_MEMBER_STATE_FAILED)
-			return;
+			continue;
 
 		if (avoid && test_bit(ca->dev_idx, avoid->d))
-			return;
+			continue;
 
 		if (pick->ca && pick->ca->mi.tier < ca->mi.tier)
-			return;
+			continue;
 
 		if (!percpu_ref_tryget(&ca->io_ref))
-			return;
+			continue;
 
 		if (pick->ca)
 			percpu_ref_put(&pick->ca->io_ref);

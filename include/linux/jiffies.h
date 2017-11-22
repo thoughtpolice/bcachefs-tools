@@ -70,13 +70,18 @@ extern int register_refined_jiffies(long clock_tick_rate);
 /* TICK_USEC is the time between ticks in usec assuming fake USER_HZ */
 #define TICK_USEC ((1000000UL + USER_HZ/2) / USER_HZ)
 
-static inline u64 local_clock(void)
+static inline u64 sched_clock(void)
 {
 	struct timespec ts;
 
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 
 	return ((s64) ts.tv_sec * NSEC_PER_SEC) + ts.tv_nsec;
+}
+
+static inline u64 local_clock(void)
+{
+	return sched_clock();
 }
 
 extern unsigned long clock_t_to_jiffies(unsigned long x);
@@ -87,7 +92,7 @@ extern unsigned long nsecs_to_jiffies(u64 n);
 
 static inline u64 get_jiffies_64(void)
 {
-	return nsecs_to_jiffies64(local_clock());
+	return nsecs_to_jiffies64(sched_clock());
 }
 
 #define jiffies_64		get_jiffies_64()

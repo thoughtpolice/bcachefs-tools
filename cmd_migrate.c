@@ -265,7 +265,7 @@ static void write_data(struct bch_fs *c,
 	if (ret)
 		die("error reserving space in new filesystem: %s", strerror(-ret));
 
-	bch2_write_op_init(&op, c, res, c->write_points,
+	bch2_write_op_init(&op, c, res, NULL, 0,
 			   POS(dst_inode->bi_inum, dst_offset >> 9), NULL, 0);
 	closure_call(&op.cl, bch2_write, NULL, &cl);
 	closure_sync(&cl);
