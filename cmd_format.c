@@ -40,6 +40,9 @@ x(0,	compression_type,	"(none|lz4|gzip)",	NULL)			\
 x(0,	replicas,		"#",			NULL)			\
 x(0,	data_replicas,		"#",			NULL)			\
 x(0,	metadata_replicas,	"#",			NULL)			\
+x(0,	foreground_target,	"target",		NULL)			\
+x(0,	background_target,	"target",		NULL)			\
+x(0,	promote_target,	"target",		NULL)			\
 x(0,	encrypted,		NULL,			"Enable whole filesystem encryption (chacha20/poly1305)")\
 x(0,	no_passphrase,		NULL,			"Don't encrypt master encryption key")\
 x('e',	error_action,		"(continue|remount-ro|panic)", NULL)		\
@@ -50,11 +53,11 @@ t("")										\
 t("Device specific options:")							\
 x(0,	fs_size,		"size",			"Size of filesystem on device")\
 x(0,	bucket_size,		"size",			"Bucket size")		\
-x('t',	tier,			"#",			"Higher tier indicates slower devices")\
+x('g',	group,			"label",		"Disk group")\
 x(0,	discard,		NULL,			NULL)			\
 x(0,	data_allowed,		"journal,btree,data",	"Allowed types of data on this device")\
 t("Device specific options must come before corresponding devices, e.g.")	\
-t("  bcachefs format --tier 0 /dev/sdb --tier 1 /dev/sdc")			\
+t("  bcachefs format --group cache /dev/sdb --tier 1 /dev/sdc")			\
 t("")										\
 x('q',	quiet,			NULL,			"Only print errors")	\
 x('h',	help,			NULL,			"Display this help and exit")
@@ -91,13 +94,13 @@ static void usage(void)
 	     "      --fs_size=size          Size of filesystem on device\n"
 	     "      --bucket=size           Bucket size\n"
 	     "      --discard               Enable discards\n"
-	     "  -t, --tier=#                Higher tier (e.g. 1) indicates slower devices\n"
+	     "  -g, --group=label           Disk group\n"
 	     "\n"
 	     "  -q, --quiet                 Only print errors\n"
 	     "  -h, --help                  Display this help and exit\n"
 	     "\n"
 	     "Device specific options must come before corresponding devices, e.g.\n"
-	     "  bcachefs format --tier 0 /dev/sdb --tier 1 /dev/sdc\n"
+	     "  bcachefs format --group cache /dev/sdb --tier 1 /dev/sdc\n"
 	     "\n"
 	     "Report bugs to <linux-bcache@vger.kernel.org>");
 }
@@ -177,19 +180,31 @@ int cmd_format(int argc, char *argv[])
 			break;
 		case O_data_replicas:
 			if (kstrtouint(optarg, 10, &opts.data_replicas) ||
-			    opts.data_replicas >= BCH_REPLICAS_MAX)
+			    !opts.data_replicas ||
+			    opts.data_replicas > BCH_REPLICAS_MAX)
 				die("invalid replicas");
 			break;
 		case O_metadata_replicas:
 			if (kstrtouint(optarg, 10, &opts.meta_replicas) ||
-			    opts.meta_replicas >= BCH_REPLICAS_MAX)
+			    !opts.meta_replicas ||
+			    opts.meta_replicas > BCH_REPLICAS_MAX)
 				die("invalid replicas");
 			break;
 		case O_replicas:
 			if (kstrtouint(optarg, 10, &opts.data_replicas) ||
-			    opts.data_replicas >= BCH_REPLICAS_MAX)
+			    !opts.data_replicas ||
+			    opts.data_replicas > BCH_REPLICAS_MAX)
 				die("invalid replicas");
 			opts.meta_replicas = opts.data_replicas;
+			break;
+		case O_foreground_target:
+			opts.foreground_target = strdup(optarg);
+			break;
+		case O_background_target:
+			opts.background_target = strdup(optarg);
+			break;
+		case O_promote_target:
+			opts.promote_target = strdup(optarg);
 			break;
 		case O_encrypted:
 			opts.encrypted = true;
@@ -226,11 +241,9 @@ int cmd_format(int argc, char *argv[])
 			dev_opts.bucket_size =
 				hatoi_validate(optarg, "bucket size");
 			break;
-		case O_tier:
-		case 't':
-			if (kstrtouint(optarg, 10, &dev_opts.tier) ||
-			    dev_opts.tier >= BCH_TIER_MAX)
-				die("invalid tier");
+		case O_group:
+		case 'g':
+			dev_opts.group = strdup(optarg);
 			break;
 		case O_discard:
 			dev_opts.discard = true;

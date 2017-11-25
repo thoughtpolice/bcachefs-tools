@@ -267,7 +267,7 @@ static void write_data(struct bch_fs *c,
 	o.op.wbio.bio.bi_iter.bi_size = len;
 	bch2_bio_map(&o.op.wbio.bio, buf);
 
-	bch2_write_op_init(&o.op, c);
+	bch2_write_op_init(&o.op, c, bch2_opts_to_inode_opts(c->opts));
 	o.op.write_point	= writepoint_hashed(0);
 	o.op.nr_replicas	= 1;
 	o.op.pos		= POS(dst_inode->bi_inum, dst_offset >> 9);

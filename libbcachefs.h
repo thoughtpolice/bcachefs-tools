@@ -25,6 +25,10 @@ struct format_opts {
 	unsigned	meta_replicas_required;
 	unsigned	data_replicas_required;
 
+	const char	*foreground_target;
+	const char	*background_target;
+	const char	*promote_target;
+
 	unsigned	meta_csum_type;
 	unsigned	data_csum_type;
 	unsigned	compression_type;
@@ -52,7 +56,7 @@ struct dev_opts {
 	char		*path;
 	u64		size; /* 512 byte sectors */
 	unsigned	bucket_size;
-	unsigned	tier;
+	const char	*group;
 	unsigned	data_allowed;
 	bool		discard;
 

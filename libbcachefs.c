@@ -124,12 +124,41 @@ void bch2_pick_bucket_size(struct format_opts opts, struct dev_opts *dev)
 
 }
 
+static unsigned parse_target(struct dev_opts *devs, size_t nr_devs,
+			     struct bch_sb_field_disk_groups *gi,
+			     const char *s)
+{
+	struct bch_disk_group *g;
+	struct dev_opts *i;
+
+	if (!s)
+		return 0;
+
+	for (i = devs; i < devs + nr_devs; i++)
+		if (!strcmp(s, i->path))
+			return dev_to_target(i - devs);
+
+	for (g = gi->entries;
+	     g < gi->entries + disk_groups_nr(gi);
+	     g++) {
+		unsigned len = strnlen(g->label, sizeof(g->label));
+
+		if (len == strlen(s) &&
+		    !memcmp(s, g->label, len))
+			return group_to_target(g - gi->entries);
+	}
+
+	die("Invalid target %s", s);
+	return 0;
+}
+
 struct bch_sb *bch2_format(struct format_opts opts,
 			   struct dev_opts *devs, size_t nr_devs)
 {
 	struct bch_sb *sb;
 	struct dev_opts *i;
 	struct bch_sb_field_members *mi;
+	struct bch_sb_field_disk_groups *gi = NULL;
 	unsigned u64s;
 
 	/* calculate block size: */
@@ -164,6 +193,8 @@ struct bch_sb *bch2_format(struct format_opts opts,
 	sb = calloc(1, sizeof(*sb) +
 		    sizeof(struct bch_sb_field_members) +
 		    sizeof(struct bch_member) * nr_devs +
+		    sizeof(struct bch_sb_field_disk_groups) +
+		    sizeof(struct bch_disk_group) * nr_devs +
 		    sizeof(struct bch_sb_field_crypt));
 
 	sb->version	= cpu_to_le64(BCH_SB_VERSION_MAX);
@@ -201,6 +232,71 @@ struct bch_sb *bch2_format(struct format_opts opts,
 	sb->time_base_lo	= cpu_to_le64(now.tv_sec * NSEC_PER_SEC + now.tv_nsec);
 	sb->time_precision	= cpu_to_le32(1);
 
+	mi = vstruct_end(sb);
+	u64s = (sizeof(struct bch_sb_field_members) +
+		sizeof(struct bch_member) * nr_devs) / sizeof(u64);
+
+	le32_add_cpu(&sb->u64s, u64s);
+	le32_add_cpu(&mi->field.u64s, u64s);
+	mi->field.type = BCH_SB_FIELD_members;
+
+	/* Member info: */
+	for (i = devs; i < devs + nr_devs; i++) {
+		struct bch_member *m = mi->members + (i - devs);
+
+		uuid_generate(m->uuid.b);
+		m->nbuckets	= cpu_to_le64(i->nbuckets);
+		m->first_bucket	= 0;
+		m->bucket_size	= cpu_to_le16(i->bucket_size);
+
+		SET_BCH_MEMBER_REPLACEMENT(m,	CACHE_REPLACEMENT_LRU);
+		SET_BCH_MEMBER_DISCARD(m,	i->discard);
+		SET_BCH_MEMBER_DATA_ALLOWED(m,	i->data_allowed);
+	}
+
+	/* Disk groups */
+	for (i = devs; i < devs + nr_devs; i++) {
+		struct bch_member *m = mi->members + (i - devs);
+		struct bch_disk_group *g;
+		size_t len;
+		int idx;
+
+		if (!i->group)
+			continue;
+
+		len = min_t(size_t, strlen(i->group) + 1, BCH_SB_LABEL_SIZE);
+
+		if (!gi) {
+			gi = vstruct_end(sb);
+			u64s = sizeof(*gi) / sizeof(u64);
+			le32_add_cpu(&sb->u64s, u64s);
+			le32_add_cpu(&gi->field.u64s, u64s);
+			gi->field.type = BCH_SB_FIELD_disk_groups;
+		}
+
+		idx = __bch2_disk_group_find(gi, i->group);
+		if (idx >= 0) {
+			g = gi->entries + idx;
+		} else {
+			u64s = sizeof(*g) / sizeof(u64);
+			g = vstruct_end(&gi->field);
+			le32_add_cpu(&sb->u64s, u64s);
+			le32_add_cpu(&gi->field.u64s, u64s);
+			memcpy(g->label, i->group, len);
+			SET_BCH_GROUP_DATA_ALLOWED(g, ~0);
+		}
+
+		SET_BCH_MEMBER_GROUP(m,	(g - gi->entries) + 1);
+	}
+
+	SET_BCH_SB_FOREGROUND_TARGET(sb,
+		parse_target(devs, nr_devs, gi, opts.foreground_target));
+	SET_BCH_SB_BACKGROUND_TARGET(sb,
+		parse_target(devs, nr_devs, gi, opts.background_target));
+	SET_BCH_SB_PROMOTE_TARGET(sb,
+		parse_target(devs, nr_devs, gi, opts.promote_target));
+
+	/* Crypt: */
 	if (opts.encrypted) {
 		struct bch_sb_field_crypt *crypt = vstruct_end(sb);
 
@@ -212,28 +308,6 @@ struct bch_sb *bch2_format(struct format_opts opts,
 
 		bch_sb_crypt_init(sb, crypt, opts.passphrase);
 		SET_BCH_SB_ENCRYPTION_TYPE(sb, 1);
-	}
-
-	mi = vstruct_end(sb);
-	u64s = (sizeof(struct bch_sb_field_members) +
-		sizeof(struct bch_member) * nr_devs) / sizeof(u64);
-
-	le32_add_cpu(&sb->u64s, u64s);
-	mi->field.u64s = cpu_to_le32(u64s);
-	mi->field.type = BCH_SB_FIELD_members;
-
-	for (i = devs; i < devs + nr_devs; i++) {
-		struct bch_member *m = mi->members + (i - devs);
-
-		uuid_generate(m->uuid.b);
-		m->nbuckets	= cpu_to_le64(i->nbuckets);
-		m->first_bucket	= 0;
-		m->bucket_size	= cpu_to_le16(i->bucket_size);
-
-		SET_BCH_MEMBER_TIER(m,		i->tier);
-		SET_BCH_MEMBER_REPLACEMENT(m,	CACHE_REPLACEMENT_LRU);
-		SET_BCH_MEMBER_DISCARD(m,	i->discard);
-		SET_BCH_MEMBER_DATA_ALLOWED(m,	i->data_allowed);
 	}
 
 	for (i = devs; i < devs + nr_devs; i++) {
@@ -355,6 +429,7 @@ static void bch2_sb_print_members(struct bch_sb *sb, struct bch_sb_field *f,
 				  enum units units)
 {
 	struct bch_sb_field_members *mi = field_to_type(f, members);
+	struct bch_sb_field_disk_groups *gi = bch2_sb_get_disk_groups(sb);
 	unsigned i;
 
 	for (i = 0; i < sb->nr_devices; i++) {
@@ -363,11 +438,21 @@ static void bch2_sb_print_members(struct bch_sb *sb, struct bch_sb_field *f,
 		char member_uuid_str[40];
 		char data_allowed_str[100];
 		char data_has_str[100];
+		char group[64];
 
 		if (!bch2_member_exists(m))
 			continue;
 
 		uuid_unparse(m->uuid.b, member_uuid_str);
+
+		if (BCH_MEMBER_GROUP(m)) {
+			if (BCH_MEMBER_GROUP(m) < disk_groups_nr(gi))
+				memcpy(group, gi->entries[BCH_MEMBER_GROUP(m)].label,
+				       BCH_SB_LABEL_SIZE);
+			else
+				strcpy(group, "(bad disk groups section");
+		}
+
 		bch2_scnprint_flag_list(data_allowed_str,
 					sizeof(data_allowed_str),
 					bch2_data_types,
@@ -390,7 +475,7 @@ static void bch2_sb_print_members(struct bch_sb *sb, struct bch_sb_field *f,
 		       "    Buckets:			%llu\n"
 		       "    Last mount:			%s\n"
 		       "    State:			%s\n"
-		       "    Tier:			%llu\n"
+		       "    Group:			%s\n"
 		       "    Data allowed:		%s\n"
 
 		       "    Has data:			%s\n"
@@ -409,7 +494,7 @@ static void bch2_sb_print_members(struct bch_sb *sb, struct bch_sb_field *f,
 		       ? bch2_dev_state[BCH_MEMBER_STATE(m)]
 		       : "unknown",
 
-		       BCH_MEMBER_TIER(m),
+		       group,
 		       data_allowed_str,
 		       data_has_str,
 
@@ -540,6 +625,10 @@ void bch2_sb_print(struct bch_sb *sb, bool print_layout,
 	       "Data checksum type:		%s (%llu)\n"
 	       "Compression type:		%s (%llu)\n"
 
+	       "Foreground write target:	%llu\n"
+	       "Background write target:	%llu\n"
+	       "Promote target:			%llu\n"
+
 	       "String hash type:		%s (%llu)\n"
 	       "32 bit inodes:			%llu\n"
 	       "GC reserve percentage:		%llu%%\n"
@@ -578,6 +667,10 @@ void bch2_sb_print(struct bch_sb *sb, bool print_layout,
 	       ? bch2_compression_types[BCH_SB_COMPRESSION_TYPE(sb)]
 	       : "unknown",
 	       BCH_SB_COMPRESSION_TYPE(sb),
+
+	       BCH_SB_FOREGROUND_TARGET(sb),
+	       BCH_SB_BACKGROUND_TARGET(sb),
+	       BCH_SB_PROMOTE_TARGET(sb),
 
 	       BCH_SB_STR_HASH_TYPE(sb) < BCH_STR_HASH_NR
 	       ? bch2_str_hash_types[BCH_SB_STR_HASH_TYPE(sb)]

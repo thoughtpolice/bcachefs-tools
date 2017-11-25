@@ -41,7 +41,7 @@ int cmd_device_add(int argc, char *argv[])
 		{ "fs_size",		required_argument,	NULL, 'S' },
 		{ "bucket",		required_argument,	NULL, 'B' },
 		{ "discard",		no_argument,		NULL, 'D' },
-		{ "tier",		required_argument,	NULL, 't' },
+		{ "group",		required_argument,	NULL, 'g' },
 		{ "force",		no_argument,		NULL, 'f' },
 		{ "help",		no_argument,		NULL, 'h' },
 		{ NULL }
@@ -67,10 +67,8 @@ int cmd_device_add(int argc, char *argv[])
 		case 'D':
 			dev_opts.discard = true;
 			break;
-		case 't':
-			if (kstrtouint(optarg, 10, &dev_opts.tier) ||
-			    dev_opts.tier >= BCH_TIER_MAX)
-				die("invalid tier");
+		case 'g':
+			dev_opts.group = strdup(optarg);
 			break;
 		case 'f':
 			force = true;
