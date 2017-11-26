@@ -44,7 +44,7 @@ endif
 .PHONY: all
 all: bcachefs
 
-SRCS=$(shell git ls-files '*.c')
+SRCS=$(shell find . -type f -iname '*.c')
 DEPS=$(SRCS:.c=.d)
 -include $(DEPS)
 
