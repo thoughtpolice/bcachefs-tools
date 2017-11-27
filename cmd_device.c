@@ -12,10 +12,10 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include "bcachefs_ioctl.h"
+#include "libbcachefs/bcachefs_ioctl.h"
 #include "cmds.h"
 #include "libbcachefs.h"
-#include "opts.h"
+#include "libbcachefs/opts.h"
 #include "tools-util.h"
 
 /* This code belongs under show_fs */

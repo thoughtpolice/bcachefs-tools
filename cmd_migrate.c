@@ -1,4 +1,4 @@
-#include </usr/include/dirent.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -24,16 +24,16 @@
 #include <linux/dcache.h>
 #include <linux/generic-radix-tree.h>
 #include <linux/xattr.h>
-#include "bcachefs.h"
-#include "btree_update.h"
-#include "buckets.h"
-#include "dirent.h"
-#include "fs.h"
-#include "inode.h"
-#include "io.h"
-#include "str_hash.h"
-#include "super.h"
-#include "xattr.h"
+#include "libbcachefs/bcachefs.h"
+#include "libbcachefs/btree_update.h"
+#include "libbcachefs/buckets.h"
+#include "libbcachefs/dirent.h"
+#include "libbcachefs/fs.h"
+#include "libbcachefs/inode.h"
+#include "libbcachefs/io.h"
+#include "libbcachefs/str_hash.h"
+#include "libbcachefs/super.h"
+#include "libbcachefs/xattr.h"
 
 static char *dev_t_to_path(dev_t dev)
 {

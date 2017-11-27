@@ -8,14 +8,14 @@
 #include "qcow2.h"
 #include "tools-util.h"
 
-#include "bcachefs.h"
-#include "alloc.h"
-#include "btree_cache.h"
-#include "btree_iter.h"
-#include "buckets.h"
-#include "error.h"
-#include "journal.h"
-#include "super.h"
+#include "libbcachefs/bcachefs.h"
+#include "libbcachefs/alloc.h"
+#include "libbcachefs/btree_cache.h"
+#include "libbcachefs/btree_iter.h"
+#include "libbcachefs/buckets.h"
+#include "libbcachefs/error.h"
+#include "libbcachefs/journal.h"
+#include "libbcachefs/super.h"
 
 static void dump_usage(void)
 {

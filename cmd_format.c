@@ -24,9 +24,9 @@
 #include "cmds.h"
 #include "libbcachefs.h"
 #include "crypto.h"
-#include "opts.h"
-#include "super-io.h"
-#include "util.h"
+#include "libbcachefs/opts.h"
+#include "libbcachefs/super-io.h"
+#include "libbcachefs/util.h"
 
 #define OPTS									\
 t("bcachefs format - create a new bcachefs filesystem on one or more devices")	\

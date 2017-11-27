@@ -11,7 +11,7 @@
 
 #include <uuid/uuid.h>
 
-#include "bcachefs_ioctl.h"
+#include "libbcachefs/bcachefs_ioctl.h"
 #include "cmds.h"
 
 int cmd_run(int argc, char *argv[])

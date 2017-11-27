@@ -7,7 +7,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 
-#include "bcachefs_ioctl.h"
+#include "libbcachefs/bcachefs_ioctl.h"
 #include "cmds.h"
 
 int cmd_assemble(int argc, char *argv[])

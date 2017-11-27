@@ -12,12 +12,12 @@
 
 #include <uuid/uuid.h>
 
-#include "bcachefs_format.h"
-#include "checksum.h"
+#include "libbcachefs/bcachefs_format.h"
+#include "libbcachefs/checksum.h"
 #include "crypto.h"
 #include "libbcachefs.h"
-#include "opts.h"
-#include "super-io.h"
+#include "libbcachefs/opts.h"
+#include "libbcachefs/super-io.h"
 
 #define NSEC_PER_SEC	1000000000L
 

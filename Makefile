@@ -4,7 +4,7 @@ INSTALL=install
 CFLAGS+=-std=gnu89 -O2 -g -MMD -Wall				\
 	-Wno-pointer-sign					\
 	-fno-strict-aliasing					\
-	-I. -Iinclude -Ilibbcachefs				\
+	-I. -Iinclude						\
 	-D_FILE_OFFSET_BITS=64					\
 	-D_GNU_SOURCE						\
 	-D_LGPL_SOURCE						\

@@ -3,7 +3,7 @@
 #include <uuid/uuid.h>
 
 #include "cmds.h"
-#include "checksum.h"
+#include "libbcachefs/checksum.h"
 #include "crypto.h"
 #include "libbcachefs.h"
 

@@ -16,10 +16,10 @@
 #include <blkid.h>
 #include <uuid/uuid.h>
 
-#include "bcachefs_ioctl.h"
+#include "libbcachefs/bcachefs_ioctl.h"
 #include "linux/sort.h"
 #include "tools-util.h"
-#include "util.h"
+#include "libbcachefs/util.h"
 
 void die(const char *fmt, ...)
 {

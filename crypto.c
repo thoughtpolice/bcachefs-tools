@@ -15,7 +15,7 @@
 #include <libscrypt.h>
 #include <uuid/uuid.h>
 
-#include "checksum.h"
+#include "libbcachefs/checksum.h"
 #include "crypto.h"
 
 char *read_passphrase(const char *prompt)

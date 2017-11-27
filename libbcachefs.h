@@ -4,9 +4,9 @@
 #include <linux/uuid.h>
 #include <stdbool.h>
 
-#include "bcachefs_format.h"
+#include "libbcachefs/bcachefs_format.h"
 #include "tools-util.h"
-#include "vstructs.h"
+#include "libbcachefs/vstructs.h"
 
 struct format_opts {
 	char		*label;

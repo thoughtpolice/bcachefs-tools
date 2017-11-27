@@ -1,8 +1,8 @@
 
 #include "cmds.h"
-#include "error.h"
+#include "libbcachefs/error.h"
 #include "libbcachefs.h"
-#include "super.h"
+#include "libbcachefs/super.h"
 #include "tools-util.h"
 
 static void usage(void)
