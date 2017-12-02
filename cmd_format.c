@@ -37,6 +37,7 @@ x(0,	btree_node_size,	"size",			"Default 256k")		\
 x(0,	metadata_checksum_type,	"(none|crc32c|crc64)",	NULL)			\
 x(0,	data_checksum_type,	"(none|crc32c|crc64)",	NULL)			\
 x(0,	compression_type,	"(none|lz4|gzip)",	NULL)			\
+x(0,	replicas,		"#",			NULL)			\
 x(0,	data_replicas,		"#",			NULL)			\
 x(0,	metadata_replicas,	"#",			NULL)			\
 x(0,	encrypted,		NULL,			"Enable whole filesystem encryption (chacha20/poly1305)")\
@@ -77,6 +78,7 @@ static void usage(void)
 	     "      --compression_type=(none|lz4|gzip)\n"
 	     "      --data_replicas=#       Number of data replicas\n"
 	     "      --metadata_replicas=#   Number of metadata replicas\n"
+	     "      --replicas=#            Sets both data and metadata replicas\n"
 	     "      --encrypted             Enable whole filesystem encryption (chacha20/poly1305)\n"
 	     "      --no_passphrase         Don't encrypt master encryption key\n"
 	     "      --error_action=(continue|readonly|panic)\n"
@@ -175,13 +177,19 @@ int cmd_format(int argc, char *argv[])
 			break;
 		case O_data_replicas:
 			if (kstrtouint(optarg, 10, &opts.data_replicas) ||
-			    dev_opts.tier >= BCH_REPLICAS_MAX)
+			    opts.data_replicas >= BCH_REPLICAS_MAX)
 				die("invalid replicas");
 			break;
 		case O_metadata_replicas:
 			if (kstrtouint(optarg, 10, &opts.meta_replicas) ||
-			    dev_opts.tier >= BCH_REPLICAS_MAX)
+			    opts.meta_replicas >= BCH_REPLICAS_MAX)
 				die("invalid replicas");
+			break;
+		case O_replicas:
+			if (kstrtouint(optarg, 10, &opts.data_replicas) ||
+			    opts.data_replicas >= BCH_REPLICAS_MAX)
+				die("invalid replicas");
+			opts.meta_replicas = opts.data_replicas;
 			break;
 		case O_encrypted:
 			opts.encrypted = true;
