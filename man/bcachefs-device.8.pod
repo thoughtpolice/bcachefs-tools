@@ -1,0 +1,23 @@
+=encoding utf8
+
+=head1 NAME
+
+bcachefs device -- Lorem ipsum...
+
+=head1 SYNOPSIS
+
+B<bcachefs device> [I<options>] ...
+
+=head1 DESCRIPTION
+
+Lorem ipsum...
+
+=head1 OPTIONS
+
+=over
+
+=back
+
+=head1 SEE ALSO
+
+L<bcachefs(8)>

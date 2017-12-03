@@ -1,0 +1,13 @@
+=encoding utf8
+
+=head1 NAME
+
+bcachefs-tutorial -- An introduction to B<bcachefs>
+
+=head1 DESCRIPTION
+
+Lorem ipsum...
+
+=head1 SEE ALSO
+
+L<bcachefs(8)>

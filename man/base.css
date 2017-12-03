@@ -1,0 +1,100 @@
+@import url(https://fonts.googleapis.com/css?family=Open+Sans);html {
+  background-color: #fafafa
+}
+
+/* Basic stuff */
+body {
+  font-family: Open Sans,Arial;
+  color: #555;
+  font-size: 16px;
+  margin: 2em auto;
+  max-width: 800px;
+  padding: 1em;
+  line-height: 1.4
+}
+
+ul li img   { height: 1em }
+a,a:visited { color: #07a }
+p.st        { margin-top: 0.1em }
+small       { font-size: .6em }
+span.wr {
+  color: #c0392b;
+  font-weight: 600;
+  text-decoration: underline
+}
+
+.noselect {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none
+}
+
+/* Contrast mode */
+html.contrast body                      { color: #151515 }
+html.contrast blockquote                { color: #11151a }
+html.contrast blockquote:before         { color: #262626 }
+html.contrast a,html.contrast a:visited { color: #0051c9 }
+html.contrast span.wr                   { color: #800 }
+html.contrast span.mfw                  { color: #117e69 }
+
+div#contrast {
+  color: #000;
+  top: 10px;
+  cursor: pointer;
+  position: absolute;
+  right: 10px;
+  font-size: .8em;
+  text-decoration: underline;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none
+}
+
+/* Block quotes */
+blockquote {
+  color: #456;
+  margin-left: 0;
+  margin-top: 2em;
+  margin-bottom: 2em
+}
+
+blockquote span {
+  float: left;
+  margin-left: 1rem;
+  padding-top: 1rem
+}
+
+blockquote author {
+  display: block;
+  clear: both;
+  font-size: .6em;
+  margin-left: 2.4rem;
+  font-style: oblique
+}
+
+blockquote author:before {
+  content: "- ";
+  margin-right: 1em
+}
+
+blockquote:before {
+  font-family: Times New Roman,Times,Arial;
+  color: #666;
+  content: open-quote;
+  font-size: 2.2em;
+  font-weight: 600;
+  float: left;
+  margin-top: 0;
+  margin-right: .2rem;
+  width: 1.2rem
+}
+
+blockquote:after {
+  content: "";
+  display: block;
+  clear: both
+}

@@ -1,0 +1,26 @@
+=encoding utf8
+
+=head1 NAME
+
+bcachefs show-super -- Dump information about the bcachefs superblock to stdout.
+
+=head1 SYNOPSIS
+
+B<bcachefs show-super> I<bcachefs-device>
+
+=head1 DESCRIPTION
+
+B<bcachefs show-super> dumps information about the single B<device>, directly to
+stdout.
+
+=head1 OPTIONS
+
+The device argument is mandatory: it specifies the single device containing the
+superblock to dump. If more than one argument is provided, B<bcachefs
+show-super> exits and fails.
+
+B<bcachefs show-super> takes no options or other parameters.
+
+=head1 SEE ALSO
+
+L<bcachefs(8)>

@@ -69,21 +69,71 @@ endif
 # Rebuild the 'version' command any time the version string changes
 cmd_version.o : .version
 
+MAN_PODS=$(shell find man -type f -iname '*.pod')
+MAN_TROFFS=$(patsubst %.pod,%,$(MAN_PODS))
+MAN_HTML=$(patsubst %.pod,%.html,$(MAN_PODS))
+MAN_HTML+=man/index.html
+# EXTRAS is just a list of symlinks for making things nicer
+# for the user
+MAN_EXTRAS=\
+	man/mkfs.bcachefs.8 \
+	man/fsck.bcachefs.8
+
+man/fsck.bcachefs.8: man/bcachefs-fsck.8
+	cp $< $@
+man/mkfs.bcachefs.8: man/bcachefs-format.8
+	cp $< $@
+man/index.html: man/bcachefs.8.html
+	cp $< $@
+
+man/%.html: man/%.pod man/bcachefs-footer.in
+	cat $^ | \
+	perl -pe 's/L<(.+)\|bcachefs([0-9a-z_\-]*?)\((\d+)\)>/L<$$1|bcachefs$$2\.$$3>/g' | \
+	perl -pe 's/L<bcachefs([0-9a-z_\-]*)\((\d+)\)>/L<bcachefs$$1\($$2\)\|bcachefs$$1\.$$2>/g' | \
+	pod2html \
+		--podroot=$(PWD)/man \
+		--podpath=. \
+		--htmldir="./" \
+		--css=base.css | \
+	perl -pe 's#href="/bcachefs#href="bcachefs#g' \
+	> $@
+
+man/%: man/%.pod man/bcachefs-footer.in
+	cat $^ | pod2man \
+		--section=$(shell echo "$<" | awk -F'.' '{print $$2}') \
+		--name=$(basename $(notdir $@)) \
+		--center="bcachefs User Manual" \
+		> $@
+
+.PHONY: man-html sync-html
+man-html: $(MAN_HTML)
+
+sync-html: man-html
+	rsync --delete-excluded -arvz man/*.css man/*.html $(RSYNC_HOST)
+
+.PHONY: man
+man: $(MAN_TROFFS) $(MAN_EXTRAS)
+
 .PHONY: install
-install: bcachefs
+install: bcachefs man
 	mkdir -p $(DESTDIR)$(ROOT_SBINDIR)
-	mkdir -p $(DESTDIR)$(PREFIX)/share/man/man8/
+	mkdir -p $(DESTDIR)$(PREFIX)/share/man/man8
 	$(INSTALL) -m0755 bcachefs	$(DESTDIR)$(ROOT_SBINDIR)
 	$(INSTALL) -m0755 fsck.bcachefs	$(DESTDIR)$(ROOT_SBINDIR)
 	$(INSTALL) -m0755 mkfs.bcachefs	$(DESTDIR)$(ROOT_SBINDIR)
 	$(INSTALL) -m0755 -D initramfs/hook $(DESTDIR)$(INITRAMFS_DIR)/hooks/bcachefs
 	echo "copy_exec $(ROOT_SBINDIR)/bcachefs /sbin/bcachefs" >> $(DESTDIR)$(INITRAMFS_DIR)/hooks/bcachefs
 	$(INSTALL) -m0755 -D initramfs/script $(DESTDIR)$(INITRAMFS_DIR)/scripts/local-premount/bcachefs
-	$(INSTALL) -m0644 bcachefs.8	$(DESTDIR)$(PREFIX)/share/man/man8/
+	$(INSTALL) -m0644 $(MAN_EXTRAS) $(DESTDIR)$(PREFIX)/share/man/man8
+	for x in $(MAN_TROFFS); do \
+		section=$$(echo "$$x" | awk -F'.' '{print $$2}'); \
+		mkdir -p $(DESTDIR)$(PREFIX)/share/man/man$$section; \
+		$(INSTALL) -m0644 $$x $(DESTDIR)$(PREFIX)/share/man/man$$section; \
+	done
 
 .PHONY: clean
 clean:
-	$(RM) bcachefs $(OBJS) $(DEPS)
+	$(RM) bcachefs $(OBJS) $(DEPS) $(MAN_TROFFS) $(MAN_HTML) $(MAN_EXTRAS)
 
 .PHONY: deb
 deb: all

@@ -1,5 +1,5 @@
 { stdenv
-, git, pkgconfig
+, git, pkgconfig, perl
 , libscrypt, libsodium, liburcu, libuuid, libaio, zlib, attr, keyutils
 }:
 
@@ -10,7 +10,7 @@ stdenv.mkDerivation rec {
   # NOTE: ignore .git, otherwise things get weird!
   src = stdenv.lib.cleanSource ./.;
 
-  nativeBuildInputs = [ git pkgconfig ];
+  nativeBuildInputs = [ git pkgconfig perl ]; /* perl is for 'pod2man' */
   buildInputs =
     [ liburcu libuuid libaio zlib attr keyutils
       libsodium libscrypt

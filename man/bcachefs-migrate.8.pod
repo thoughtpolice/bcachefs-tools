@@ -1,0 +1,43 @@
+=encoding utf8
+
+=head1 NAME
+
+bcachefs migrate -- Migrate an existing filesystem to bcachefs.
+
+=head1 SYNOPSIS
+
+B<bcachefs migrate> [I<options>] ...
+
+=head1 DESCRIPTION
+
+B<bcachefs migrate> performs migration of an existing Linux filesystem to
+bcachefs, in-place, with no modifications to the original filesystem.
+
+=head1 OPTIONS
+
+=over
+
+=item -f B<path>
+
+Root filesystem path of the given data to migrate. Note that this is simply I<an
+arbitrary path> and not a device handle or anything else.
+
+=item --encrypted
+
+Encrypt the new filesystem while performing the migration.
+
+=item --no_passphrase
+
+Do not encrypt the master encryption key for the bcachefs filesystem. This
+option may only be provided in conjunction with the B<--encrypted> argument.
+
+=item -F
+
+Force migration of filesystem data, even if metadata for bcachefs already exists
+on the device.
+
+=back
+
+=head1 SEE ALSO
+
+L<bcachefs(8)>

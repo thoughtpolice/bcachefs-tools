@@ -1,4 +1,4 @@
-/result
+/result*
 bcachefs
 .*
 *.o
@@ -7,3 +7,8 @@ bcachefs
 tags
 cscope*
 bcachefs-tools
+
+# pod2html/pod2man artifacts
+*.8
+*.html
+*.tmp

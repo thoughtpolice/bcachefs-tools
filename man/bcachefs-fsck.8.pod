@@ -1,0 +1,46 @@
+=encoding utf8
+
+=head1 NAME
+
+bcachefs fsck -- Lorem ipsum...
+
+=head1 SYNOPSIS
+
+B<bcachefs fsck> [I<options>] ...
+
+=head1 DESCRIPTION
+
+B<bcachefs fsck> checks the consistency of a bcachefs device and reporting any
+discovered errors and, optionally, repairs them -- either case-by-case through
+user input, or automatically.
+
+=head1 OPTIONS
+
+=over
+
+=item -p, -y
+
+Automatic repair -- assume "yes" to every consistency question and attempt to
+repair the inconsistency automatically, without user input. If this is not
+specified, then B<bcachefs fsck> will ask the user if an inconsistency should be
+fixed.
+
+=item -n
+
+Do not repair inconsistencies or filesystem errors -- only check for them, and
+report them if they are found.
+
+=item -f
+
+Force a filesystem check, even if the filesystem has already been marked as
+clean previously.
+
+=item -v
+
+Enable verbose output when performing checks and repairs.
+
+=back
+
+=head1 SEE ALSO
+
+L<bcachefs(8)>

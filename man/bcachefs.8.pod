@@ -1,0 +1,162 @@
+=encoding utf8
+
+=head1 NAME
+
+bcachefs -- manage, create, monitor, and debug bcachefs filesystems
+
+=head1 SYNOPSIS
+
+B<bcachefs> [I<options>] B<SUBCOMMAND> [I<options>]
+
+=head1 DESCRIPTION
+
+bcachefs is an advanced, "next-generation" Linux filesystem with an emphasis on
+reliability and robustness. It has a long list of features, including
+copy-on-write for all data, checksumming, multi-device RAID support and tiering,
+caching, compression, native encryption, and more. It also exhibits good
+performance and latency properties -- that either match, or exceed, existing
+competitors.
+
+The L<bcachefs(8)> tool is used to manage and create bcachefs
+devices, from formatting them to debugging them. B<bcachefs> contains many
+suboptions for various features exposed by the filesystem. A summary of these
+options, and other notes (including links to other manuals) are below.
+
+For those who are new to B<bcachefs> or advanced multi-device filesystems like
+it, please check out the included L<bcachefs-tutorial(8)> to get an idea of how
+you might use it in various ways.
+
+=head1 OPTIONS
+
+These commands I<only> apply to the top level B<bcachefs> tool, not to the
+various subcommands. Please see the COMMANDS section below for more information
+on each subcommand.
+
+=over
+
+=item B<--help>
+
+Emit the bcachefs help page, including a list of all supported subcommands with
+a brief summary.
+
+=back
+
+=head1 SUBCOMMANDS
+
+Each of the following subcommands are supported by the B<bcachefs> tool, each
+with its own unique set of sub-options. Please see the respective man pages for
+each subcommand for a complete list of options. Below, only a brief summary of
+the command is given.
+
+=over
+
+=item B<L<assemble|bcachefs-assemble(8)>>
+
+See L<bcachefs-assemble(8)> for more.
+
+=item B<L<device|bcachefs-device(8)>>
+
+See L<bcachefs-device(8)> for more.
+
+=item B<L<format|bcachefs-format(8)>>
+
+Format one (or many) devices with bcachefs data structures. You must do this
+before creating a volume.
+
+Note that formatting of a device may also be done using the L<mkfs(8)> tool with
+the B<-t bcachefs> option, or, equivalently, using the L<mkfs.bcachefs(2)>
+utility.
+
+See L<bcachefs-format(8)> for more.
+
+=item B<L<fs|bcachefs-fs(8)>>
+
+See L<bcachefs-fs(8)> for more.
+
+=item B<L<fsck|bcachefs-fsck(8)>>
+
+Perform file system check and repair on a bcachefs volume.
+
+See L<bcachefs-fsck(8)> for more.
+
+=item B<L<incremental|bcachefs-incremental(8)>>
+
+See L<bcachefs-incremental(8)> for more.
+
+=item B<L<migrate|bcachefs-migrate(8)>>
+
+See L<bcachefs-migrate(8)> for more.
+
+=item B<L<probe|bcachefs-probe(8)>>
+
+Return the UUID of a device, only if the device is identified as a
+bcachefs-formatted volume.
+
+B<NOTE>: This command is temporary, and used primarily for L<udev(7)> scripts,
+for creating device-UUID-symlinks under /dev/disk/by-uuid. You should not
+normally need to use this command. In the future, support for bcachefs
+superblocks will be added to L<blkid(8)>, and this command will be deprecated,
+and removed.
+
+See L<bcachefs-probe(8)> for more.
+
+=item B<L<register|bcachefs-register(8)>>
+
+Register bcachefs-formatted devices with the kernel.
+
+See L<bcachefs-register(8)> for more.
+
+=item B<L<run|bcachefs-run(8)>>
+
+See L<bcachefs-run(8)> for more.
+
+=item B<L<stop|bcachefs-stop(8)>>
+
+See L<bcachefs-stop(8)> for more.
+
+=item B<L<show-super|bcachefs-show-super(8)>>
+
+See L<bcachefs-show-super(8)> for more.
+
+=item B<help>
+
+Emit the bcachefs help page, including a list of all supported subcommands with
+a brief summary.
+
+This is functionally equivalent to using the top-level B<--help> argument to
+L<bcachefs(8)>.
+
+=back
+
+=head1 BUGS
+
+Yes. Current known bugs include:
+
+=over
+
+=item B<Compression does not appear to actually reduce disk space usage>
+
+Due to a deficiency in the disk space accounting code, B<bcachefs> compression
+currently does not appear to save disk space when enabled. While individual
+blocks I<will> be compressed before being written to disk, the disk space usage
+of the underlying drive will reflect the original size of the data. In short,
+compression will not actually allow you to save space, or write more data.
+
+This deficiency will be lifted in the future.
+
+=item B<Slow mount times>
+
+B<bcachefs> currently walks all metadata at mount time. While this may not be
+noticeable on small/medium sized file systems, users of large filesystems and
+rotating disks can expect slow mount times.
+
+This deficiency will be lifted in the future.
+
+=back
+
+bcachefs online documentation is located here, where you may also report bugs:
+L<https://example.com>
+
+=head1 SEE ALSO
+
+L<bcachefs-tutorial(8)>

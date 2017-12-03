@@ -1,0 +1,19 @@
+
+=head1 AUTHORS
+
+bcachefs and its caching predecessor, I<bcache>, were primarily authored by, and
+are currently maintained by, L<Kent Overstreet|http://evilpiepirate.org>.
+
+The bcachefs documentation and manual pages were primarily written by L<Austin
+Seipp|https://inner-haven.net> (who deserves blame for any/all inaccuracies).
+
+=head1 COPYRIGHT
+
+Copyright (C) 2013-2017 The bcachefs developers. License GPLv2: L<GNU GPL
+version 2|https://gnu.org/licenses/gpl-2.0.html>. This is free software: you are
+free to change and redistribute it. There is NO WARRANTY, to the extent
+permitted by law.
+
+=head1 COLOPHON
+
+This page is part of release XXX of the bcachefs-tools project.

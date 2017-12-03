@@ -1,0 +1,92 @@
+=encoding utf8
+
+=head1 NAME
+
+bcachefs format -- create a new bcachefs filesystem on one or more devices
+
+=head1 SYNOPSIS
+
+B<bcachefs format> [I<options>]... <[I<device options>] devices>...
+
+=head1 DESCRIPTION
+
+B<bcachefs format> is used to create bcachefs filesystems on one or more block
+devices (or file devices, if using loop devices) with a particular set of
+compression, encryption, and replication options. Multiple devices are grouped
+together by UUID/label.
+
+When you create a filesystem, you must specify global filesystem options, as
+well as options for each device you add.
+
+=head1 FILESYSTEM OPTIONS
+
+Filesystem options apply globally to every device that is part of the
+corresponding device set.
+
+=over
+
+=item -b B<size>, --block=[B<size>]
+
+Block size, in bytes (e.g. '4k').
+
+=item --btree_node=[B<size>]
+
+Btree node size, default is B<256k>
+
+=item --replicas=<B<num>>
+
+Lorem ipsum...
+
+=item --encrypted
+
+Enable whole filesystem encryption for the given device.
+
+=item --no_passphrase
+
+Do not encrypt the master filesystem encryption key with a password. Only
+relevant when B<--encrypted> is passed as well.
+
+=item -L B<label>, --label=<B<label>>
+
+Assign a label to the created filesystem.
+
+=item --uuid=<B<uuid>>
+
+Specify the UUID for the filesystem. Otherwise, it's generated explicitly.
+
+=back
+
+=head1 DEVICE OPTIONS
+
+Device options apply to specific, indivdiual devices in the set of filesystem
+devices. Device options must come before the corresponding device, so unlike
+global options, order matters, e.g.
+
+    bcachefs format --tier 0 /dev/sdb --tier 1 /dev/sdc
+
+The following options can be applied to each device.
+
+=over
+
+=item -t B<tier>, --tier=[B<tier>]
+
+Specify the device tier as a positive integer. Higher tiers indicate slower
+devices; e.g. 1 is your slowest storage, 2 is faster, 3 is even faster.
+
+=item --discard
+
+Enable discards.
+
+=item --bucket=[B<size>]
+
+Set the bucket size for the device.
+
+=item --fs_size=[B<size>]
+
+Set the size of the filesystem on the device.
+
+=back
+
+=head1 SEE ALSO
+
+L<bcachefs(8)>
