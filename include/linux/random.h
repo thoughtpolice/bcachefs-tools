@@ -37,4 +37,12 @@ static inline int get_random_int(void)
 	return v;
 }
 
+static inline long get_random_long(void)
+{
+	long v;
+
+	get_random_bytes(&v, sizeof(v));
+	return v;
+}
+
 #endif /* _LINUX_RANDOM_H */

@@ -25,6 +25,17 @@ int __bitmap_and(unsigned long *dst, const unsigned long *bitmap1,
 #define small_const_nbits(nbits) \
 	(__builtin_constant_p(nbits) && (nbits) <= BITS_PER_LONG)
 
+static inline void bitmap_complement(unsigned long *dst, const unsigned long *src,
+				     unsigned int bits)
+{
+	unsigned int k, lim = bits/BITS_PER_LONG;
+	for (k = 0; k < lim; ++k)
+		dst[k] = ~src[k];
+
+	if (bits % BITS_PER_LONG)
+		dst[k] = ~src[k];
+}
+
 static inline void bitmap_zero(unsigned long *dst, int nbits)
 {
 	memset(dst, 0, BITS_TO_LONGS(nbits) * sizeof(unsigned long));
