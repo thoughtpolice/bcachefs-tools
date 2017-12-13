@@ -291,13 +291,15 @@ void bch2_ratelimit_increment(struct bch_ratelimit *d, u64 done)
 
 int bch2_ratelimit_wait_freezable_stoppable(struct bch_ratelimit *d)
 {
+	bool kthread = (current->flags & PF_KTHREAD) != 0;
+
 	while (1) {
 		u64 delay = bch2_ratelimit_delay(d);
 
 		if (delay)
 			set_current_state(TASK_INTERRUPTIBLE);
 
-		if (kthread_should_stop())
+		if (kthread && kthread_should_stop())
 			return 1;
 
 		if (!delay)
@@ -434,8 +436,11 @@ size_t bch2_rand_range(size_t max)
 {
 	size_t rand;
 
+	if (!max)
+		return 0;
+
 	do {
-		get_random_bytes(&rand, sizeof(rand));
+		rand = get_random_long();
 		rand &= roundup_pow_of_two(max) - 1;
 	} while (rand >= max);
 
@@ -642,3 +647,129 @@ void *mempool_alloc_vp(gfp_t gfp_mask, void *pool_data)
 
 	return vpmalloc(size, gfp_mask);
 }
+
+#if 0
+void eytzinger1_test(void)
+{
+	unsigned inorder, eytz, size;
+
+	pr_info("1 based eytzinger test:");
+
+	for (size = 2;
+	     size < 65536;
+	     size++) {
+		unsigned extra = eytzinger1_extra(size);
+
+		if (!(size % 4096))
+			pr_info("tree size %u", size);
+
+		BUG_ON(eytzinger1_prev(0, size) != eytzinger1_last(size));
+		BUG_ON(eytzinger1_next(0, size) != eytzinger1_first(size));
+
+		BUG_ON(eytzinger1_prev(eytzinger1_first(size), size)	!= 0);
+		BUG_ON(eytzinger1_next(eytzinger1_last(size), size)	!= 0);
+
+		inorder = 1;
+		eytzinger1_for_each(eytz, size) {
+			BUG_ON(__inorder_to_eytzinger1(inorder, size, extra) != eytz);
+			BUG_ON(__eytzinger1_to_inorder(eytz, size, extra) != inorder);
+			BUG_ON(eytz != eytzinger1_last(size) &&
+			       eytzinger1_prev(eytzinger1_next(eytz, size), size) != eytz);
+
+			inorder++;
+		}
+	}
+}
+
+void eytzinger0_test(void)
+{
+
+	unsigned inorder, eytz, size;
+
+	pr_info("0 based eytzinger test:");
+
+	for (size = 1;
+	     size < 65536;
+	     size++) {
+		unsigned extra = eytzinger0_extra(size);
+
+		if (!(size % 4096))
+			pr_info("tree size %u", size);
+
+		BUG_ON(eytzinger0_prev(-1, size) != eytzinger0_last(size));
+		BUG_ON(eytzinger0_next(-1, size) != eytzinger0_first(size));
+
+		BUG_ON(eytzinger0_prev(eytzinger0_first(size), size)	!= -1);
+		BUG_ON(eytzinger0_next(eytzinger0_last(size), size)	!= -1);
+
+		inorder = 0;
+		eytzinger0_for_each(eytz, size) {
+			BUG_ON(__inorder_to_eytzinger0(inorder, size, extra) != eytz);
+			BUG_ON(__eytzinger0_to_inorder(eytz, size, extra) != inorder);
+			BUG_ON(eytz != eytzinger0_last(size) &&
+			       eytzinger0_prev(eytzinger0_next(eytz, size), size) != eytz);
+
+			inorder++;
+		}
+	}
+}
+
+static inline int cmp_u16(const void *_l, const void *_r, size_t size)
+{
+	const u16 *l = _l, *r = _r;
+
+	return (*l > *r) - (*r - *l);
+}
+
+static void eytzinger0_find_test_val(u16 *test_array, unsigned nr, u16 search)
+{
+	int i, c1 = -1, c2 = -1;
+	ssize_t r;
+
+	r = eytzinger0_find_le(test_array, nr,
+			       sizeof(test_array[0]),
+			       cmp_u16, &search);
+	if (r >= 0)
+		c1 = test_array[r];
+
+	for (i = 0; i < nr; i++)
+		if (test_array[i] <= search && test_array[i] > c2)
+			c2 = test_array[i];
+
+	if (c1 != c2) {
+		eytzinger0_for_each(i, nr)
+			pr_info("[%3u] = %12u", i, test_array[i]);
+		pr_info("find_le(%2u) -> [%2zi] = %2i should be %2i",
+			i, r, c1, c2);
+	}
+}
+
+void eytzinger0_find_test(void)
+{
+	unsigned i, nr, allocated = 1 << 12;
+	u16 *test_array = kmalloc_array(allocated, sizeof(test_array[0]), GFP_KERNEL);
+
+	for (nr = 1; nr < allocated; nr++) {
+		pr_info("testing %u elems", nr);
+
+		get_random_bytes(test_array, nr * sizeof(test_array[0]));
+		eytzinger0_sort(test_array, nr, sizeof(test_array[0]), cmp_u16, NULL);
+
+		/* verify array is sorted correctly: */
+		eytzinger0_for_each(i, nr)
+			BUG_ON(i != eytzinger0_last(nr) &&
+			       test_array[i] > test_array[eytzinger0_next(i, nr)]);
+
+		for (i = 0; i < U16_MAX; i += 1 << 12)
+			eytzinger0_find_test_val(test_array, nr, i);
+
+		for (i = 0; i < nr; i++) {
+			eytzinger0_find_test_val(test_array, nr, test_array[i] - 1);
+			eytzinger0_find_test_val(test_array, nr, test_array[i]);
+			eytzinger0_find_test_val(test_array, nr, test_array[i] + 1);
+		}
+	}
+
+	kfree(test_array);
+}
+#endif

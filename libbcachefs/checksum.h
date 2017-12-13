@@ -2,6 +2,7 @@
 #define _BCACHEFS_CHECKSUM_H
 
 #include "bcachefs.h"
+#include "extents_types.h"
 #include "super-io.h"
 
 #include <crypto/chacha20.h>
@@ -36,7 +37,14 @@ void bch2_encrypt(struct bch_fs *, unsigned, struct nonce,
 		 void *data, size_t);
 
 struct bch_csum bch2_checksum_bio(struct bch_fs *, unsigned,
-				 struct nonce, struct bio *);
+				  struct nonce, struct bio *);
+
+int bch2_rechecksum_bio(struct bch_fs *, struct bio *, struct bversion,
+			struct bch_extent_crc_unpacked,
+			struct bch_extent_crc_unpacked *,
+			struct bch_extent_crc_unpacked *,
+			unsigned, unsigned, unsigned);
+
 void bch2_encrypt_bio(struct bch_fs *, unsigned,
 		    struct nonce, struct bio *);
 
@@ -49,15 +57,16 @@ int bch2_enable_encryption(struct bch_fs *, bool);
 void bch2_fs_encryption_exit(struct bch_fs *);
 int bch2_fs_encryption_init(struct bch_fs *);
 
-static inline enum bch_csum_type bch2_csum_opt_to_type(enum bch_csum_opts type)
+static inline enum bch_csum_type bch2_csum_opt_to_type(enum bch_csum_opts type,
+						       bool data)
 {
 	switch (type) {
 	case BCH_CSUM_OPT_NONE:
 	     return BCH_CSUM_NONE;
 	case BCH_CSUM_OPT_CRC32C:
-	     return BCH_CSUM_CRC32C;
+	     return data ? BCH_CSUM_CRC32C : BCH_CSUM_CRC32C_NONZERO;
 	case BCH_CSUM_OPT_CRC64:
-	     return BCH_CSUM_CRC64;
+	     return data ? BCH_CSUM_CRC64 : BCH_CSUM_CRC64_NONZERO;
 	default:
 	     BUG();
 	}
@@ -70,7 +79,7 @@ static inline enum bch_csum_type bch2_data_checksum_type(struct bch_fs *c)
 			? BCH_CSUM_CHACHA20_POLY1305_128
 			: BCH_CSUM_CHACHA20_POLY1305_80;
 
-	return bch2_csum_opt_to_type(c->opts.data_checksum);
+	return bch2_csum_opt_to_type(c->opts.data_checksum, true);
 }
 
 static inline enum bch_csum_type bch2_meta_checksum_type(struct bch_fs *c)
@@ -78,7 +87,7 @@ static inline enum bch_csum_type bch2_meta_checksum_type(struct bch_fs *c)
 	if (c->sb.encryption_type)
 		return BCH_CSUM_CHACHA20_POLY1305_128;
 
-	return bch2_csum_opt_to_type(c->opts.metadata_checksum);
+	return bch2_csum_opt_to_type(c->opts.metadata_checksum, false);
 }
 
 static inline enum bch_compression_type
@@ -132,6 +141,21 @@ static inline struct nonce nonce_add(struct nonce nonce, unsigned offset)
 
 	le32_add_cpu(&nonce.d[0], offset / CHACHA20_BLOCK_SIZE);
 	return nonce;
+}
+
+static inline struct nonce extent_nonce(struct bversion version,
+					struct bch_extent_crc_unpacked crc)
+{
+	unsigned size = crc.compression_type ? crc.uncompressed_size : 0;
+	struct nonce nonce = (struct nonce) {{
+		[0] = cpu_to_le32(size << 22),
+		[1] = cpu_to_le32(version.lo),
+		[2] = cpu_to_le32(version.lo >> 32),
+		[3] = cpu_to_le32(version.hi|
+				  (crc.compression_type << 24))^BCH_NONCE_EXTENT,
+	}};
+
+	return nonce_add(nonce, crc.nonce << 9);
 }
 
 static inline bool bch2_key_is_encrypted(struct bch_encrypted_key *key)

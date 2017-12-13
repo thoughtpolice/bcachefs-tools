@@ -1,19 +1,15 @@
 #ifndef _BCACHEFS_IO_TYPES_H
 #define _BCACHEFS_IO_TYPES_H
 
+#include "alloc_types.h"
 #include "btree_types.h"
 #include "buckets_types.h"
+#include "extents_types.h"
 #include "keylist_types.h"
 #include "super_types.h"
 
 #include <linux/llist.h>
 #include <linux/workqueue.h>
-
-struct extent_pick_ptr {
-	struct bch_extent_crc128	crc;
-	struct bch_extent_ptr		ptr;
-	struct bch_dev			*ca;
-};
 
 struct bch_read_bio {
 	struct bch_fs		*c;
@@ -44,25 +40,21 @@ struct bch_read_bio {
 	struct {
 	u8			bounce:1,
 				split:1,
-				process_context:1,
-				retry:2;
+				narrow_crcs:1,
+				retry:2,
+				context:2;
 	};
 	u8			_state;
 	};
 
+	struct bch_devs_list	devs_have;
+
 	struct extent_pick_ptr	pick;
+	/* start pos of data we read (may not be pos of data we want) */
+	struct bpos		pos;
 	struct bversion		version;
 
 	struct promote_op	*promote;
-
-	/*
-	 * If we have to retry the read (IO error, checksum failure, read stale
-	 * data (raced with allocator), we retry the portion of the parent bio
-	 * that failed (i.e. this bio's portion, bvec_iter).
-	 *
-	 * But we need to stash the inode somewhere:
-	 */
-	u64			inode;
 
 	struct work_struct	work;
 
@@ -98,36 +90,33 @@ struct bch_write_op {
 	struct bch_fs		*c;
 	struct workqueue_struct	*io_wq;
 
-	unsigned		written; /* sectors */
-
-	short			error;
-
 	u16			flags;
+	u16			written; /* sectors */
+	s8			error;
+
 	unsigned		csum_type:4;
 	unsigned		compression_type:4;
 	unsigned		nr_replicas:4;
+	unsigned		nr_replicas_required:4;
 	unsigned		alloc_reserve:4;
-	unsigned		nonce:14;
+
+	u8			open_buckets_nr;
+	struct bch_devs_list	devs_have;
+	u16			target;
+	u16			nonce;
 
 	struct bpos		pos;
 	struct bversion		version;
 
-	/* For BCH_WRITE_DATA_COMPRESSED: */
-	struct bch_extent_crc128 crc;
-	unsigned		size;
+	/* For BCH_WRITE_DATA_ENCODED: */
+	struct bch_extent_crc_unpacked crc;
 
 	struct bch_devs_mask	*devs;
-	unsigned long		write_point;
+	struct write_point_specifier write_point;
 
 	struct disk_reservation	res;
 
-	union {
 	u8			open_buckets[16];
-	struct {
-	struct bch_write_op	*next;
-	unsigned long		expires;
-	};
-	};
 
 	/*
 	 * If caller wants to flush but hasn't passed us a journal_seq ptr, we

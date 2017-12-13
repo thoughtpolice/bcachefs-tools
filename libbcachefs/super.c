@@ -20,6 +20,7 @@
 #include "debug.h"
 #include "error.h"
 #include "fs.h"
+#include "fs-io.h"
 #include "fsck.h"
 #include "inode.h"
 #include "io.h"
@@ -209,7 +210,7 @@ static void __bch2_fs_read_only(struct bch_fs *c)
 	bch2_tiering_stop(c);
 
 	for_each_member_device(ca, c, i)
-		bch2_moving_gc_stop(ca);
+		bch2_copygc_stop(ca);
 
 	bch2_gc_thread_stop(c);
 
@@ -258,11 +259,7 @@ void bch2_fs_read_only(struct bch_fs *c)
 	 */
 	percpu_ref_kill(&c->writes);
 
-	del_timer(&c->foreground_write_wakeup);
 	cancel_delayed_work(&c->pd_controllers_update);
-
-	c->foreground_write_pd.rate.rate = UINT_MAX;
-	bch2_wake_delayed_writes((unsigned long) c);
 
 	/*
 	 * If we're not doing an emergency shutdown, we want to wait on
@@ -348,9 +345,9 @@ const char *bch2_fs_read_write(struct bch_fs *c)
 	if (bch2_gc_thread_start(c))
 		goto err;
 
-	err = "error starting moving GC thread";
+	err = "error starting copygc thread";
 	for_each_rw_member(ca, c, i)
-		if (bch2_moving_gc_start(ca)) {
+		if (bch2_copygc_start(c, ca)) {
 			percpu_ref_put(&ca->io_ref);
 			goto err;
 		}
@@ -375,6 +372,7 @@ err:
 
 static void bch2_fs_free(struct bch_fs *c)
 {
+	bch2_fs_fsio_exit(c);
 	bch2_fs_encryption_exit(c);
 	bch2_fs_btree_cache_exit(c);
 	bch2_fs_journal_exit(&c->journal);
@@ -411,7 +409,6 @@ static void bch2_fs_exit(struct bch_fs *c)
 {
 	unsigned i;
 
-	del_timer_sync(&c->foreground_write_wakeup);
 	cancel_delayed_work_sync(&c->pd_controllers_update);
 	cancel_work_sync(&c->read_only_work);
 
@@ -535,8 +532,6 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	c->tiering_enabled = 1;
 	c->tiering_percent = 10;
 
-	c->foreground_target_percent = 20;
-
 	c->journal.write_time	= &c->journal_write_time;
 	c->journal.delay_time	= &c->journal_delay_time;
 	c->journal.blocked_time	= &c->journal_blocked_time;
@@ -600,7 +595,8 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	    bch2_fs_btree_cache_init(c) ||
 	    bch2_fs_encryption_init(c) ||
 	    bch2_fs_compress_init(c) ||
-	    bch2_check_set_has_compressed_data(c, c->opts.compression))
+	    bch2_check_set_has_compressed_data(c, c->opts.compression) ||
+	    bch2_fs_fsio_init(c))
 		goto err;
 
 	c->bdi.ra_pages		= VM_MAX_READAHEAD * 1024 / PAGE_SIZE;
@@ -1105,8 +1101,10 @@ static int bch2_dev_alloc(struct bch_fs *c, unsigned dev_idx)
 	ca->dev_idx = dev_idx;
 	__set_bit(ca->dev_idx, ca->self.d);
 
+	writepoint_init(&ca->copygc_write_point, BCH_DATA_USER);
+
 	spin_lock_init(&ca->freelist_lock);
-	bch2_dev_moving_gc_init(ca);
+	bch2_dev_copygc_init(ca);
 
 	INIT_WORK(&ca->io_error_work, bch2_io_error_work);
 
@@ -1224,10 +1222,7 @@ static int __bch2_dev_online(struct bch_fs *c, struct bch_sb_handle *sb)
 	if (bch2_dev_sysfs_online(ca))
 		pr_warn("error creating sysfs objects");
 
-	lg_local_lock(&c->usage_lock);
-	if (!gc_will_visit(c, gc_phase(GC_PHASE_SB_METADATA)))
-		bch2_mark_dev_metadata(c, ca);
-	lg_local_unlock(&c->usage_lock);
+	bch2_mark_dev_superblock(c, ca, 0);
 
 	if (ca->mi.state == BCH_MEMBER_STATE_RW)
 		bch2_dev_allocator_add(c, ca);
@@ -1324,7 +1319,7 @@ static bool bch2_fs_may_start(struct bch_fs *c)
 
 static void __bch2_dev_read_only(struct bch_fs *c, struct bch_dev *ca)
 {
-	bch2_moving_gc_stop(ca);
+	bch2_copygc_stop(ca);
 
 	/*
 	 * This stops new data writes (e.g. to existing open data
@@ -1347,8 +1342,8 @@ static const char *__bch2_dev_read_write(struct bch_fs *c, struct bch_dev *ca)
 	if (bch2_dev_allocator_start(ca))
 		return "error starting allocator thread";
 
-	if (bch2_moving_gc_start(ca))
-		return "error starting moving GC thread";
+	if (bch2_copygc_start(c, ca))
+		return "error starting copygc thread";
 
 	if (bch2_tiering_start(c))
 		return "error starting tiering thread";

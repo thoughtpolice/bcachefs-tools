@@ -251,9 +251,6 @@ do {									\
 	BCH_DEBUG_PARAM(debug_check_bkeys,				\
 		"Run bkey_debugcheck (primarily checking GC/allocation "\
 		"information) when iterating over keys")		\
-	BCH_DEBUG_PARAM(version_stress_test,				\
-		"Assigns random version numbers to newly written "	\
-		"extents, to test overlapping extent cases")		\
 	BCH_DEBUG_PARAM(verify_btree_ondisk,				\
 		"Reread btree nodes at various points to verify the "	\
 		"mergesort in the read path against modifications "	\
@@ -310,8 +307,9 @@ struct crypto_blkcipher;
 struct crypto_ahash;
 
 enum gc_phase {
-	GC_PHASE_SB_METADATA		= BTREE_ID_NR + 1,
+	GC_PHASE_SB		= BTREE_ID_NR + 1,
 	GC_PHASE_PENDING_DELETE,
+	GC_PHASE_ALLOC,
 	GC_PHASE_DONE
 };
 
@@ -319,30 +317,6 @@ struct gc_pos {
 	enum gc_phase		phase;
 	struct bpos		pos;
 	unsigned		level;
-};
-
-struct bch_member_cpu {
-	u64			nbuckets;	/* device size */
-	u16			first_bucket;   /* index of first bucket used */
-	u16			bucket_size;	/* sectors */
-	u8			state;
-	u8			tier;
-	u8			replacement;
-	u8			discard;
-	u8			data_allowed;
-	u8			valid;
-};
-
-struct bch_replicas_cpu_entry {
-	u8			data_type;
-	u8			devs[BCH_SB_MEMBERS_MAX / 8];
-};
-
-struct bch_replicas_cpu {
-	struct rcu_head		rcu;
-	unsigned		nr;
-	unsigned		entry_size;
-	struct bch_replicas_cpu_entry entries[];
 };
 
 struct io_count {
@@ -372,7 +346,7 @@ struct bch_dev {
 
 	struct bch_devs_mask	self;
 
-	/* biosets used in cloned bios for replicas and moving_gc */
+	/* biosets used in cloned bios for writing multiple replicas */
 	struct bio_set		replica_set;
 
 	struct task_struct	*alloc_thread;
@@ -392,7 +366,7 @@ struct bch_dev {
 	unsigned		nr_invalidated;
 	bool			alloc_thread_started;
 
-	struct open_bucket_ptr	open_buckets_partial[BCH_REPLICAS_MAX * WRITE_POINT_COUNT];
+	u8			open_buckets_partial[OPEN_BUCKETS_COUNT];
 	unsigned		open_buckets_partial_nr;
 
 	size_t			fifo_last_bucket;
@@ -422,18 +396,20 @@ struct bch_dev {
 	bool			allocator_invalidating_data;
 
 	alloc_heap		alloc_heap;
-	bucket_heap		copygc_heap;
 
-	/* Moving GC: */
-	struct task_struct	*moving_gc_read;
-
-	struct bch_pd_controller moving_gc_pd;
+	/* Copying GC: */
+	struct task_struct	*copygc_thread;
+	copygc_heap		copygc_heap;
+	struct bch_pd_controller copygc_pd;
+	struct write_point	copygc_write_point;
 
 	struct journal_device	journal;
 
 	struct work_struct	io_error_work;
 
 	/* The rest of this all shows up in sysfs */
+	atomic_t		latency[2];
+
 	struct io_count __percpu *io_done;
 };
 
@@ -473,6 +449,7 @@ struct bch_tier {
 	struct bch_pd_controller pd;
 
 	struct bch_devs_mask	devs;
+	struct write_point	wp;
 };
 
 enum bch_fs_state {
@@ -557,10 +534,7 @@ struct bch_fs {
 	 * when allocating btree reserves fail halfway through) - instead, we
 	 * can stick them here:
 	 */
-	struct btree_alloc {
-		struct open_bucket	*ob;
-		BKEY_PADDED(k);
-	}			btree_reserve_cache[BTREE_NODE_RESERVE * 2];
+	struct btree_alloc	btree_reserve_cache[BTREE_NODE_RESERVE * 2];
 	unsigned		btree_reserve_cache_nr;
 	struct mutex		btree_reserve_cache_lock;
 
@@ -573,15 +547,9 @@ struct bch_fs {
 	struct workqueue_struct	*copygc_wq;
 
 	/* ALLOCATION */
-	struct rw_semaphore	alloc_gc_lock;
-	struct bch_pd_controller foreground_write_pd;
 	struct delayed_work	pd_controllers_update;
 	unsigned		pd_controllers_update_seconds;
-	spinlock_t		foreground_write_pd_lock;
-	struct bch_write_op	*write_wait_head;
-	struct bch_write_op	*write_wait_tail;
 
-	struct timer_list	foreground_write_wakeup;
 
 	/*
 	 * These contain all r/w devices - i.e. devices we can currently
@@ -622,8 +590,8 @@ struct bch_fs {
 
 	struct io_clock		io_clock[2];
 
-	/* SECTOR ALLOCATOR */
-	spinlock_t		open_buckets_lock;
+	/* ALLOCATOR */
+	spinlock_t		freelist_lock;
 	u8			open_buckets_freelist;
 	u8			open_buckets_nr_free;
 	struct closure_waitlist	open_buckets_wait;
@@ -634,15 +602,6 @@ struct bch_fs {
 	struct write_point	write_points[WRITE_POINT_COUNT];
 	struct hlist_head	write_points_hash[WRITE_POINT_COUNT];
 	struct mutex		write_points_hash_lock;
-
-	/*
-	 * This write point is used for migrating data off a device
-	 * and can point to any other device.
-	 * We can't use the normal write points because those will
-	 * gang up n replicas, and for migration we want only one new
-	 * replica.
-	 */
-	struct write_point	migration_write_point;
 
 	/* GARBAGE COLLECTION */
 	struct task_struct	*gc_thread;
@@ -688,6 +647,11 @@ struct bch_fs {
 
 	atomic64_t		key_version;
 
+	/* VFS IO PATH - fs-io.c */
+	struct bio_set		writepage_bioset;
+	struct bio_set		dio_write_bioset;
+	struct bio_set		dio_read_bioset;
+
 	struct bio_list		btree_write_error_list;
 	struct work_struct	btree_write_error_work;
 	spinlock_t		btree_write_error_lock;
@@ -728,18 +692,13 @@ struct bch_fs {
 
 	/* The rest of this all shows up in sysfs */
 	atomic_long_t		read_realloc_races;
+	atomic_long_t		extent_migrate_done;
+	atomic_long_t		extent_migrate_raced;
 
 	unsigned		btree_gc_periodic:1;
-	unsigned		foreground_write_ratelimit_enabled:1;
 	unsigned		copy_gc_enabled:1;
 	unsigned		tiering_enabled:1;
 	unsigned		tiering_percent;
-
-	/*
-	 * foreground writes will be throttled when the number of free
-	 * buckets is below this percentage
-	 */
-	unsigned		foreground_target_percent;
 
 #define BCH_DEBUG_PARAM(name, description) bool name;
 	BCH_DEBUG_PARAMS_ALL()

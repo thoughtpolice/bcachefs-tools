@@ -344,11 +344,13 @@ struct bch_csum {
 
 enum bch_csum_type {
 	BCH_CSUM_NONE			= 0,
-	BCH_CSUM_CRC32C			= 1,
-	BCH_CSUM_CRC64			= 2,
+	BCH_CSUM_CRC32C_NONZERO		= 1,
+	BCH_CSUM_CRC64_NONZERO		= 2,
 	BCH_CSUM_CHACHA20_POLY1305_80	= 3,
 	BCH_CSUM_CHACHA20_POLY1305_128	= 4,
-	BCH_CSUM_NR			= 5,
+	BCH_CSUM_CRC32C			= 5,
+	BCH_CSUM_CRC64			= 6,
+	BCH_CSUM_NR			= 7,
 };
 
 static inline _Bool bch2_csum_type_is_encryption(enum bch_csum_type type)
@@ -550,7 +552,7 @@ BKEY_VAL_TYPE(reservation,	BCH_RESERVATION);
 /* Maximum possible size of an entire extent value: */
 /* There's a hack in the keylist code that needs to be fixed.. */
 #define BKEY_EXTENT_VAL_U64s_MAX				\
-	(BKEY_EXTENT_PTR_U64s_MAX * BCH_REPLICAS_MAX)
+	(BKEY_EXTENT_PTR_U64s_MAX * (BCH_REPLICAS_MAX + 1))
 
 /* * Maximum possible size of an entire extent, key + value: */
 #define BKEY_EXTENT_U64s_MAX		(BKEY_U64s + BKEY_EXTENT_VAL_U64s_MAX)
@@ -734,11 +736,13 @@ BKEY_VAL_TYPE(alloc,	BCH_ALLOC);
 /*
  * Version 8:	BCH_SB_ENCODED_EXTENT_MAX_BITS
  *		BCH_MEMBER_DATA_ALLOWED
+ * Version 9:	incompatible extent nonce change
  */
 
 #define BCH_SB_VERSION_MIN		7
 #define BCH_SB_VERSION_EXTENT_MAX	8
-#define BCH_SB_VERSION_MAX		8
+#define BCH_SB_VERSION_EXTENT_NONCE_V1	9
+#define BCH_SB_VERSION_MAX		9
 
 #define BCH_SB_SECTOR			8
 #define BCH_SB_LABEL_SIZE		32

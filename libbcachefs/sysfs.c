@@ -161,8 +161,11 @@ read_attribute(meta_buckets);
 read_attribute(alloc_buckets);
 read_attribute(has_data);
 read_attribute(alloc_debug);
+write_attribute(wake_allocator);
 
 read_attribute(read_realloc_races);
+read_attribute(extent_migrate_done);
+read_attribute(extent_migrate_raced);
 
 rw_attribute(journal_write_delay_ms);
 rw_attribute(journal_reclaim_delay_ms);
@@ -170,7 +173,6 @@ rw_attribute(journal_reclaim_delay_ms);
 rw_attribute(discard);
 rw_attribute(cache_replacement_policy);
 
-rw_attribute(foreground_write_ratelimit_enabled);
 rw_attribute(copy_gc_enabled);
 sysfs_pd_controller_attribute(copy_gc);
 
@@ -179,11 +181,8 @@ rw_attribute(tiering_enabled);
 rw_attribute(tiering_percent);
 sysfs_pd_controller_attribute(tiering);
 
-sysfs_pd_controller_attribute(foreground_write);
 
 rw_attribute(pd_controllers_update_seconds);
-
-rw_attribute(foreground_target_percent);
 
 read_attribute(meta_replicas_have);
 read_attribute(data_replicas_have);
@@ -272,18 +271,18 @@ static ssize_t bch2_compression_stats(struct bch_fs *c, char *buf)
 		if (k.k->type == BCH_EXTENT) {
 			struct bkey_s_c_extent e = bkey_s_c_to_extent(k);
 			const struct bch_extent_ptr *ptr;
-			const union bch_extent_crc *crc;
+			struct bch_extent_crc_unpacked crc;
 
 			extent_for_each_ptr_crc(e, ptr, crc) {
-				if (crc_compression_type(crc) == BCH_COMPRESSION_NONE) {
+				if (crc.compression_type == BCH_COMPRESSION_NONE) {
 					nr_uncompressed_extents++;
 					uncompressed_sectors += e.k->size;
 				} else {
 					nr_compressed_extents++;
 					compressed_sectors_compressed +=
-						crc_compressed_size(e.k, crc);
+						crc.compressed_size;
 					compressed_sectors_uncompressed +=
-						crc_uncompressed_size(e.k, crc);
+						crc.uncompressed_size;
 				}
 
 				/* only looking at the first ptr */
@@ -323,17 +322,17 @@ SHOW(bch2_fs)
 
 	sysfs_print(read_realloc_races,
 		    atomic_long_read(&c->read_realloc_races));
+	sysfs_print(extent_migrate_done,
+		    atomic_long_read(&c->extent_migrate_done));
+	sysfs_print(extent_migrate_raced,
+		    atomic_long_read(&c->extent_migrate_raced));
 
 	sysfs_printf(btree_gc_periodic, "%u",	(int) c->btree_gc_periodic);
 
-	sysfs_printf(foreground_write_ratelimit_enabled, "%i",
-		     c->foreground_write_ratelimit_enabled);
 	sysfs_printf(copy_gc_enabled, "%i", c->copy_gc_enabled);
-	sysfs_pd_controller_show(foreground_write, &c->foreground_write_pd);
 
 	sysfs_print(pd_controllers_update_seconds,
 		    c->pd_controllers_update_seconds);
-	sysfs_print(foreground_target_percent, c->foreground_target_percent);
 
 	sysfs_printf(tiering_enabled,		"%i", c->tiering_enabled);
 	sysfs_print(tiering_percent,		c->tiering_percent);
@@ -371,9 +370,6 @@ STORE(__bch2_fs)
 	sysfs_strtoul(journal_write_delay_ms, c->journal.write_delay_ms);
 	sysfs_strtoul(journal_reclaim_delay_ms, c->journal.reclaim_delay_ms);
 
-	sysfs_strtoul(foreground_write_ratelimit_enabled,
-		      c->foreground_write_ratelimit_enabled);
-
 	if (attr == &sysfs_btree_gc_periodic) {
 		ssize_t ret = strtoul_safe(buf, c->btree_gc_periodic)
 			?: (ssize_t) size;
@@ -389,8 +385,8 @@ STORE(__bch2_fs)
 			?: (ssize_t) size;
 
 		for_each_member_device(ca, c, i)
-			if (ca->moving_gc_read)
-				wake_up_process(ca->moving_gc_read);
+			if (ca->copygc_thread)
+				wake_up_process(ca->copygc_thread);
 		return ret;
 	}
 
@@ -402,11 +398,8 @@ STORE(__bch2_fs)
 		return ret;
 	}
 
-	sysfs_pd_controller_store(foreground_write, &c->foreground_write_pd);
-
 	sysfs_strtoul(pd_controllers_update_seconds,
 		      c->pd_controllers_update_seconds);
-	sysfs_strtoul(foreground_target_percent, c->foreground_target_percent);
 
 	sysfs_strtoul(tiering_percent,		c->tiering_percent);
 	sysfs_pd_controller_store(tiering,	&c->tiers[1].pd); /* XXX */
@@ -466,7 +459,6 @@ struct attribute *bch2_fs_files[] = {
 	&sysfs_journal_write_delay_ms,
 	&sysfs_journal_reclaim_delay_ms,
 
-	&sysfs_foreground_target_percent,
 	&sysfs_tiering_percent,
 
 	&sysfs_compression_stats,
@@ -494,17 +486,17 @@ struct attribute *bch2_fs_internal_files[] = {
 	&sysfs_journal_pins,
 
 	&sysfs_read_realloc_races,
+	&sysfs_extent_migrate_done,
+	&sysfs_extent_migrate_raced,
 
 	&sysfs_trigger_journal_flush,
 	&sysfs_trigger_btree_coalesce,
 	&sysfs_trigger_gc,
 	&sysfs_prune_cache,
 
-	&sysfs_foreground_write_ratelimit_enabled,
 	&sysfs_copy_gc_enabled,
 	&sysfs_tiering_enabled,
 	sysfs_pd_controller_files(tiering),
-	sysfs_pd_controller_files(foreground_write),
 	&sysfs_internal_uuid,
 
 #define BCH_DEBUG_PARAM(name, description) &sysfs_##name,
@@ -710,17 +702,23 @@ static ssize_t show_reserve_stats(struct bch_dev *ca, char *buf)
 static ssize_t show_dev_alloc_debug(struct bch_dev *ca, char *buf)
 {
 	struct bch_fs *c = ca->fs;
-	struct bch_dev_usage stats = bch2_dev_usage_read(ca);
+	struct bch_dev_usage stats = bch2_dev_usage_read(c, ca);
 
 	return scnprintf(buf, PAGE_SIZE,
 		"free_inc:               %zu/%zu\n"
 		"free[RESERVE_BTREE]:    %zu/%zu\n"
 		"free[RESERVE_MOVINGGC]: %zu/%zu\n"
 		"free[RESERVE_NONE]:     %zu/%zu\n"
-		"alloc:                  %llu/%llu\n"
-		"meta:                   %llu/%llu\n"
-		"dirty:                  %llu/%llu\n"
-		"available:              %llu/%llu\n"
+		"buckets:\n"
+		"    capacity:           %llu\n"
+		"    alloc:              %llu\n"
+		"    meta:               %llu\n"
+		"    dirty:              %llu\n"
+		"    available:          %llu\n"
+		"sectors:\n"
+		"    meta:               %llu\n"
+		"    dirty:              %llu\n"
+		"    cached:             %llu\n"
 		"freelist_wait:          %s\n"
 		"open buckets:           %u/%u (reserved %u)\n"
 		"open_buckets_wait:      %s\n",
@@ -728,10 +726,14 @@ static ssize_t show_dev_alloc_debug(struct bch_dev *ca, char *buf)
 		fifo_used(&ca->free[RESERVE_BTREE]),	ca->free[RESERVE_BTREE].size,
 		fifo_used(&ca->free[RESERVE_MOVINGGC]),	ca->free[RESERVE_MOVINGGC].size,
 		fifo_used(&ca->free[RESERVE_NONE]),	ca->free[RESERVE_NONE].size,
-		stats.buckets_alloc,			ca->mi.nbuckets - ca->mi.first_bucket,
-		stats.buckets[S_META],			ca->mi.nbuckets - ca->mi.first_bucket,
-		stats.buckets[S_DIRTY],			ca->mi.nbuckets - ca->mi.first_bucket,
-		__dev_buckets_available(ca, stats),	ca->mi.nbuckets - ca->mi.first_bucket,
+		ca->mi.nbuckets - ca->mi.first_bucket,
+		stats.buckets_alloc,
+		stats.buckets[S_META],
+		stats.buckets[S_DIRTY],
+		__dev_buckets_available(ca, stats),
+		stats.sectors[S_META],
+		stats.sectors[S_DIRTY],
+		stats.sectors_cached,
 		c->freelist_wait.list.first		? "waiting" : "empty",
 		c->open_buckets_nr_free, OPEN_BUCKETS_COUNT, BTREE_NODE_RESERVE,
 		c->open_buckets_wait.list.first		? "waiting" : "empty");
@@ -769,7 +771,7 @@ SHOW(bch2_dev)
 {
 	struct bch_dev *ca = container_of(kobj, struct bch_dev, kobj);
 	struct bch_fs *c = ca->fs;
-	struct bch_dev_usage stats = bch2_dev_usage_read(ca);
+	struct bch_dev_usage stats = bch2_dev_usage_read(c, ca);
 	char *out = buf, *end = buf + PAGE_SIZE;
 
 	sysfs_printf(uuid,		"%pU\n", ca->uuid.b);
@@ -788,8 +790,8 @@ SHOW(bch2_dev)
 	sysfs_print(cached_buckets,	stats.buckets_cached);
 	sysfs_print(meta_buckets,	stats.buckets[S_META]);
 	sysfs_print(alloc_buckets,	stats.buckets_alloc);
-	sysfs_print(available_buckets,	dev_buckets_available(ca));
-	sysfs_print(free_buckets,	dev_buckets_free(ca));
+	sysfs_print(available_buckets,	__dev_buckets_available(ca, stats));
+	sysfs_print(free_buckets,	__dev_buckets_free(ca, stats));
 
 	if (attr == &sysfs_has_data) {
 		out += bch2_scnprint_flag_list(out, end - out,
@@ -799,7 +801,7 @@ SHOW(bch2_dev)
 		return out - buf;
 	}
 
-	sysfs_pd_controller_show(copy_gc, &ca->moving_gc_pd);
+	sysfs_pd_controller_show(copy_gc, &ca->copygc_pd);
 
 	if (attr == &sysfs_cache_replacement_policy) {
 		out += bch2_scnprint_string_list(out, end - out,
@@ -843,7 +845,7 @@ STORE(bch2_dev)
 	struct bch_fs *c = ca->fs;
 	struct bch_member *mi;
 
-	sysfs_pd_controller_store(copy_gc, &ca->moving_gc_pd);
+	sysfs_pd_controller_store(copy_gc, &ca->copygc_pd);
 
 	if (attr == &sysfs_discard) {
 		bool v = strtoul_or_return(buf);
@@ -899,6 +901,9 @@ STORE(bch2_dev)
 		bch2_tiering_start(c);
 	}
 
+	if (attr == &sysfs_wake_allocator)
+		bch2_wake_allocator(ca);
+
 	return size;
 }
 SYSFS_OPS(bch2_dev);
@@ -942,6 +947,7 @@ struct attribute *bch2_dev_files[] = {
 
 	/* debug: */
 	&sysfs_alloc_debug,
+	&sysfs_wake_allocator,
 
 	sysfs_pd_controller_files(copy_gc),
 	NULL

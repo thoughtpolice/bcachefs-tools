@@ -80,7 +80,7 @@ static inline unsigned eytzinger1_prev(unsigned i, unsigned size)
 	EBUG_ON(i >= size);
 
 	if (eytzinger1_left_child(i) < size) {
-		i = eytzinger1_left_child(i);
+		i = eytzinger1_left_child(i) + 1;
 
 		i <<= __fls(size) - __fls(i);
 		i -= 1;
@@ -163,38 +163,6 @@ static inline unsigned inorder_to_eytzinger1(unsigned i, unsigned size)
 	     (_i) != 0;					\
 	     (_i) = eytzinger1_next((_i), (_size)))
 
-#if 0
-void eytzinger0_test(void)
-{
-	unsigned i, j, size;
-
-	for (size = 2;
-	     size < 65536000;
-	     size++) {
-		if (!(size % 4096))
-			printk(KERN_INFO "tree size %u\n", size);
-
-		assert(eytzinger1_prev(0, size) == eytzinger1_last(size));
-		assert(eytzinger1_next(0, size) == eytzinger1_first(size));
-
-		assert(eytzinger1_prev(eytzinger1_first(size), size) == 0);
-		assert(eytzinger1_next(eytzinger1_last(size), size) == 0);
-
-		eytzinger1_for_each(j, size) {
-			assert(from_inorder(i, size) == j);
-			assert(to_inorder(j, size) == i);
-
-			if (j != eytzinger1_last(size)) {
-				unsigned next = eytzinger1_next(j, size);
-
-				assert(eytzinger1_prev(next, size) == j);
-			}
-		}
-	}
-
-}
-#endif
-
 /* Zero based indexing version: */
 
 static inline unsigned eytzinger0_child(unsigned i, unsigned child)
@@ -214,27 +182,29 @@ static inline unsigned eytzinger0_right_child(unsigned i)
 	return eytzinger0_child(i, 1);
 }
 
-#if 0
 static inline unsigned eytzinger0_first(unsigned size)
 {
+	return eytzinger1_first(size + 1) - 1;
 }
 
 static inline unsigned eytzinger0_last(unsigned size)
 {
+	return eytzinger1_last(size + 1) - 1;
 }
 
 static inline unsigned eytzinger0_next(unsigned i, unsigned size)
 {
+	return eytzinger1_next(i + 1, size + 1) - 1;
 }
 
 static inline unsigned eytzinger0_prev(unsigned i, unsigned size)
 {
+	return eytzinger1_prev(i + 1, size + 1) - 1;
 }
-#endif
 
 static inline unsigned eytzinger0_extra(unsigned size)
 {
-	return (size + 1 - rounddown_pow_of_two(size)) << 1;
+	return eytzinger1_extra(size + 1);
 }
 
 static inline unsigned __eytzinger0_to_inorder(unsigned i, unsigned size,
@@ -259,10 +229,41 @@ static inline unsigned inorder_to_eytzinger0(unsigned i, unsigned size)
 	return __inorder_to_eytzinger0(i, size, eytzinger0_extra(size));
 }
 
+#define eytzinger0_for_each(_i, _size)			\
+	for ((_i) = eytzinger0_first((_size));		\
+	     (_i) != -1;				\
+	     (_i) = eytzinger0_next((_i), (_size)))
+
 typedef int (*eytzinger_cmp_fn)(const void *l, const void *r, size_t size);
 
+/* return greatest node <= @search, or -1 if not found */
+static inline ssize_t eytzinger0_find_le(void *base, size_t nr, size_t size,
+					 eytzinger_cmp_fn cmp, const void *search)
+{
+	unsigned i, n = 0;
+
+	if (!nr)
+		return -1;
+
+	do {
+		i = n;
+		n = eytzinger0_child(i, cmp(search, base + i * size, size) >= 0);
+	} while (n < nr);
+
+	if (n & 1) {
+		/* @i was greater than @search, return previous node: */
+
+		if (i == eytzinger0_first(nr))
+			return -1;
+
+		return eytzinger0_prev(i, nr);
+	} else {
+		return i;
+	}
+}
+
 static inline size_t eytzinger0_find(void *base, size_t nr, size_t size,
-				     eytzinger_cmp_fn cmp, void *search)
+				     eytzinger_cmp_fn cmp, const void *search)
 {
 	size_t i = 0;
 	int res;
@@ -270,17 +271,6 @@ static inline size_t eytzinger0_find(void *base, size_t nr, size_t size,
 	while (i < nr &&
 	       (res = cmp(search, base + i * size, size)))
 		i = eytzinger0_child(i, res > 0);
-
-	if (IS_ENABLED(CONFIG_BCACHEFS_DEBUG)) {
-		bool found1 = i < nr, found2 = false;
-		size_t j;
-
-		for (j = 0; j < nr; j++)
-			if (!cmp(base + j * size, search, size))
-				found2 = true;
-
-		BUG_ON(found1 != found2);
-	}
 
 	return i;
 }

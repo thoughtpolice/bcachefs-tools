@@ -211,7 +211,7 @@ found:
 			     -c->opts.btree_node_size, true, b
 			     ? gc_pos_btree_node(b)
 			     : gc_pos_btree_root(as->btree_id),
-			     &tmp, 0);
+			     &tmp, 0, 0);
 		/*
 		 * Don't apply tmp - pending deletes aren't tracked in
 		 * bch_alloc_stats:
@@ -229,7 +229,7 @@ static void __btree_node_free(struct bch_fs *c, struct btree *b,
 	BUG_ON(btree_node_dirty(b));
 	BUG_ON(btree_node_need_write(b));
 	BUG_ON(b == btree_node_root(c, b));
-	BUG_ON(b->ob);
+	BUG_ON(b->ob.nr);
 	BUG_ON(!list_empty(&b->write_blocked));
 	BUG_ON(b->will_make_reachable);
 
@@ -254,17 +254,17 @@ static void __btree_node_free(struct bch_fs *c, struct btree *b,
 
 void bch2_btree_node_free_never_inserted(struct bch_fs *c, struct btree *b)
 {
-	struct open_bucket *ob = b->ob;
+	struct btree_ob_ref ob = b->ob;
 
 	btree_update_drop_new_node(c, b);
 
-	b->ob = NULL;
+	b->ob.nr = 0;
 
 	clear_btree_node_dirty(b);
 
 	__btree_node_free(c, b, NULL);
 
-	bch2_open_bucket_put(c, ob);
+	bch2_open_bucket_put_refs(c, &ob.nr, ob.refs);
 }
 
 void bch2_btree_node_free_inmem(struct bch_fs *c, struct btree *b,
@@ -287,7 +287,7 @@ static void bch2_btree_node_free_ondisk(struct bch_fs *c,
 	bch2_mark_key(c, bkey_i_to_s_c(&pending->key),
 		     -c->opts.btree_node_size, true,
 		     gc_phase(GC_PHASE_PENDING_DELETE),
-		     &stats, 0);
+		     &stats, 0, 0);
 	/*
 	 * Don't apply stats - pending deletes aren't tracked in
 	 * bch_alloc_stats:
@@ -296,8 +296,7 @@ static void bch2_btree_node_free_ondisk(struct bch_fs *c,
 
 void bch2_btree_open_bucket_put(struct bch_fs *c, struct btree *b)
 {
-	bch2_open_bucket_put(c, b->ob);
-	b->ob = NULL;
+	bch2_open_bucket_put_refs(c, &b->ob.nr, b->ob.refs);
 }
 
 static struct btree *__bch2_btree_node_alloc(struct bch_fs *c,
@@ -305,9 +304,12 @@ static struct btree *__bch2_btree_node_alloc(struct bch_fs *c,
 					     struct closure *cl,
 					     unsigned flags)
 {
-	BKEY_PADDED(k) tmp;
-	struct open_bucket *ob;
+	struct write_point *wp;
 	struct btree *b;
+	BKEY_PADDED(k) tmp;
+	struct bkey_i_extent *e;
+	struct btree_ob_ref ob;
+	struct bch_devs_list devs_have = (struct bch_devs_list) { 0 };
 	unsigned nr_reserve;
 	enum alloc_reserve alloc_reserve;
 
@@ -335,31 +337,41 @@ static struct btree *__bch2_btree_node_alloc(struct bch_fs *c,
 	mutex_unlock(&c->btree_reserve_cache_lock);
 
 retry:
-	/* alloc_sectors is weird, I suppose */
-	bkey_extent_init(&tmp.k);
-	tmp.k.k.size = c->opts.btree_node_size,
+	wp = bch2_alloc_sectors_start(c, NULL,
+				      writepoint_ptr(&c->btree_write_point),
+				      &devs_have,
+				      res->nr_replicas,
+				      c->opts.metadata_replicas_required,
+				      alloc_reserve, 0, cl);
+	if (IS_ERR(wp))
+		return ERR_CAST(wp);
 
-	ob = bch2_alloc_sectors(c, BCH_DATA_BTREE, 0, 0,
-				bkey_i_to_extent(&tmp.k),
-				res->nr_replicas,
-				c->opts.metadata_replicas_required,
-				alloc_reserve, 0, cl);
-	if (IS_ERR(ob))
-		return ERR_CAST(ob);
+	if (wp->sectors_free < c->opts.btree_node_size) {
+		struct open_bucket *ob;
+		unsigned i;
 
-	if (tmp.k.k.size < c->opts.btree_node_size) {
-		bch2_open_bucket_put(c, ob);
+		writepoint_for_each_ptr(wp, ob, i)
+			if (ob->sectors_free < c->opts.btree_node_size)
+				ob->sectors_free = 0;
+
+		bch2_alloc_sectors_done(c, wp);
 		goto retry;
 	}
+
+	e = bkey_extent_init(&tmp.k);
+	bch2_alloc_sectors_append_ptrs(c, wp, e, c->opts.btree_node_size);
+
+	ob.nr = 0;
+	bch2_open_bucket_get(c, wp, &ob.nr, ob.refs);
+	bch2_alloc_sectors_done(c, wp);
 mem_alloc:
 	b = bch2_btree_node_mem_alloc(c);
 
 	/* we hold cannibalize_lock: */
 	BUG_ON(IS_ERR(b));
-	BUG_ON(b->ob);
+	BUG_ON(b->ob.nr);
 
 	bkey_copy(&b->key, &tmp.k);
-	b->key.k.size = 0;
 	b->ob = ob;
 
 	return b;
@@ -466,11 +478,10 @@ static void bch2_btree_reserve_put(struct bch_fs *c, struct btree_reserve *reser
 				&c->btree_reserve_cache[c->btree_reserve_cache_nr++];
 
 			a->ob = b->ob;
-			b->ob = NULL;
+			b->ob.nr = 0;
 			bkey_copy(&a->k, &b->key);
 		} else {
-			bch2_open_bucket_put(c, b->ob);
-			b->ob = NULL;
+			bch2_btree_open_bucket_put(c, b);
 		}
 
 		__btree_node_free(c, b, NULL);
@@ -857,10 +868,7 @@ static void __btree_interior_update_drop_new_node(struct btree *b)
 
 	BUG();
 found:
-	as->nr_new_nodes--;
-	memmove(&as->new_nodes[i],
-		&as->new_nodes[i + 1],
-		sizeof(struct btree *) * (as->nr_new_nodes - i));
+	array_remove_item(as->new_nodes, as->nr_new_nodes, i);
 	b->will_make_reachable = NULL;
 }
 
@@ -1000,8 +1008,7 @@ bch2_btree_update_start(struct bch_fs *c, enum btree_id id,
 	as->reserve	= reserve;
 	INIT_LIST_HEAD(&as->write_blocked_list);
 
-	bch2_keylist_init(&as->parent_keys, as->inline_keys,
-			 ARRAY_SIZE(as->inline_keys));
+	bch2_keylist_init(&as->parent_keys, as->inline_keys);
 
 	mutex_lock(&c->btree_interior_update_lock);
 	list_add(&as->list, &c->btree_interior_update_list);
@@ -1037,7 +1044,7 @@ static void bch2_btree_set_root_inmem(struct btree_update *as, struct btree *b)
 	bch2_mark_key(c, bkey_i_to_s_c(&b->key),
 		      c->opts.btree_node_size, true,
 		      gc_pos_btree_root(b->btree_id),
-		      &stats, 0);
+		      &stats, 0, 0);
 
 	if (old)
 		bch2_btree_node_free_index(as, NULL,
@@ -1121,7 +1128,7 @@ static void bch2_insert_fixup_btree_ptr(struct btree_update *as, struct btree *b
 	if (bkey_extent_is_data(&insert->k))
 		bch2_mark_key(c, bkey_i_to_s_c(insert),
 			     c->opts.btree_node_size, true,
-			     gc_pos_btree_node(b), &stats, 0);
+			     gc_pos_btree_node(b), &stats, 0, 0);
 
 	while ((k = bch2_btree_node_iter_peek_all(node_iter, b)) &&
 	       !btree_iter_pos_cmp_packed(b, &insert->k.p, k, false))
@@ -1479,6 +1486,13 @@ int bch2_btree_split_leaf(struct bch_fs *c, struct btree_iter *iter,
 	struct closure cl;
 	int ret = 0;
 
+	/*
+	 * We already have a disk reservation and open buckets pinned; this
+	 * allocation must not block:
+	 */
+	if (iter->btree_id == BTREE_ID_EXTENTS)
+		btree_reserve_flags |= BTREE_INSERT_USE_RESERVE;
+
 	closure_init_stack(&cl);
 
 	/* Hack, because gc and splitting nodes doesn't mix yet: */
@@ -1519,6 +1533,7 @@ int bch2_btree_split_leaf(struct bch_fs *c, struct btree_iter *iter,
 	bch2_btree_iter_set_locks_want(iter, 1);
 out:
 	up_read(&c->gc_lock);
+	closure_sync(&cl);
 	return ret;
 }
 
@@ -1904,7 +1919,7 @@ retry:
 		bch2_mark_key(c, bkey_i_to_s_c(&new_key->k_i),
 			      c->opts.btree_node_size, true,
 			      gc_pos_btree_root(b->btree_id),
-			      &stats, 0);
+			      &stats, 0, 0);
 		bch2_btree_node_free_index(as, NULL,
 					   bkey_i_to_s_c(&b->key),
 					   &stats);
@@ -1928,6 +1943,7 @@ out:
 	}
 	bch2_btree_iter_unlock(&iter);
 	up_read(&c->gc_lock);
+	closure_sync(&cl);
 	return ret;
 err:
 	if (as)
@@ -1965,13 +1981,13 @@ int bch2_btree_root_alloc(struct bch_fs *c, enum btree_id id,
 					     BTREE_INSERT_USE_RESERVE|
 					     BTREE_INSERT_USE_ALLOC_RESERVE,
 					     &cl);
+		closure_sync(&cl);
+
 		if (!IS_ERR(as))
 			break;
 
 		if (PTR_ERR(as) == -ENOSPC)
 			return PTR_ERR(as);
-
-		closure_sync(&cl);
 	}
 
 	b = __btree_root_alloc(as, 0);

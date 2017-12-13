@@ -654,17 +654,17 @@ static int bch2_fill_extent(struct fiemap_extent_info *info,
 	if (bkey_extent_is_data(&k->k)) {
 		struct bkey_s_c_extent e = bkey_i_to_s_c_extent(k);
 		const struct bch_extent_ptr *ptr;
-		const union bch_extent_crc *crc;
+		struct bch_extent_crc_unpacked crc;
 		int ret;
 
 		extent_for_each_ptr_crc(e, ptr, crc) {
 			int flags2 = 0;
 			u64 offset = ptr->offset;
 
-			if (crc_compression_type(crc))
+			if (crc.compression_type)
 				flags2 |= FIEMAP_EXTENT_ENCODED;
 			else
-				offset += crc_offset(crc);
+				offset += crc.offset;
 
 			if ((offset & (PAGE_SECTORS - 1)) ||
 			    (e.k->size & (PAGE_SECTORS - 1)))
@@ -1336,12 +1336,6 @@ MODULE_ALIAS_FS("bcachefs");
 void bch2_vfs_exit(void)
 {
 	unregister_filesystem(&bcache_fs_type);
-	if (bch2_dio_write_bioset)
-		bioset_free(bch2_dio_write_bioset);
-	if (bch2_dio_read_bioset)
-		bioset_free(bch2_dio_read_bioset);
-	if (bch2_writepage_bioset)
-		bioset_free(bch2_writepage_bioset);
 	if (bch2_inode_cache)
 		kmem_cache_destroy(bch2_inode_cache);
 }
@@ -1352,20 +1346,6 @@ int __init bch2_vfs_init(void)
 
 	bch2_inode_cache = KMEM_CACHE(bch_inode_info, 0);
 	if (!bch2_inode_cache)
-		goto err;
-
-	bch2_writepage_bioset =
-		bioset_create(4, offsetof(struct bch_writepage_io, op.op.wbio.bio));
-	if (!bch2_writepage_bioset)
-		goto err;
-
-	bch2_dio_read_bioset = bioset_create(4, offsetof(struct dio_read, rbio.bio));
-	if (!bch2_dio_read_bioset)
-		goto err;
-
-	bch2_dio_write_bioset =
-		bioset_create(4, offsetof(struct dio_write, iop.op.wbio.bio));
-	if (!bch2_dio_write_bioset)
 		goto err;
 
 	ret = register_filesystem(&bcache_fs_type);

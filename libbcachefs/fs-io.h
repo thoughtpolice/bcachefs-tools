@@ -1,7 +1,11 @@
 #ifndef _BCACHEFS_FS_IO_H
 #define _BCACHEFS_FS_IO_H
 
+#ifndef NO_BCACHEFS_FS
+
 #include "buckets.h"
+#include "io_types.h"
+
 #include <linux/uio.h>
 
 int bch2_set_page_dirty(struct page *);
@@ -35,60 +39,11 @@ int bch2_releasepage(struct page *, gfp_t);
 int bch2_migrate_page(struct address_space *, struct page *,
 		      struct page *, enum migrate_mode);
 
-struct i_sectors_hook {
-	struct extent_insert_hook	hook;
-	s64				sectors;
-	struct bch_inode_info		*inode;
-};
-
-struct bchfs_write_op {
-	struct bch_inode_info		*inode;
-	s64				sectors_added;
-	bool				is_dio;
-	u64				new_i_size;
-
-	/* must be last: */
-	struct bch_write_op		op;
-};
-
-struct bch_writepage_io {
-	struct closure			cl;
-
-	/* must be last: */
-	struct bchfs_write_op		op;
-};
-
-extern struct bio_set *bch2_writepage_bioset;
-
-struct dio_write {
-	struct closure			cl;
-	struct kiocb			*req;
-	struct bch_fs			*c;
-	long				written;
-	long				error;
-	loff_t				offset;
-
-	struct disk_reservation		res;
-
-	struct iovec			*iovec;
-	struct iovec			inline_vecs[UIO_FASTIOV];
-	struct iov_iter			iter;
-
-	struct task_struct		*task;
-
-	/* must be last: */
-	struct bchfs_write_op		iop;
-};
-
-extern struct bio_set *bch2_dio_write_bioset;
-
-struct dio_read {
-	struct closure			cl;
-	struct kiocb			*req;
-	long				ret;
-	struct bch_read_bio		rbio;
-};
-
-extern struct bio_set *bch2_dio_read_bioset;
+void bch2_fs_fsio_exit(struct bch_fs *);
+int bch2_fs_fsio_init(struct bch_fs *);
+#else
+static inline void bch2_fs_fsio_exit(struct bch_fs *c) {}
+static inline int bch2_fs_fsio_init(struct bch_fs *c) { return 0; }
+#endif
 
 #endif /* _BCACHEFS_FS_IO_H */

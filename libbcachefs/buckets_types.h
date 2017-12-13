@@ -59,6 +59,7 @@ struct bch_dev_usage {
 	u64			buckets[S_ALLOC_NR];
 	u64			buckets_cached;
 	u64			buckets_alloc;
+	u64			buckets_unavailable;
 
 	/* _compressed_ sectors: */
 	u64			sectors[S_ALLOC_NR];
@@ -79,13 +80,6 @@ struct bch_fs_usage {
 	u64			available_cache;
 };
 
-struct bucket_heap_entry {
-	size_t			bucket;
-	struct bucket_mark	mark;
-};
-
-typedef HEAP(struct bucket_heap_entry) bucket_heap;
-
 /*
  * A reservation for space on disk:
  */
@@ -94,5 +88,12 @@ struct disk_reservation {
 	u32		gen;
 	unsigned	nr_replicas;
 };
+
+struct copygc_heap_entry {
+	u64			offset;
+	struct bucket_mark	mark;
+};
+
+typedef HEAP(struct copygc_heap_entry) copygc_heap;
 
 #endif /* _BUCKETS_TYPES_H */

@@ -19,6 +19,7 @@
 #include "inode.h"
 #include "journal.h"
 #include "super-io.h"
+#include "util.h"
 #include "xattr.h"
 
 #include <trace/events/bcachefs.h>
@@ -155,6 +156,44 @@ unsigned bch2_extent_nr_dirty_ptrs(struct bkey_s_c k)
 	return nr_ptrs;
 }
 
+unsigned bch2_extent_is_compressed(struct bkey_s_c k)
+{
+	struct bkey_s_c_extent e;
+	const struct bch_extent_ptr *ptr;
+	struct bch_extent_crc_unpacked crc;
+	unsigned ret = 0;
+
+	switch (k.k->type) {
+	case BCH_EXTENT:
+	case BCH_EXTENT_CACHED:
+		e = bkey_s_c_to_extent(k);
+
+		extent_for_each_ptr_crc(e, ptr, crc)
+			if (!ptr->cached &&
+			    crc.compression_type != BCH_COMPRESSION_NONE &&
+			    crc.compressed_size < crc.live_size)
+				ret = max_t(unsigned, ret, crc.compressed_size);
+	}
+
+	return ret;
+}
+
+bool bch2_extent_matches_ptr(struct bch_fs *c, struct bkey_s_c_extent e,
+			     struct bch_extent_ptr m, u64 offset)
+{
+	const struct bch_extent_ptr *ptr;
+	struct bch_extent_crc_unpacked crc;
+
+	extent_for_each_ptr_crc(e, ptr, crc)
+		if (ptr->dev	== m.dev &&
+		    ptr->gen	== m.gen &&
+		    (s64) ptr->offset + crc.offset - bkey_start_offset(e.k) ==
+		    (s64) m.offset  - offset)
+			return ptr;
+
+	return NULL;
+}
+
 /* Doesn't cleanup redundant crcs */
 void __bch2_extent_drop_ptr(struct bkey_s_extent e, struct bch_extent_ptr *ptr)
 {
@@ -186,24 +225,30 @@ found:
 	bch2_extent_drop_ptr(e, ptr);
 }
 
-/* returns true if equal */
-static bool crc_cmp(union bch_extent_crc *l, union bch_extent_crc *r)
+static inline bool can_narrow_crc(struct bch_extent_crc_unpacked u,
+				  struct bch_extent_crc_unpacked n)
 {
-	return extent_crc_type(l) == extent_crc_type(r) &&
-		!memcmp(l, r, extent_entry_bytes(to_entry(l)));
+	return !u.compression_type &&
+		u.csum_type &&
+		u.uncompressed_size > u.live_size &&
+		bch2_csum_type_is_encryption(u.csum_type) ==
+		bch2_csum_type_is_encryption(n.csum_type);
 }
 
-/* Increment pointers after @crc by crc's offset until the next crc entry: */
-void bch2_extent_crc_narrow_pointers(struct bkey_s_extent e, union bch_extent_crc *crc)
+bool bch2_can_narrow_extent_crcs(struct bkey_s_c_extent e,
+				 struct bch_extent_crc_unpacked n)
 {
-	union bch_extent_entry *entry;
+	struct bch_extent_crc_unpacked crc;
+	const union bch_extent_entry *i;
 
-	extent_for_each_entry_from(e, entry, extent_entry_next(to_entry(crc))) {
-		if (!extent_entry_is_ptr(entry))
-			return;
+	if (!n.csum_type)
+		return false;
 
-		entry->ptr.offset += crc_offset(crc);
-	}
+	extent_for_each_crc(e, crc, i)
+		if (can_narrow_crc(crc, n))
+			return true;
+
+	return false;
 }
 
 /*
@@ -214,96 +259,50 @@ void bch2_extent_crc_narrow_pointers(struct bkey_s_extent e, union bch_extent_cr
  * not compressed, we can modify them to point to only the data that is
  * currently live (so that readers won't have to bounce) while we've got the
  * checksum we need:
- *
- * XXX: to guard against data being corrupted while in memory, instead of
- * recomputing the checksum here, it would be better in the read path to instead
- * of computing the checksum of the entire extent:
- *
- * | extent                              |
- *
- * compute the checksums of the live and dead data separately
- * | dead data || live data || dead data |
- *
- * and then verify that crc_dead1 + crc_live + crc_dead2 == orig_crc, and then
- * use crc_live here (that we verified was correct earlier)
- *
- * note: doesn't work with encryption
  */
-void bch2_extent_narrow_crcs(struct bkey_s_extent e)
+bool bch2_extent_narrow_crcs(struct bkey_i_extent *e,
+			     struct bch_extent_crc_unpacked n)
 {
-	union bch_extent_crc *crc;
-	bool have_wide = false, have_narrow = false;
-	struct bch_csum csum = { 0 };
-	unsigned csum_type = 0;
+	struct bch_extent_crc_unpacked u;
+	struct bch_extent_ptr *ptr;
+	union bch_extent_entry *i;
 
-	extent_for_each_crc(e, crc) {
-		if (crc_compression_type(crc) ||
-		    bch2_csum_type_is_encryption(crc_csum_type(crc)))
-			continue;
-
-		if (crc_uncompressed_size(e.k, crc) != e.k->size) {
-			have_wide = true;
-		} else {
-			have_narrow = true;
-			csum = crc_csum(crc);
-			csum_type = crc_csum_type(crc);
-		}
-	}
-
-	if (!have_wide || !have_narrow)
-		return;
-
-	extent_for_each_crc(e, crc) {
-		if (crc_compression_type(crc))
-			continue;
-
-		if (crc_uncompressed_size(e.k, crc) != e.k->size) {
-			switch (extent_crc_type(crc)) {
-			case BCH_EXTENT_CRC_NONE:
-				BUG();
-			case BCH_EXTENT_CRC32:
-				if (bch_crc_bytes[csum_type] > 4)
-					continue;
-
-				bch2_extent_crc_narrow_pointers(e, crc);
-				crc->crc32._compressed_size	= e.k->size - 1;
-				crc->crc32._uncompressed_size	= e.k->size - 1;
-				crc->crc32.offset		= 0;
-				crc->crc32.csum_type		= csum_type;
-				crc->crc32.csum			= csum.lo;
-				break;
-			case BCH_EXTENT_CRC64:
-				if (bch_crc_bytes[csum_type] > 10)
-					continue;
-
-				bch2_extent_crc_narrow_pointers(e, crc);
-				crc->crc64._compressed_size	= e.k->size - 1;
-				crc->crc64._uncompressed_size	= e.k->size - 1;
-				crc->crc64.offset		= 0;
-				crc->crc64.csum_type		= csum_type;
-				crc->crc64.csum_lo		= csum.lo;
-				crc->crc64.csum_hi		= csum.hi;
-				break;
-			case BCH_EXTENT_CRC128:
-				if (bch_crc_bytes[csum_type] > 16)
-					continue;
-
-				bch2_extent_crc_narrow_pointers(e, crc);
-				crc->crc128._compressed_size	= e.k->size - 1;
-				crc->crc128._uncompressed_size	= e.k->size - 1;
-				crc->crc128.offset		= 0;
-				crc->crc128.csum_type		= csum_type;
-				crc->crc128.csum		= csum;
+	/* Find a checksum entry that covers only live data: */
+	if (!n.csum_type)
+		extent_for_each_crc(extent_i_to_s(e), u, i)
+			if (!u.compression_type &&
+			    u.csum_type &&
+			    u.live_size == u.uncompressed_size) {
+				n = u;
 				break;
 			}
+
+	if (!bch2_can_narrow_extent_crcs(extent_i_to_s_c(e), n))
+		return false;
+
+	BUG_ON(n.compression_type);
+	BUG_ON(n.offset);
+	BUG_ON(n.live_size != e->k.size);
+
+	bch2_extent_crc_append(e, n);
+restart_narrow_pointers:
+	extent_for_each_ptr_crc(extent_i_to_s(e), ptr, u)
+		if (can_narrow_crc(u, n)) {
+			ptr->offset += u.offset;
+			extent_ptr_append(e, *ptr);
+			__bch2_extent_drop_ptr(extent_i_to_s(e), ptr);
+			goto restart_narrow_pointers;
 		}
-	}
+
+	bch2_extent_drop_redundant_crcs(extent_i_to_s(e));
+	return true;
 }
 
 void bch2_extent_drop_redundant_crcs(struct bkey_s_extent e)
 {
 	union bch_extent_entry *entry = e.v->start;
 	union bch_extent_crc *crc, *prev = NULL;
+	struct bch_extent_crc_unpacked u, prev_u;
 
 	while (entry != extent_entry_last(e)) {
 		union bch_extent_entry *next = extent_entry_next(entry);
@@ -313,6 +312,7 @@ void bch2_extent_drop_redundant_crcs(struct bkey_s_extent e)
 			goto next;
 
 		crc = entry_to_crc(entry);
+		u = bch2_extent_crc_unpack(e.k, crc);
 
 		if (next == extent_entry_last(e)) {
 			/* crc entry with no pointers after it: */
@@ -324,20 +324,28 @@ void bch2_extent_drop_redundant_crcs(struct bkey_s_extent e)
 			goto drop;
 		}
 
-		if (prev && crc_cmp(crc, prev)) {
+		if (prev && !memcmp(&u, &prev_u, sizeof(u))) {
 			/* identical to previous crc entry: */
 			goto drop;
 		}
 
 		if (!prev &&
-		    !crc_csum_type(crc) &&
-		    !crc_compression_type(crc)) {
+		    !u.csum_type &&
+		    !u.compression_type) {
 			/* null crc entry: */
-			bch2_extent_crc_narrow_pointers(e, crc);
+			union bch_extent_entry *e2;
+
+			extent_for_each_entry_from(e, e2, extent_entry_next(entry)) {
+				if (!extent_entry_is_ptr(e2))
+					break;
+
+				e2->ptr.offset += u.offset;
+			}
 			goto drop;
 		}
 
 		prev = crc;
+		prev_u = u;
 next:
 		entry = next;
 		continue;
@@ -453,7 +461,7 @@ static size_t extent_print_ptrs(struct bch_fs *c, char *buf,
 {
 	char *out = buf, *end = buf + size;
 	const union bch_extent_entry *entry;
-	const union bch_extent_crc *crc;
+	struct bch_extent_crc_unpacked crc;
 	const struct bch_extent_ptr *ptr;
 	struct bch_dev *ca;
 	bool first = true;
@@ -468,13 +476,14 @@ static size_t extent_print_ptrs(struct bch_fs *c, char *buf,
 		case BCH_EXTENT_ENTRY_crc32:
 		case BCH_EXTENT_ENTRY_crc64:
 		case BCH_EXTENT_ENTRY_crc128:
-			crc = entry_to_crc(entry);
+			crc = bch2_extent_crc_unpack(e.k, entry_to_crc(entry));
 
-			p("crc: c_size %u size %u offset %u csum %u compress %u",
-			  crc_compressed_size(e.k, crc),
-			  crc_uncompressed_size(e.k, crc),
-			  crc_offset(crc), crc_csum_type(crc),
-			  crc_compression_type(crc));
+			p("crc: c_size %u size %u offset %u nonce %u csum %u compress %u",
+			  crc.compressed_size,
+			  crc.uncompressed_size,
+			  crc.offset, crc.nonce,
+			  crc.csum_type,
+			  crc.compression_type);
 			break;
 		case BCH_EXTENT_ENTRY_ptr:
 			ptr = entry_to_ptr(entry);
@@ -499,13 +508,24 @@ out:
 	return out - buf;
 }
 
+static inline bool dev_latency_better(struct bch_dev *dev1,
+				      struct bch_dev *dev2)
+{
+	unsigned l1 = atomic_read(&dev1->latency[READ]);
+	unsigned l2 = atomic_read(&dev2->latency[READ]);
+
+	/* Pick at random, biased in favor of the faster device: */
+
+	return bch2_rand_range(l1 + l2) > l1;
+}
+
 static void extent_pick_read_device(struct bch_fs *c,
 				    struct bkey_s_c_extent e,
 				    struct bch_devs_mask *avoid,
 				    struct extent_pick_ptr *pick)
 {
-	const union bch_extent_crc *crc;
 	const struct bch_extent_ptr *ptr;
+	struct bch_extent_crc_unpacked crc;
 
 	extent_for_each_ptr_crc(e, ptr, crc) {
 		struct bch_dev *ca = c->devs[ptr->dev];
@@ -516,12 +536,18 @@ static void extent_pick_read_device(struct bch_fs *c,
 		if (ca->mi.state == BCH_MEMBER_STATE_FAILED)
 			continue;
 
-		if (avoid && test_bit(ca->dev_idx, avoid->d))
-			continue;
+		if (avoid) {
+			if (test_bit(ca->dev_idx, avoid->d))
+				continue;
 
-		if (pick->ca && pick->ca->mi.tier < ca->mi.tier)
-			continue;
+			if (pick->ca &&
+			    test_bit(pick->ca->dev_idx, avoid->d))
+				goto use;
+		}
 
+		if (pick->ca && !dev_latency_better(ca, pick->ca))
+			continue;
+use:
 		if (!percpu_ref_tryget(&ca->io_ref))
 			continue;
 
@@ -530,11 +556,9 @@ static void extent_pick_read_device(struct bch_fs *c,
 
 		*pick = (struct extent_pick_ptr) {
 			.ptr	= *ptr,
+			.crc	= crc,
 			.ca	= ca,
 		};
-
-		if (e.k->size)
-			pick->crc = crc_to_128(e.k, crc);
 	}
 }
 
@@ -557,23 +581,23 @@ static const char *bch2_btree_ptr_invalid(const struct bch_fs *c,
 		struct bkey_s_c_extent e = bkey_s_c_to_extent(k);
 		const union bch_extent_entry *entry;
 		const struct bch_extent_ptr *ptr;
-		const union bch_extent_crc *crc;
 		const char *reason;
 
-		extent_for_each_entry(e, entry)
+		extent_for_each_entry(e, entry) {
 			if (__extent_entry_type(entry) >= BCH_EXTENT_ENTRY_MAX)
 				return "invalid extent entry type";
 
-		extent_for_each_ptr_crc(e, ptr, crc) {
+			if (extent_entry_is_crc(entry))
+				return "has crc field";
+		}
+
+		extent_for_each_ptr(e, ptr) {
 			reason = extent_ptr_invalid(c, e, ptr,
 						    c->opts.btree_node_size,
 						    true);
 			if (reason)
 				return reason;
 		}
-
-		if (crc)
-			return "has crc field";
 
 		return NULL;
 	}
@@ -699,28 +723,28 @@ static bool __bch2_cut_front(struct bpos where, struct bkey_s k)
 		__set_bkey_deleted(k.k);
 	else if (bkey_extent_is_data(k.k)) {
 		struct bkey_s_extent e = bkey_s_to_extent(k);
-		struct bch_extent_ptr *ptr;
-		union bch_extent_crc *crc, *prev_crc = NULL;
+		union bch_extent_entry *entry;
+		bool seen_crc = false;
 
-		extent_for_each_ptr_crc(e, ptr, crc) {
-			switch (extent_crc_type(crc)) {
-			case BCH_EXTENT_CRC_NONE:
-				ptr->offset += e.k->size - len;
+		extent_for_each_entry(e, entry) {
+			switch (extent_entry_type(entry)) {
+			case BCH_EXTENT_ENTRY_ptr:
+				if (!seen_crc)
+					entry->ptr.offset += e.k->size - len;
 				break;
-			case BCH_EXTENT_CRC32:
-				if (prev_crc != crc)
-					crc->crc32.offset += e.k->size - len;
+			case BCH_EXTENT_ENTRY_crc32:
+				entry->crc32.offset += e.k->size - len;
 				break;
-			case BCH_EXTENT_CRC64:
-				if (prev_crc != crc)
-					crc->crc64.offset += e.k->size - len;
+			case BCH_EXTENT_ENTRY_crc64:
+				entry->crc64.offset += e.k->size - len;
 				break;
-			case BCH_EXTENT_CRC128:
-				if (prev_crc != crc)
-					crc->crc128.offset += e.k->size - len;
+			case BCH_EXTENT_ENTRY_crc128:
+				entry->crc128.offset += e.k->size - len;
 				break;
 			}
-			prev_crc = crc;
+
+			if (extent_entry_is_crc(entry))
+				seen_crc = true;
 		}
 	}
 
@@ -989,7 +1013,7 @@ static void bch2_add_sectors(struct extent_insert_state *s,
 		return;
 
 	bch2_mark_key(c, k, sectors, false, gc_pos_btree_node(b),
-		     &s->stats, s->trans->journal_res.seq);
+		      &s->stats, s->trans->journal_res.seq, 0);
 }
 
 static void bch2_subtract_sectors(struct extent_insert_state *s,
@@ -1123,7 +1147,7 @@ static void extent_insert_committed(struct extent_insert_state *s)
 
 	if (!(s->trans->flags & BTREE_INSERT_JOURNAL_REPLAY) &&
 	    bkey_cmp(s->committed, insert->k.p) &&
-	    bkey_extent_is_compressed(bkey_i_to_s_c(insert))) {
+	    bch2_extent_is_compressed(bkey_i_to_s_c(insert))) {
 		/* XXX: possibly need to increase our reservation? */
 		bch2_cut_subtract_back(s, s->committed,
 				      bkey_i_to_s(&split.k));
@@ -1152,46 +1176,24 @@ done:
 	s->trans->did_work		= true;
 }
 
-static enum extent_insert_hook_ret
+static enum btree_insert_ret
 __extent_insert_advance_pos(struct extent_insert_state *s,
 			    struct bpos next_pos,
 			    struct bkey_s_c k)
 {
 	struct extent_insert_hook *hook = s->trans->hook;
-	enum extent_insert_hook_ret ret;
-#if 0
-	/*
-	 * Currently disabled for encryption - broken with fcollapse. Will have
-	 * to reenable when versions are exposed for send/receive - versions
-	 * will have to be monotonic then:
-	 */
-	if (k.k && k.k->size &&
-	    !bversion_zero(s->insert->k->k.version) &&
-	    bversion_cmp(k.k->version, s->insert->k->k.version) > 0) {
-		ret = BTREE_HOOK_NO_INSERT;
-	} else
-#endif
+	enum btree_insert_ret ret;
+
 	if (hook)
 		ret = hook->fn(hook, s->committed, next_pos, k, s->insert->k);
 	else
-		ret = BTREE_HOOK_DO_INSERT;
+		ret = BTREE_INSERT_OK;
 
 	EBUG_ON(bkey_deleted(&s->insert->k->k) || !s->insert->k->k.size);
 
-	switch (ret) {
-	case BTREE_HOOK_DO_INSERT:
-		break;
-	case BTREE_HOOK_NO_INSERT:
-		extent_insert_committed(s);
-		bch2_cut_subtract_front(s, next_pos, bkey_i_to_s(s->insert->k));
+	if (ret == BTREE_INSERT_OK)
+		s->committed = next_pos;
 
-		bch2_btree_iter_set_pos_same_leaf(s->insert->iter, next_pos);
-		break;
-	case BTREE_HOOK_RESTART_TRANS:
-		return ret;
-	}
-
-	s->committed = next_pos;
 	return ret;
 }
 
@@ -1199,39 +1201,28 @@ __extent_insert_advance_pos(struct extent_insert_state *s,
  * Update iter->pos, marking how much of @insert we've processed, and call hook
  * fn:
  */
-static enum extent_insert_hook_ret
+static enum btree_insert_ret
 extent_insert_advance_pos(struct extent_insert_state *s, struct bkey_s_c k)
 {
 	struct btree *b = s->insert->iter->nodes[0];
 	struct bpos next_pos = bpos_min(s->insert->k->k.p,
 					k.k ? k.k->p : b->key.k.p);
+	enum btree_insert_ret ret;
+
+	if (race_fault())
+		return BTREE_INSERT_NEED_TRAVERSE;
 
 	/* hole? */
 	if (k.k && bkey_cmp(s->committed, bkey_start_pos(k.k)) < 0) {
-		bool have_uncommitted = bkey_cmp(s->committed,
-				bkey_start_pos(&s->insert->k->k)) > 0;
-
-		switch (__extent_insert_advance_pos(s, bkey_start_pos(k.k),
-						    bkey_s_c_null)) {
-		case BTREE_HOOK_DO_INSERT:
-			break;
-		case BTREE_HOOK_NO_INSERT:
-			/*
-			 * we had to split @insert and insert the committed
-			 * part - need to bail out and recheck journal
-			 * reservation/btree node before we advance pos past @k:
-			 */
-			if (have_uncommitted)
-				return BTREE_HOOK_NO_INSERT;
-			break;
-		case BTREE_HOOK_RESTART_TRANS:
-			return BTREE_HOOK_RESTART_TRANS;
-		}
+		ret = __extent_insert_advance_pos(s, bkey_start_pos(k.k),
+						    bkey_s_c_null);
+		if (ret != BTREE_INSERT_OK)
+			return ret;
 	}
 
 	/* avoid redundant calls to hook fn: */
 	if (!bkey_cmp(s->committed, next_pos))
-		return BTREE_HOOK_DO_INSERT;
+		return BTREE_INSERT_OK;
 
 	return __extent_insert_advance_pos(s, next_pos, k);
 }
@@ -1245,7 +1236,7 @@ extent_insert_check_split_compressed(struct extent_insert_state *s,
 	unsigned sectors;
 
 	if (overlap == BCH_EXTENT_OVERLAP_MIDDLE &&
-	    (sectors = bkey_extent_is_compressed(k))) {
+	    (sectors = bch2_extent_is_compressed(k))) {
 		int flags = BCH_DISK_RESERVATION_BTREE_LOCKS_HELD;
 
 		if (s->trans->flags & BTREE_INSERT_NOFAIL)
@@ -1277,6 +1268,7 @@ extent_squash(struct extent_insert_state *s, struct bkey_i *insert,
 	struct btree_iter *iter = s->insert->iter;
 	struct btree *b = iter->nodes[0];
 	struct btree_node_iter *node_iter = &iter->node_iters[0];
+	enum btree_insert_ret ret;
 
 	switch (overlap) {
 	case BCH_EXTENT_OVERLAP_FRONT:
@@ -1322,9 +1314,9 @@ extent_squash(struct extent_insert_state *s, struct bkey_i *insert,
 			k.k->p = orig_pos;
 			extent_save(b, node_iter, _k, k.k);
 
-			if (extent_insert_advance_pos(s, k.s_c) ==
-			    BTREE_HOOK_RESTART_TRANS)
-				return BTREE_INSERT_NEED_TRAVERSE;
+			ret = extent_insert_advance_pos(s, k.s_c);
+			if (ret != BTREE_INSERT_OK)
+				return ret;
 
 			extent_insert_committed(s);
 			/*
@@ -1420,15 +1412,9 @@ bch2_delete_fixup_extent(struct extent_insert_state *s)
 		if (ret != BTREE_INSERT_OK)
 			goto stop;
 
-		switch (extent_insert_advance_pos(s, k.s_c)) {
-		case BTREE_HOOK_DO_INSERT:
-			break;
-		case BTREE_HOOK_NO_INSERT:
-			continue;
-		case BTREE_HOOK_RESTART_TRANS:
-			ret = BTREE_INSERT_NEED_TRAVERSE;
+		ret = extent_insert_advance_pos(s, k.s_c);
+		if (ret)
 			goto stop;
-		}
 
 		s->do_journal = true;
 
@@ -1469,10 +1455,9 @@ next:
 		bch2_btree_iter_set_pos_same_leaf(iter, s->committed);
 	}
 
-	if (bkey_cmp(s->committed, insert->k.p) < 0 &&
-	    ret == BTREE_INSERT_OK &&
-	    extent_insert_advance_pos(s, bkey_s_c_null) == BTREE_HOOK_RESTART_TRANS)
-		ret = BTREE_INSERT_NEED_TRAVERSE;
+	if (ret == BTREE_INSERT_OK &&
+	    bkey_cmp(s->committed, insert->k.p) < 0)
+		ret = extent_insert_advance_pos(s, bkey_s_c_null);
 stop:
 	extent_insert_committed(s);
 
@@ -1594,18 +1579,10 @@ bch2_insert_fixup_extent(struct btree_insert *trans,
 
 		/*
 		 * Only call advance pos & call hook for nonzero size extents:
-		 * If hook returned BTREE_HOOK_NO_INSERT, @insert->k no longer
-		 * overlaps with @k:
 		 */
-		switch (extent_insert_advance_pos(&s, k.s_c)) {
-		case BTREE_HOOK_DO_INSERT:
-			break;
-		case BTREE_HOOK_NO_INSERT:
-			continue;
-		case BTREE_HOOK_RESTART_TRANS:
-			ret = BTREE_INSERT_NEED_TRAVERSE;
+		ret = extent_insert_advance_pos(&s, k.s_c);
+		if (ret != BTREE_INSERT_OK)
 			goto stop;
-		}
 
 		if (k.k->size &&
 		    (k.k->needs_whiteout || bset_written(b, bset(b, t))))
@@ -1623,10 +1600,9 @@ squash:
 			goto stop;
 	}
 
-	if (bkey_cmp(s.committed, insert->k->k.p) < 0 &&
-	    ret == BTREE_INSERT_OK &&
-	    extent_insert_advance_pos(&s, bkey_s_c_null) == BTREE_HOOK_RESTART_TRANS)
-		ret = BTREE_INSERT_NEED_TRAVERSE;
+	if (ret == BTREE_INSERT_OK &&
+	    bkey_cmp(s.committed, insert->k->k.p) < 0)
+		ret = extent_insert_advance_pos(&s, bkey_s_c_null);
 stop:
 	extent_insert_committed(&s);
 	/*
@@ -1669,29 +1645,37 @@ static const char *bch2_extent_invalid(const struct bch_fs *c,
 	case BCH_EXTENT_CACHED: {
 		struct bkey_s_c_extent e = bkey_s_c_to_extent(k);
 		const union bch_extent_entry *entry;
-		const union bch_extent_crc *crc;
+		struct bch_extent_crc_unpacked crc;
 		const struct bch_extent_ptr *ptr;
 		unsigned size_ondisk = e.k->size;
 		const char *reason;
+		unsigned nonce = UINT_MAX;
 
 		extent_for_each_entry(e, entry) {
 			if (__extent_entry_type(entry) >= BCH_EXTENT_ENTRY_MAX)
 				return "invalid extent entry type";
 
 			if (extent_entry_is_crc(entry)) {
-				crc = entry_to_crc(entry);
+				crc = bch2_extent_crc_unpack(e.k, entry_to_crc(entry));
 
-				if (crc_offset(crc) + e.k->size >
-				    crc_uncompressed_size(e.k, crc))
+				if (crc.offset + e.k->size >
+				    crc.uncompressed_size)
 					return "checksum offset + key size > uncompressed size";
 
-				size_ondisk = crc_compressed_size(e.k, crc);
+				size_ondisk = crc.compressed_size;
 
-				if (!bch2_checksum_type_valid(c, crc_csum_type(crc)))
+				if (!bch2_checksum_type_valid(c, crc.csum_type))
 					return "invalid checksum type";
 
-				if (crc_compression_type(crc) >= BCH_COMPRESSION_NR)
+				if (crc.compression_type >= BCH_COMPRESSION_NR)
 					return "invalid compression type";
+
+				if (bch2_csum_type_is_encryption(crc.csum_type)) {
+					if (nonce == UINT_MAX)
+						nonce = crc.offset + crc.nonce;
+					else if (nonce != crc.offset + crc.nonce)
+						return "incorrect nonce";
+				}
 			} else {
 				ptr = entry_to_ptr(entry);
 
@@ -1864,102 +1848,75 @@ static unsigned PTR_TIER(struct bch_fs *c,
 }
 
 static void bch2_extent_crc_init(union bch_extent_crc *crc,
-				 unsigned compressed_size,
-				 unsigned uncompressed_size,
-				 unsigned compression_type,
-				 unsigned nonce,
-				 struct bch_csum csum, unsigned csum_type)
+				 struct bch_extent_crc_unpacked new)
 {
-	if (bch_crc_bytes[csum_type]	<= 4 &&
-	    uncompressed_size		<= CRC32_SIZE_MAX &&
-	    nonce			<= CRC32_NONCE_MAX) {
+#define common_fields(_crc)						\
+		.csum_type		= _crc.csum_type,		\
+		.compression_type	= _crc.compression_type,	\
+		._compressed_size	= _crc.compressed_size - 1,	\
+		._uncompressed_size	= _crc.uncompressed_size - 1,	\
+		.offset			= _crc.offset
+
+	if (bch_crc_bytes[new.csum_type]	<= 4 &&
+	    new.uncompressed_size		<= CRC32_SIZE_MAX &&
+	    new.nonce				<= CRC32_NONCE_MAX) {
 		crc->crc32 = (struct bch_extent_crc32) {
 			.type = 1 << BCH_EXTENT_ENTRY_crc32,
-			._compressed_size	= compressed_size - 1,
-			._uncompressed_size	= uncompressed_size - 1,
-			.offset			= 0,
-			.compression_type	= compression_type,
-			.csum_type		= csum_type,
-			.csum			= *((__le32 *) &csum.lo),
+			common_fields(new),
+			.csum			= *((__le32 *) &new.csum.lo),
 		};
 		return;
 	}
 
-	if (bch_crc_bytes[csum_type]	<= 10 &&
-	    uncompressed_size		<= CRC64_SIZE_MAX &&
-	    nonce			<= CRC64_NONCE_MAX) {
+	if (bch_crc_bytes[new.csum_type]	<= 10 &&
+	    new.uncompressed_size		<= CRC64_SIZE_MAX &&
+	    new.nonce				<= CRC64_NONCE_MAX) {
 		crc->crc64 = (struct bch_extent_crc64) {
 			.type = 1 << BCH_EXTENT_ENTRY_crc64,
-			._compressed_size	= compressed_size - 1,
-			._uncompressed_size	= uncompressed_size - 1,
-			.offset			= 0,
-			.nonce			= nonce,
-			.compression_type	= compression_type,
-			.csum_type		= csum_type,
-			.csum_lo		= csum.lo,
-			.csum_hi		= *((__le16 *) &csum.hi),
+			common_fields(new),
+			.nonce			= new.nonce,
+			.csum_lo		= new.csum.lo,
+			.csum_hi		= *((__le16 *) &new.csum.hi),
 		};
 		return;
 	}
 
-	if (bch_crc_bytes[csum_type]	<= 16 &&
-	    uncompressed_size		<= CRC128_SIZE_MAX &&
-	    nonce			<= CRC128_NONCE_MAX) {
+	if (bch_crc_bytes[new.csum_type]	<= 16 &&
+	    new.uncompressed_size		<= CRC128_SIZE_MAX &&
+	    new.nonce				<= CRC128_NONCE_MAX) {
 		crc->crc128 = (struct bch_extent_crc128) {
 			.type = 1 << BCH_EXTENT_ENTRY_crc128,
-			._compressed_size	= compressed_size - 1,
-			._uncompressed_size	= uncompressed_size - 1,
-			.offset			= 0,
-			.nonce			= nonce,
-			.compression_type	= compression_type,
-			.csum_type		= csum_type,
-			.csum			= csum,
+			common_fields(new),
+			.nonce			= new.nonce,
+			.csum			= new.csum,
 		};
 		return;
 	}
-
+#undef common_fields
 	BUG();
 }
 
 void bch2_extent_crc_append(struct bkey_i_extent *e,
-			    unsigned compressed_size,
-			    unsigned uncompressed_size,
-			    unsigned compression_type,
-			    unsigned nonce,
-			    struct bch_csum csum, unsigned csum_type)
+			    struct bch_extent_crc_unpacked new)
 {
-	union bch_extent_crc *crc;
+	struct bch_extent_crc_unpacked crc;
+	const union bch_extent_entry *i;
 
-	BUG_ON(compressed_size > uncompressed_size);
-	BUG_ON(uncompressed_size != e->k.size);
-	BUG_ON(!compressed_size || !uncompressed_size);
+	BUG_ON(new.compressed_size > new.uncompressed_size);
+	BUG_ON(new.live_size != e->k.size);
+	BUG_ON(!new.compressed_size || !new.uncompressed_size);
 
 	/*
 	 * Look up the last crc entry, so we can check if we need to add
 	 * another:
 	 */
-	extent_for_each_crc(extent_i_to_s(e), crc)
+	extent_for_each_crc(extent_i_to_s(e), crc, i)
 		;
 
-	if (!crc && !csum_type && !compression_type)
+	if (!memcmp(&crc, &new, sizeof(crc)))
 		return;
 
-	if (crc &&
-	    crc_compressed_size(&e->k, crc)	== compressed_size &&
-	    crc_uncompressed_size(&e->k, crc)	== uncompressed_size &&
-	    crc_offset(crc)			== 0 &&
-	    crc_nonce(crc)			== nonce &&
-	    crc_csum_type(crc)			== csum_type &&
-	    crc_compression_type(crc)		== compression_type &&
-	    crc_csum(crc).lo			== csum.lo &&
-	    crc_csum(crc).hi			== csum.hi)
-		return;
-
-	bch2_extent_crc_init((void *) extent_entry_last(extent_i_to_s(e)),
-			    compressed_size,
-			    uncompressed_size,
-			    compression_type,
-			    nonce, csum, csum_type);
+	bch2_extent_crc_init((void *) extent_entry_last(extent_i_to_s(e)), new);
 	__extent_entry_push(e);
 }
 
@@ -2011,15 +1968,21 @@ bool bch2_extent_normalize(struct bch_fs *c, struct bkey_s k)
 }
 
 void bch2_extent_mark_replicas_cached(struct bch_fs *c,
-				      struct bkey_s_extent e,
-				      unsigned nr_cached)
+				      struct bkey_s_extent e)
 {
 	struct bch_extent_ptr *ptr;
+	unsigned tier = 0, nr_cached = 0, nr_good = 0;
 	bool have_higher_tier;
-	unsigned tier = 0;
 
-	if (!nr_cached)
+	extent_for_each_ptr(e, ptr)
+		if (!ptr->cached &&
+		    c->devs[ptr->dev]->mi.state != BCH_MEMBER_STATE_FAILED)
+			nr_good++;
+
+	if (nr_good <= c->opts.data_replicas)
 		return;
+
+	nr_cached = nr_good - c->opts.data_replicas;
 
 	do {
 		have_higher_tier = false;
