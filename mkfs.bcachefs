@@ -1,3 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 
-exec bcachefs format "$@"
+SDIR="$(dirname "$(readlink -f "$0")")"
+exec "$SDIR/bcachefs" format "$@"

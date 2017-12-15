@@ -15,19 +15,6 @@ stdenv.mkDerivation rec {
       libsodium libscrypt
     ];
 
-  patchPhase = ''
-    # ensure the mkfs and fsck scripts, which are just wrappers around
-    # 'bcachefs', are patched to refer to the right location inside the
-    # nix store. (you wouldn't expect built tools to call random outside
-    # utilities, in general, but the exact tools they were built with.)
-    #
-    # TODO FIXME: it would be better to fix this in the 'install' target,
-    # however, so this works with any bog-standard installation
-
-    substituteInPlace fsck.bcachefs --replace bcachefs $out/bin/bcachefs
-    substituteInPlace mkfs.bcachefs --replace bcachefs $out/bin/bcachefs
-  '';
-
   enableParallelBuilding = true;
   makeFlags =
     [ "PREFIX=$(out)"
