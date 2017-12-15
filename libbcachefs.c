@@ -334,11 +334,11 @@ void bch2_super_print(struct bch_sb *sb, int units)
 	       "Metadata replicas:		have %llu, want %llu\n"
 	       "Data replicas:			have %llu, want %llu\n"
 
-	       "Metadata checksum type:		%s\n"
-	       "Data checksum type:		%s\n"
-	       "Compression type:		%s\n"
+	       "Metadata checksum type:		%s (%llu)\n"
+	       "Data checksum type:		%s (%llu)\n"
+	       "Compression type:		%s (%llu)\n"
 
-	       "String hash type:		%s\n"
+	       "String hash type:		%s (%llu)\n"
 	       "32 bit inodes:			%llu\n"
 	       "GC reserve percentage:		%llu%%\n"
 	       "Root reserve percentage:	%llu%%\n"
@@ -362,21 +362,25 @@ void bch2_super_print(struct bch_sb *sb, int units)
 	       0LLU, //BCH_SB_DATA_REPLICAS_HAVE(sb),
 	       BCH_SB_DATA_REPLICAS_WANT(sb),
 
-	       BCH_SB_META_CSUM_TYPE(sb) < BCH_CSUM_NR
+	       BCH_SB_META_CSUM_TYPE(sb) < BCH_CSUM_OPT_NR
 	       ? bch2_csum_types[BCH_SB_META_CSUM_TYPE(sb)]
 	       : "unknown",
+	       BCH_SB_META_CSUM_TYPE(sb),
 
-	       BCH_SB_DATA_CSUM_TYPE(sb) < BCH_CSUM_NR
+	       BCH_SB_DATA_CSUM_TYPE(sb) < BCH_CSUM_OPT_NR
 	       ? bch2_csum_types[BCH_SB_DATA_CSUM_TYPE(sb)]
 	       : "unknown",
+	       BCH_SB_DATA_CSUM_TYPE(sb),
 
-	       BCH_SB_COMPRESSION_TYPE(sb) < BCH_COMPRESSION_NR
+	       BCH_SB_COMPRESSION_TYPE(sb) < BCH_COMPRESSION_OPT_NR
 	       ? bch2_compression_types[BCH_SB_COMPRESSION_TYPE(sb)]
 	       : "unknown",
+	       BCH_SB_COMPRESSION_TYPE(sb),
 
 	       BCH_SB_STR_HASH_TYPE(sb) < BCH_STR_HASH_NR
 	       ? bch2_str_hash_types[BCH_SB_STR_HASH_TYPE(sb)]
 	       : "unknown",
+	       BCH_SB_STR_HASH_TYPE(sb),
 
 	       BCH_SB_INODE_32BIT(sb),
 	       BCH_SB_GC_RESERVE(sb),

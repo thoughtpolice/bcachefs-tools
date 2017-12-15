@@ -37,8 +37,8 @@ static inline struct format_opts format_opts_default()
 	return (struct format_opts) {
 		.on_error_action	= BCH_ON_ERROR_RO,
 		.encoded_extent_max	= 128,
-		.meta_csum_type		= BCH_CSUM_CRC32C,
-		.data_csum_type		= BCH_CSUM_CRC32C,
+		.meta_csum_type		= BCH_CSUM_OPT_CRC32C,
+		.data_csum_type		= BCH_CSUM_OPT_CRC32C,
 		.meta_replicas		= 1,
 		.data_replicas		= 1,
 		.meta_replicas_required	= 1,
