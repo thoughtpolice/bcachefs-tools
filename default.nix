@@ -1,4 +1,5 @@
-{ nixpkgs ? (import ./nix/nixpkgs.nix)
+{ system  ? builtins.currentSystem
+, nixpkgs ? (import ./nix/nixpkgs.nix { inherit system; })
 }:
 
 with nixpkgs;
