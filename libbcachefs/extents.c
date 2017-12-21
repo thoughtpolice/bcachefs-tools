@@ -18,6 +18,7 @@
 #include "extents.h"
 #include "inode.h"
 #include "journal.h"
+#include "super.h"
 #include "super-io.h"
 #include "util.h"
 #include "xattr.h"
@@ -152,6 +153,19 @@ unsigned bch2_extent_nr_dirty_ptrs(struct bkey_s_c k)
 		nr_ptrs = bkey_s_c_to_reservation(k).v->nr_replicas;
 		break;
 	}
+
+	return nr_ptrs;
+}
+
+unsigned bch2_extent_nr_good_ptrs(struct bch_fs *c, struct bkey_s_c_extent e)
+{
+	const struct bch_extent_ptr *ptr;
+	unsigned nr_ptrs = 0;
+
+	extent_for_each_ptr(e, ptr)
+		nr_ptrs += (!ptr->cached &&
+			    bch_dev_bkey_exists(c, ptr->dev)->mi.state !=
+			    BCH_MEMBER_STATE_FAILED);
 
 	return nr_ptrs;
 }
@@ -362,7 +376,7 @@ static bool should_drop_ptr(const struct bch_fs *c,
 			    struct bkey_s_c_extent e,
 			    const struct bch_extent_ptr *ptr)
 {
-	return ptr->cached && ptr_stale(c->devs[ptr->dev], ptr);
+	return ptr->cached && ptr_stale(bch_dev_bkey_exists(c, ptr->dev), ptr);
 }
 
 static void bch2_extent_drop_stale(struct bch_fs *c, struct bkey_s_extent e)
@@ -411,8 +425,10 @@ static void bch2_ptr_swab(const struct bkey_format *f, struct bkey_packed *k)
 				entry->crc64.csum_lo = swab64(entry->crc64.csum_lo);
 				break;
 			case BCH_EXTENT_ENTRY_crc128:
-				entry->crc128.csum.hi = swab64(entry->crc64.csum_hi);
-				entry->crc128.csum.lo = swab64(entry->crc64.csum_lo);
+				entry->crc128.csum.hi = (__force __le64)
+					swab64((__force u64) entry->crc128.csum.hi);
+				entry->crc128.csum.lo = (__force __le64)
+					swab64((__force u64) entry->crc128.csum.lo);
 				break;
 			case BCH_EXTENT_ENTRY_ptr:
 				break;
@@ -432,10 +448,11 @@ static const char *extent_ptr_invalid(const struct bch_fs *c,
 	const struct bch_extent_ptr *ptr2;
 	struct bch_dev *ca;
 
-	if (ptr->dev >= c->sb.nr_devices)
+	if (ptr->dev >= c->sb.nr_devices ||
+	    !c->devs[ptr->dev])
 		return "pointer to invalid device";
 
-	ca = c->devs[ptr->dev];
+	ca = bch_dev_bkey_exists(c, ptr->dev);
 	if (!ca)
 		return "pointer to invalid device";
 
@@ -487,7 +504,9 @@ static size_t extent_print_ptrs(struct bch_fs *c, char *buf,
 			break;
 		case BCH_EXTENT_ENTRY_ptr:
 			ptr = entry_to_ptr(entry);
-			ca = c->devs[ptr->dev];
+			ca = ptr->dev < c->sb.nr_devices && c->devs[ptr->dev]
+				? bch_dev_bkey_exists(c, ptr->dev)
+				: NULL;
 
 			p("ptr: %u:%llu gen %u%s", ptr->dev,
 			  (u64) ptr->offset, ptr->gen,
@@ -528,7 +547,7 @@ static void extent_pick_read_device(struct bch_fs *c,
 	struct bch_extent_crc_unpacked crc;
 
 	extent_for_each_ptr_crc(e, ptr, crc) {
-		struct bch_dev *ca = c->devs[ptr->dev];
+		struct bch_dev *ca = bch_dev_bkey_exists(c, ptr->dev);
 
 		if (ptr->cached && ptr_stale(ca, ptr))
 			continue;
@@ -621,7 +640,7 @@ static void btree_ptr_debugcheck(struct bch_fs *c, struct btree *b,
 	bool bad;
 
 	extent_for_each_ptr(e, ptr) {
-		ca = c->devs[ptr->dev];
+		ca = bch_dev_bkey_exists(c, ptr->dev);
 		g = PTR_BUCKET(ca, ptr);
 		replicas++;
 
@@ -1730,7 +1749,7 @@ static void bch2_extent_debugcheck_extent(struct bch_fs *c, struct btree *b,
 	memset(ptrs_per_tier, 0, sizeof(ptrs_per_tier));
 
 	extent_for_each_ptr(e, ptr) {
-		ca = c->devs[ptr->dev];
+		ca = bch_dev_bkey_exists(c, ptr->dev);
 		g = PTR_BUCKET(ca, ptr);
 		replicas++;
 		ptrs_per_tier[ca->mi.tier]++;
@@ -1844,7 +1863,7 @@ static void bch2_extent_to_text(struct bch_fs *c, char *buf,
 static unsigned PTR_TIER(struct bch_fs *c,
 			 const struct bch_extent_ptr *ptr)
 {
-	return c->devs[ptr->dev]->mi.tier;
+	return bch_dev_bkey_exists(c, ptr->dev)->mi.tier;
 }
 
 static void bch2_extent_crc_init(union bch_extent_crc *crc,
@@ -1971,13 +1990,9 @@ void bch2_extent_mark_replicas_cached(struct bch_fs *c,
 				      struct bkey_s_extent e)
 {
 	struct bch_extent_ptr *ptr;
-	unsigned tier = 0, nr_cached = 0, nr_good = 0;
+	unsigned tier = 0, nr_cached = 0;
+	unsigned nr_good = bch2_extent_nr_good_ptrs(c, e.c);
 	bool have_higher_tier;
-
-	extent_for_each_ptr(e, ptr)
-		if (!ptr->cached &&
-		    c->devs[ptr->dev]->mi.state != BCH_MEMBER_STATE_FAILED)
-			nr_good++;
 
 	if (nr_good <= c->opts.data_replicas)
 		return;
@@ -2103,7 +2118,7 @@ static enum merge_result bch2_extent_merge(struct bch_fs *c,
 				return BCH_MERGE_NOMERGE;
 
 			/* We don't allow extents to straddle buckets: */
-			ca = c->devs[lp->dev];
+			ca = bch_dev_bkey_exists(c, lp->dev);
 
 			if (PTR_BUCKET_NR(ca, lp) != PTR_BUCKET_NR(ca, rp))
 				return BCH_MERGE_NOMERGE;
@@ -2345,6 +2360,30 @@ static bool bch2_extent_merge_inline(struct bch_fs *c,
 	default:
 		BUG();
 	}
+}
+
+int bch2_check_range_allocated(struct bch_fs *c, struct bpos pos, u64 size)
+{
+	struct btree_iter iter;
+	struct bpos end = pos;
+	struct bkey_s_c k;
+	int ret = 0;
+
+	end.offset += size;
+
+	for_each_btree_key(&iter, c, BTREE_ID_EXTENTS, pos,
+			     BTREE_ITER_WITH_HOLES, k) {
+		if (bkey_cmp(bkey_start_pos(k.k), end) >= 0)
+			break;
+
+		if (!bch2_extent_is_fully_allocated(k)) {
+			ret = -ENOSPC;
+			break;
+		}
+	}
+	bch2_btree_iter_unlock(&iter);
+
+	return ret;
 }
 
 const struct bkey_ops bch2_bkey_extent_ops = {

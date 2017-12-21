@@ -13,7 +13,27 @@ struct bio_set;
 struct bio;
 struct block_device;
 typedef void (bio_end_io_t) (struct bio *);
-typedef void (bio_destructor_t) (struct bio *);
+
+/*
+ * Block error status values.  See block/blk-core:blk_errors for the details.
+ */
+typedef u8 __bitwise blk_status_t;
+#define	BLK_STS_OK 0
+#define BLK_STS_NOTSUPP		((__force blk_status_t)1)
+#define BLK_STS_TIMEOUT		((__force blk_status_t)2)
+#define BLK_STS_NOSPC		((__force blk_status_t)3)
+#define BLK_STS_TRANSPORT	((__force blk_status_t)4)
+#define BLK_STS_TARGET		((__force blk_status_t)5)
+#define BLK_STS_NEXUS		((__force blk_status_t)6)
+#define BLK_STS_MEDIUM		((__force blk_status_t)7)
+#define BLK_STS_PROTECTION	((__force blk_status_t)8)
+#define BLK_STS_RESOURCE	((__force blk_status_t)9)
+#define BLK_STS_IOERR		((__force blk_status_t)10)
+
+/* hack for device mapper, don't use elsewhere: */
+#define BLK_STS_DM_REQUEUE    ((__force blk_status_t)11)
+
+#define BLK_STS_AGAIN		((__force blk_status_t)12)
 
 /*
  * main unit of I/O for the block layer and lower layers (ie drivers and
@@ -22,7 +42,7 @@ typedef void (bio_destructor_t) (struct bio *);
 struct bio {
 	struct bio		*bi_next;	/* request queue link */
 	struct block_device	*bi_bdev;
-	int			bi_error;
+	blk_status_t		bi_status;
 	unsigned int		bi_opf;		/* bottom bits req flags,
 						 * top bits REQ_OP. Use
 						 * accessors.

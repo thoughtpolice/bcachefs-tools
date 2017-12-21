@@ -14,7 +14,7 @@
 #define BUG()			do { assert(0); unreachable(); } while (0)
 #define BUG_ON(cond)		assert(!(cond))
 
-#define WARN_ON_ONCE(cond)	assert(!(cond))
+#define WARN_ON_ONCE(cond)	({ bool _r = (cond); if (_r) assert(0); _r; })
 #define WARN_ONCE(cond, msg)	({ bool _r = (cond); if (_r) assert(0); _r; })
 
 #define __WARN()		assert(0)

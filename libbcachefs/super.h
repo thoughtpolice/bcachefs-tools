@@ -59,6 +59,14 @@ static inline void bch2_dev_list_drop_dev(struct bch_devs_list *devs,
 		}
 }
 
+static inline void bch2_dev_list_add_dev(struct bch_devs_list *devs,
+					 unsigned dev)
+{
+	BUG_ON(bch2_dev_list_has_dev(*devs, dev));
+	BUG_ON(devs->nr >= BCH_REPLICAS_MAX);
+	devs->devs[devs->nr++] = dev;
+}
+
 static inline struct bch_dev *__bch2_next_dev(struct bch_fs *c, unsigned *iter,
 					      struct bch_devs_mask *mask)
 {
@@ -131,6 +139,26 @@ static inline struct bch_dev *bch2_get_next_online_dev(struct bch_fs *c,
 	__for_each_online_member(ca, c, iter,				\
 		(1 << BCH_MEMBER_STATE_RW)|(1 << BCH_MEMBER_STATE_RO))
 
+/*
+ * If a key exists that references a device, the device won't be going away and
+ * we can omit rcu_read_lock():
+ */
+static inline struct bch_dev *bch_dev_bkey_exists(const struct bch_fs *c, unsigned idx)
+{
+	EBUG_ON(idx >= c->sb.nr_devices || !c->devs[idx]);
+
+	return rcu_dereference_check(c->devs[idx], 1);
+}
+
+static inline struct bch_dev *bch_dev_locked(struct bch_fs *c, unsigned idx)
+{
+	EBUG_ON(idx >= c->sb.nr_devices || !c->devs[idx]);
+
+	return rcu_dereference_protected(c->devs[idx],
+					 lockdep_is_held(&c->sb_lock) ||
+					 lockdep_is_held(&c->state_lock));
+}
+
 /* XXX kill, move to struct bch_fs */
 static inline struct bch_devs_mask bch2_online_devs(struct bch_fs *c)
 {
@@ -146,7 +174,7 @@ static inline struct bch_devs_mask bch2_online_devs(struct bch_fs *c)
 
 struct bch_fs *bch2_bdev_to_fs(struct block_device *);
 struct bch_fs *bch2_uuid_to_fs(uuid_le);
-int bch2_congested(struct bch_fs *, int);
+int bch2_congested(void *, int);
 
 bool bch2_dev_state_allowed(struct bch_fs *, struct bch_dev *,
 			   enum bch_member_state, int);

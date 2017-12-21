@@ -75,7 +75,7 @@ static inline void mark_btree_node_intent_locked(struct btree_iter *iter,
 	mark_btree_node_locked(iter, level, SIX_LOCK_intent);
 }
 
-static inline int btree_lock_want(struct btree_iter *iter, int level)
+static inline enum six_lock_type btree_lock_want(struct btree_iter *iter, int level)
 {
 	return level < iter->locks_want
 		? SIX_LOCK_intent
@@ -111,6 +111,7 @@ static inline bool btree_node_lock(struct btree *b, struct bpos pos,
 }
 
 bool bch2_btree_node_relock(struct btree_iter *, unsigned);
+bool bch2_btree_iter_relock(struct btree_iter *);
 
 void bch2_btree_node_unlock_write(struct btree *, struct btree_iter *);
 void bch2_btree_node_lock_write(struct btree *, struct btree_iter *);

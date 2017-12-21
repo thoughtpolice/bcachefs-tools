@@ -45,6 +45,7 @@ bch2_extent_has_device(struct bkey_s_c_extent, unsigned);
 
 unsigned bch2_extent_nr_ptrs(struct bkey_s_c_extent);
 unsigned bch2_extent_nr_dirty_ptrs(struct bkey_s_c);
+unsigned bch2_extent_nr_good_ptrs(struct bch_fs *, struct bkey_s_c_extent);
 unsigned bch2_extent_is_compressed(struct bkey_s_c);
 
 bool bch2_extent_matches_ptr(struct bch_fs *, struct bkey_s_c_extent,
@@ -243,14 +244,14 @@ bch2_extent_crc_unpack(const struct bkey *k, const union bch_extent_crc *crc)
 	case BCH_EXTENT_CRC32:
 		return (struct bch_extent_crc_unpacked) {
 			common_fields(crc->crc32),
-			.csum.lo		= crc->crc32.csum,
+			.csum.lo		= (__force __le64) crc->crc32.csum,
 		};
 	case BCH_EXTENT_CRC64:
 		return (struct bch_extent_crc_unpacked) {
 			common_fields(crc->crc64),
 			.nonce			= crc->crc64.nonce,
-			.csum.lo		= crc->crc64.csum_lo,
-			.csum.hi		= crc->crc64.csum_hi,
+			.csum.lo		= (__force __le64) crc->crc64.csum_lo,
+			.csum.hi		= (__force __le64) crc->crc64.csum_hi,
 		};
 	case BCH_EXTENT_CRC128:
 		return (struct bch_extent_crc_unpacked) {
@@ -424,5 +425,7 @@ void bch2_extent_drop_ptr_idx(struct bkey_s_extent, unsigned);
 bool bch2_cut_front(struct bpos, struct bkey_i *);
 bool bch2_cut_back(struct bpos, struct bkey *);
 void bch2_key_resize(struct bkey *, unsigned);
+
+int bch2_check_range_allocated(struct bch_fs *, struct bpos, u64);
 
 #endif /* _BCACHEFS_EXTENTS_H */

@@ -125,23 +125,12 @@ void bch2_write_super(struct bch_fs *);
 
 /* replicas: */
 
-/* iterate over bch_sb_field_replicas: */
-
-static inline struct bch_replicas_entry *
-replicas_entry_next(struct bch_replicas_entry *i)
-{
-	return (void *) i + offsetof(struct bch_replicas_entry, devs) + i->nr;
-}
-
-#define for_each_replicas_entry(_r, _i)					\
-	for (_i = (_r)->entries;					\
-	     (void *) (_i) < vstruct_end(&(_r)->field) && (_i)->data_type;\
-	     (_i) = replicas_entry_next(_i))
-
 bool bch2_sb_has_replicas(struct bch_fs *, struct bkey_s_c_extent,
 			  enum bch_data_type);
 int bch2_check_mark_super(struct bch_fs *, struct bkey_s_c_extent,
 			  enum bch_data_type);
+int bch2_check_mark_super_devlist(struct bch_fs *, struct bch_devs_list *,
+				  enum bch_data_type);
 
 struct replicas_status {
 	struct {
@@ -160,5 +149,18 @@ unsigned bch2_dev_has_data(struct bch_fs *, struct bch_dev *);
 
 int bch2_replicas_gc_end(struct bch_fs *, int);
 int bch2_replicas_gc_start(struct bch_fs *, unsigned);
+
+/* iterate over superblock replicas - used by userspace tools: */
+
+static inline struct bch_replicas_entry *
+replicas_entry_next(struct bch_replicas_entry *i)
+{
+	return (void *) i + offsetof(struct bch_replicas_entry, devs) + i->nr;
+}
+
+#define for_each_replicas_entry(_r, _i)					\
+	for (_i = (_r)->entries;					\
+	     (void *) (_i) < vstruct_end(&(_r)->field) && (_i)->data_type;\
+	     (_i) = replicas_entry_next(_i))
 
 #endif /* _BCACHEFS_SUPER_IO_H */

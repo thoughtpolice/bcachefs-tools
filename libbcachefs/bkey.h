@@ -8,7 +8,6 @@
 #include "vstructs.h"
 
 void bch2_to_binary(char *, const u64 *, unsigned);
-int bch2_bkey_to_text(char *, size_t, const struct bkey *);
 
 #define BKEY_PADDED(key)	__BKEY_PADDED(key, BKEY_EXTENT_VAL_U64s_MAX)
 
@@ -377,7 +376,8 @@ static inline u64 bkey_field_max(const struct bkey_format *f,
 				 enum bch_bkey_fields nr)
 {
 	return f->bits_per_field[nr] < 64
-		? f->field_offset[nr] + ~(~0ULL << f->bits_per_field[nr])
+		? (le64_to_cpu(f->field_offset[nr]) +
+		   ~(~0ULL << f->bits_per_field[nr]))
 		: U64_MAX;
 }
 

@@ -164,7 +164,7 @@ static struct bch_inode_unpacked create_file(struct bch_fs *c,
 	struct bch_inode_unpacked new_inode;
 	int ret;
 
-	bch2_inode_init(c, &new_inode, uid, gid, mode, rdev);
+	bch2_inode_init(c, &new_inode, uid, gid, mode, rdev, parent);
 
 	ret = bch2_inode_create(c, &new_inode, BLOCKDEV_INODE_MAX, 0,
 				&c->unused_inode_hint);
@@ -247,7 +247,6 @@ static void write_data(struct bch_fs *c,
 		       struct bch_inode_unpacked *dst_inode,
 		       u64 dst_offset, void *buf, size_t len)
 {
-	struct disk_reservation res;
 	struct bch_write_op op;
 	struct bio_vec bv;
 	struct closure cl;
@@ -261,12 +260,15 @@ static void write_data(struct bch_fs *c,
 	op.wbio.bio.bi_iter.bi_size = len;
 	bch2_bio_map(&op.wbio.bio, buf);
 
-	int ret = bch2_disk_reservation_get(c, &res, len >> 9, 0);
+	bch2_write_op_init(&op, c);
+
+	op.write_point	= writepoint_hashed(0);
+	op.pos		= POS(dst_inode->bi_inum, dst_offset >> 9);
+
+	int ret = bch2_disk_reservation_get(c, &op.res, len >> 9, 0);
 	if (ret)
 		die("error reserving space in new filesystem: %s", strerror(-ret));
 
-	bch2_write_op_init(&op, c, res, NULL, writepoint_hashed(0),
-			   POS(dst_inode->bi_inum, dst_offset >> 9), NULL, 0);
 	closure_call(&op.cl, bch2_write, NULL, &cl);
 	closure_sync(&cl);
 

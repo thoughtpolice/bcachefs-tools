@@ -19,7 +19,38 @@
 #include <linux/blkdev.h>
 #include <linux/slab.h>
 #include <linux/kernel.h>
-#include <linux/export.h>
+
+static const struct {
+	int		err;
+	const char	*name;
+} blk_errors[] = {
+	[BLK_STS_OK]		= { 0,		"" },
+	[BLK_STS_NOTSUPP]	= { -EOPNOTSUPP, "operation not supported" },
+	[BLK_STS_TIMEOUT]	= { -ETIMEDOUT,	"timeout" },
+	[BLK_STS_NOSPC]		= { -ENOSPC,	"critical space allocation" },
+	[BLK_STS_TRANSPORT]	= { -ENOLINK,	"recoverable transport" },
+	[BLK_STS_TARGET]	= { -EREMOTEIO,	"critical target" },
+	[BLK_STS_NEXUS]		= { -EBADE,	"critical nexus" },
+	[BLK_STS_MEDIUM]	= { -ENODATA,	"critical medium" },
+	[BLK_STS_PROTECTION]	= { -EILSEQ,	"protection" },
+	[BLK_STS_RESOURCE]	= { -ENOMEM,	"kernel resource" },
+	[BLK_STS_AGAIN]		= { -EAGAIN,	"nonblocking retry" },
+
+	/* device mapper special case, should not leak out: */
+	[BLK_STS_DM_REQUEUE]	= { -EREMCHG, "dm internal retry" },
+
+	/* everything else not covered above: */
+	[BLK_STS_IOERR]		= { -EIO,	"I/O" },
+};
+
+int blk_status_to_errno(blk_status_t status)
+{
+	int idx = (__force int)status;
+
+	if (WARN_ON_ONCE(idx >= ARRAY_SIZE(blk_errors)))
+		return -EIO;
+	return blk_errors[idx].err;
+}
 
 void bio_copy_data_iter(struct bio *dst, struct bvec_iter *dst_iter,
 			struct bio *src, struct bvec_iter *src_iter)
@@ -199,8 +230,8 @@ static struct bio *__bio_chain_endio(struct bio *bio)
 {
 	struct bio *parent = bio->bi_private;
 
-	if (!parent->bi_error)
-		parent->bi_error = bio->bi_error;
+	if (!parent->bi_status)
+		parent->bi_status = bio->bi_status;
 	bio_put(bio);
 	return parent;
 }
@@ -231,27 +262,6 @@ again:
 
 	if (bio->bi_end_io)
 		bio->bi_end_io(bio);
-}
-
-void bio_endio_nodec(struct bio *bio)
-{
-	goto nodec;
-
-	while (bio) {
-		if (unlikely(!bio_remaining_done(bio)))
-			break;
-nodec:
-		if (bio->bi_end_io == bio_chain_endio) {
-			struct bio *parent = bio->bi_private;
-			parent->bi_error = bio->bi_error;
-			bio_put(bio);
-			bio = parent;
-		} else {
-			if (bio->bi_end_io)
-				bio->bi_end_io(bio);
-			bio = NULL;
-		}
-	}
 }
 
 void bio_reset(struct bio *bio)

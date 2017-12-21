@@ -96,9 +96,10 @@ enum {
 };
 
 enum fsck_err_opts {
-	FSCK_ERR_NO,
-	FSCK_ERR_YES,
-	FSCK_ERR_ASK,
+	FSCK_OPT_EXIT,
+	FSCK_OPT_YES,
+	FSCK_OPT_NO,
+	FSCK_OPT_ASK,
 };
 
 enum fsck_err_ret {
@@ -217,7 +218,7 @@ do {									\
 #define bcache_io_error(c, bio, fmt, ...)				\
 do {									\
 	__bcache_io_error(c, fmt, ##__VA_ARGS__);			\
-	(bio)->bi_error = -EIO;						\
+	(bio)->bi_status = BLK_STS_IOERR;					\
 } while (0)
 
 #endif /* _BCACHEFS_ERROR_H */

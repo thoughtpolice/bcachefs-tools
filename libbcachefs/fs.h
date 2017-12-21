@@ -1,6 +1,7 @@
 #ifndef _BCACHEFS_FS_H
 #define _BCACHEFS_FS_H
 
+#include "opts.h"
 #include "str_hash.h"
 
 #include <linux/seqlock.h>
@@ -11,22 +12,12 @@ struct bch_inode_info {
 
 	struct mutex		ei_update_lock;
 	u64			ei_journal_seq;
-
-	atomic_long_t		ei_size_dirty_count;
-
-	/*
-	 * these are updated whenever we update the inode in the btree - for
-	 * e.g. fsync
-	 */
-	u64			ei_size;
-	u32			ei_flags;
-
-	atomic_long_t		ei_sectors_dirty_count;
-	atomic64_t		ei_sectors;
+	unsigned long		ei_last_dirtied;
 
 	struct bch_hash_info	ei_str_hash;
 
-	unsigned long		ei_last_dirtied;
+	/* copy of inode in btree: */
+	struct bch_inode_unpacked ei_inode;
 };
 
 #define to_bch_ei(_inode)					\

@@ -193,8 +193,7 @@ int bch2_set_acl(struct inode *vinode, struct posix_acl *acl, int type)
 			if (ret < 0)
 				return ret;
 			else {
-				inode->v.i_ctime =
-					current_fs_time(inode->v.i_sb);
+				inode->v.i_ctime = current_time(&inode->v);
 				mark_inode_dirty(&inode->v);
 				if (ret == 0)
 					acl = NULL;

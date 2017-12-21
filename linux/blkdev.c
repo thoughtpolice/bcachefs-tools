@@ -32,7 +32,7 @@ void generic_make_request(struct bio *bio)
 		ret = fdatasync(bio->bi_bdev->bd_fd);
 		if (ret) {
 			fprintf(stderr, "fsync error: %m\n");
-			bio->bi_error = -EIO;
+			bio->bi_status = BLK_STS_IOERR;
 			bio_endio(bio);
 			return;
 		}
@@ -106,7 +106,7 @@ int submit_bio_wait(struct bio *bio)
 	submit_bio(bio);
 	wait_for_completion(&done);
 
-	return bio->bi_error;
+	return blk_status_to_errno(bio->bi_status);
 }
 
 int blkdev_issue_discard(struct block_device *bdev,
@@ -235,10 +235,8 @@ static int aio_completion_thread(void *arg)
 		for (ev = events; ev < events + ret; ev++) {
 			struct bio *bio = (struct bio *) ev->data;
 
-			if (ev->res < 0)
-				bio->bi_error = ev->res;
-			else if (ev->res != bio->bi_iter.bi_size)
-				bio->bi_error = -EIO;
+			if (ev->res != bio->bi_iter.bi_size)
+				bio->bi_status = BLK_STS_IOERR;
 
 			bio_endio(bio);
 		}

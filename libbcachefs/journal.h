@@ -118,6 +118,8 @@
  */
 struct journal_replay {
 	struct list_head	list;
+	struct bch_devs_list	devs;
+	/* must be last: */
 	struct jset		j;
 };
 
@@ -164,6 +166,7 @@ void bch2_journal_pin_add_if_older(struct journal *,
 				  struct journal_entry_pin *,
 				  journal_pin_flush_fn);
 void bch2_journal_flush_pins(struct journal *, u64);
+int bch2_journal_flush_all_pins(struct journal *);
 
 struct closure;
 struct bch_fs;
@@ -356,6 +359,7 @@ void bch2_journal_meta_async(struct journal *, struct closure *);
 int bch2_journal_flush_seq(struct journal *, u64);
 int bch2_journal_flush(struct journal *);
 int bch2_journal_meta(struct journal *);
+int bch2_journal_flush_device(struct journal *, unsigned);
 
 void bch2_journal_halt(struct journal *);
 

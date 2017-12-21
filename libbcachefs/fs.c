@@ -12,6 +12,7 @@
 #include "fs-ioctl.h"
 #include "fsck.h"
 #include "inode.h"
+#include "io.h"
 #include "journal.h"
 #include "keylist.h"
 #include "super.h"
@@ -130,10 +131,8 @@ int __must_check __bch2_write_inode(struct bch_fs *c,
 				BTREE_INSERT_ENTRY(&iter, &inode_p.inode.k_i));
 	} while (ret == -EINTR);
 
-	if (!ret) {
-		inode->ei_size	= inode_u.bi_size;
-		inode->ei_flags	= inode_u.bi_flags;
-	}
+	if (!ret)
+		inode->ei_inode = inode_u;
 out:
 	bch2_btree_iter_unlock(&iter);
 
@@ -146,7 +145,7 @@ int __must_check bch2_write_inode(struct bch_fs *c,
 	return __bch2_write_inode(c, inode, NULL, NULL);
 }
 
-int bch2_inc_nlink(struct bch_fs *c, struct bch_inode_info *inode)
+static int bch2_inc_nlink(struct bch_fs *c, struct bch_inode_info *inode)
 {
 	int ret;
 
@@ -158,7 +157,7 @@ int bch2_inc_nlink(struct bch_fs *c, struct bch_inode_info *inode)
 	return ret;
 }
 
-int bch2_dec_nlink(struct bch_fs *c, struct bch_inode_info *inode)
+static int bch2_dec_nlink(struct bch_fs *c, struct bch_inode_info *inode)
 {
 	int ret = 0;
 
@@ -223,7 +222,9 @@ static struct bch_inode_info *bch2_vfs_inode_create(struct bch_fs *c,
 	bch2_inode_init(c, &inode_u,
 			i_uid_read(&inode->v),
 			i_gid_read(&inode->v),
-			inode->v.i_mode, rdev);
+			inode->v.i_mode, rdev,
+			&dir->ei_inode);
+
 	ret = bch2_inode_create(c, &inode_u,
 				BLOCKDEV_INODE_MAX, 0,
 				&c->unused_inode_hint);
@@ -277,7 +278,7 @@ static int bch2_vfs_dirent_create(struct bch_fs *c,
 	if (unlikely(ret))
 		return ret;
 
-	dir->v.i_mtime = dir->v.i_ctime = current_fs_time(c->vfs_sb);
+	dir->v.i_mtime = dir->v.i_ctime = current_time(&dir->v);
 	mark_inode_dirty_sync(&dir->v);
 	return 0;
 }
@@ -344,7 +345,7 @@ static int bch2_link(struct dentry *old_dentry, struct inode *vdir,
 
 	lockdep_assert_held(&inode->v.i_rwsem);
 
-	inode->v.i_ctime = current_fs_time(dir->v.i_sb);
+	inode->v.i_ctime = current_time(&dir->v);
 
 	ret = bch2_inc_nlink(c, inode);
 	if (ret)
@@ -473,7 +474,7 @@ static int bch2_rename(struct bch_fs *c,
 {
 	struct bch_inode_info *old_inode = to_bch_ei(old_dentry->d_inode);
 	struct bch_inode_info *new_inode = to_bch_ei(new_dentry->d_inode);
-	struct timespec now = current_fs_time(old_dir->v.i_sb);
+	struct timespec now = current_time(&old_dir->v);
 	int ret;
 
 	lockdep_assert_held(&old_dir->v.i_rwsem);
@@ -551,7 +552,7 @@ static int bch2_rename_exchange(struct bch_fs *c,
 {
 	struct bch_inode_info *old_inode = to_bch_ei(old_dentry->d_inode);
 	struct bch_inode_info *new_inode = to_bch_ei(new_dentry->d_inode);
-	struct timespec now = current_fs_time(old_dir->v.i_sb);
+	struct timespec now = current_time(&old_dir->v);
 	int ret;
 
 	ret = bch2_dirent_rename(c,
@@ -909,10 +910,8 @@ static void bch2_vfs_inode_init(struct bch_fs *c,
 	inode->v.i_ctime	= bch2_time_to_timespec(c, bi->bi_ctime);
 
 	inode->ei_journal_seq	= 0;
-	inode->ei_size		= bi->bi_size;
-	inode->ei_flags		= bi->bi_flags;
-	atomic64_set(&inode->ei_sectors, bi->bi_sectors);
 	inode->ei_str_hash	= bch2_hash_info_init(c, bi);
+	inode->ei_inode		= *bi;
 
 	bch2_inode_flags_to_vfs(inode);
 
@@ -949,8 +948,6 @@ static struct inode *bch2_alloc_inode(struct super_block *sb)
 	inode_init_once(&inode->v);
 	mutex_init(&inode->ei_update_lock);
 	inode->ei_journal_seq = 0;
-	atomic_long_set(&inode->ei_size_dirty_count, 0);
-	atomic_long_set(&inode->ei_sectors_dirty_count, 0);
 
 	return &inode->v;
 }
@@ -994,12 +991,6 @@ static void bch2_evict_inode(struct inode *vinode)
 	struct bch_inode_info *inode = to_bch_ei(vinode);
 
 	truncate_inode_pages_final(&inode->v.i_data);
-
-	if (!bch2_journal_error(&c->journal) && !is_bad_inode(&inode->v)) {
-		/* XXX - we want to check this stuff iff there weren't IO errors: */
-		BUG_ON(atomic_long_read(&inode->ei_sectors_dirty_count));
-		BUG_ON(atomic64_read(&inode->ei_sectors) != inode->v.i_blocks);
-	}
 
 	clear_inode(&inode->v);
 
@@ -1272,8 +1263,15 @@ static struct dentry *bch2_mount(struct file_system_type *fs_type,
 	sb->s_magic		= BCACHEFS_STATFS_MAGIC;
 	sb->s_time_gran		= c->sb.time_precision;
 	c->vfs_sb		= sb;
-	sb->s_bdi		= &c->bdi;
 	strlcpy(sb->s_id, c->name, sizeof(sb->s_id));
+
+	ret = super_setup_bdi(sb);
+	if (ret)
+		goto err_put_super;
+
+	sb->s_bdi->congested_fn		= bch2_congested;
+	sb->s_bdi->congested_data	= c;
+	sb->s_bdi->ra_pages		= VM_MAX_READAHEAD * 1024 / PAGE_SIZE;
 
 	for_each_online_member(ca, c, i) {
 		struct block_device *bdev = ca->disk_sb.bdev;

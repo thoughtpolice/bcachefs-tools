@@ -28,18 +28,19 @@ int cmd_fsck(int argc, char *argv[])
 	int opt;
 
 	opt_set(opts, degraded, true);
+	opt_set(opts, fix_errors, FSCK_OPT_ASK);
 
 	while ((opt = getopt(argc, argv, "pynfvh")) != -1)
 		switch (opt) {
 		case 'p':
-			opt_set(opts, fix_errors, FSCK_ERR_YES);
+			opt_set(opts, fix_errors, FSCK_OPT_YES);
 			break;
 		case 'y':
-			opt_set(opts, fix_errors, FSCK_ERR_YES);
+			opt_set(opts, fix_errors, FSCK_OPT_YES);
 			break;
 		case 'n':
 			opt_set(opts, nochanges, true);
-			opt_set(opts, fix_errors, FSCK_ERR_NO);
+			opt_set(opts, fix_errors, FSCK_OPT_NO);
 			break;
 		case 'f':
 			/* force check, even if filesystem marked clean: */

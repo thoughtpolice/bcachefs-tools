@@ -593,18 +593,24 @@ struct bch_inode_generation {
 } __attribute__((packed, aligned(8)));
 BKEY_VAL_TYPE(inode_generation,	BCH_INODE_GENERATION);
 
-#define BCH_INODE_FIELDS()				\
-	BCH_INODE_FIELD(bi_atime,	64)		\
-	BCH_INODE_FIELD(bi_ctime,	64)		\
-	BCH_INODE_FIELD(bi_mtime,	64)		\
-	BCH_INODE_FIELD(bi_otime,	64)		\
-	BCH_INODE_FIELD(bi_size,	64)		\
-	BCH_INODE_FIELD(bi_sectors,	64)		\
-	BCH_INODE_FIELD(bi_uid,		32)		\
-	BCH_INODE_FIELD(bi_gid,		32)		\
-	BCH_INODE_FIELD(bi_nlink,	32)		\
-	BCH_INODE_FIELD(bi_generation,	32)		\
-	BCH_INODE_FIELD(bi_dev,		32)
+#define BCH_INODE_FIELDS()					\
+	BCH_INODE_FIELD(bi_atime,			64)	\
+	BCH_INODE_FIELD(bi_ctime,			64)	\
+	BCH_INODE_FIELD(bi_mtime,			64)	\
+	BCH_INODE_FIELD(bi_otime,			64)	\
+	BCH_INODE_FIELD(bi_size,			64)	\
+	BCH_INODE_FIELD(bi_sectors,			64)	\
+	BCH_INODE_FIELD(bi_uid,				32)	\
+	BCH_INODE_FIELD(bi_gid,				32)	\
+	BCH_INODE_FIELD(bi_nlink,			32)	\
+	BCH_INODE_FIELD(bi_generation,			32)	\
+	BCH_INODE_FIELD(bi_dev,				32)	\
+	BCH_INODE_FIELD(bi_data_checksum,		8)	\
+	BCH_INODE_FIELD(bi_compression,			8)
+
+#define BCH_INODE_FIELDS_INHERIT()				\
+	BCH_INODE_FIELD(bi_data_checksum)			\
+	BCH_INODE_FIELD(bi_compression)
 
 enum {
 	/*
@@ -794,7 +800,7 @@ struct bch_sb_layout {
 	__u8			sb_max_size_bits; /* base 2 of 512 byte sectors */
 	__u8			nr_superblocks;
 	__u8			pad[5];
-	__u64			sb_offset[61];
+	__le64			sb_offset[61];
 } __attribute__((packed, aligned(8)));
 
 #define BCH_SB_LAYOUT_SECTOR	7
@@ -1087,6 +1093,11 @@ struct jset_entry {
 		struct bkey_i	start[0];
 		__u64		_data[0];
 	};
+};
+
+struct jset_entry_blacklist {
+	struct jset_entry	entry;
+	__le64			seq;
 };
 
 #define JSET_KEYS_U64s	(sizeof(struct jset_entry) / sizeof(__u64))

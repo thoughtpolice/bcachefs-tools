@@ -326,9 +326,9 @@ struct io_count {
 struct bch_dev {
 	struct kobject		kobj;
 	struct percpu_ref	ref;
+	struct completion	ref_completion;
 	struct percpu_ref	io_ref;
-	struct completion	stop_complete;
-	struct completion	offline_complete;
+	struct completion	io_ref_completion;
 
 	struct bch_fs		*fs;
 
@@ -515,12 +515,11 @@ struct bch_fs {
 	struct closure		sb_write;
 	struct mutex		sb_lock;
 
-	struct backing_dev_info bdi;
-
 	/* BTREE CACHE */
 	struct bio_set		btree_read_bio;
 
 	struct btree_root	btree_roots[BTREE_ID_NR];
+	bool			btree_roots_dirty;
 	struct mutex		btree_root_lock;
 
 	struct btree_cache	btree_cache;
@@ -709,6 +708,14 @@ struct bch_fs {
 	BCH_TIME_STATS()
 #undef BCH_TIME_STAT
 };
+
+static inline void bch2_set_ra_pages(struct bch_fs *c, unsigned ra_pages)
+{
+#ifndef NO_BCACHEFS_FS
+	if (c->vfs_sb)
+		c->vfs_sb->s_bdi->ra_pages = ra_pages;
+#endif
+}
 
 static inline bool bch2_fs_running(struct bch_fs *c)
 {

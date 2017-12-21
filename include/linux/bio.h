@@ -243,7 +243,8 @@ static inline void bioset_free(struct bio_set *bs)
 
 static inline int bioset_init(struct bio_set *bs,
 			      unsigned pool_size,
-			      unsigned front_pad)
+			      unsigned front_pad,
+			      int flags)
 {
 	bs->front_pad = front_pad;
 	return 0;
@@ -251,6 +252,10 @@ static inline int bioset_init(struct bio_set *bs,
 
 extern struct bio_set *bioset_create(unsigned int, unsigned int);
 extern struct bio_set *bioset_create_nobvec(unsigned int, unsigned int);
+enum {
+	BIOSET_NEED_BVECS	= 1 << 0,
+	BIOSET_NEED_RESCUER	= 1 << 1,
+};
 
 extern struct bio *bio_alloc_bioset(gfp_t, int, struct bio_set *);
 extern void bio_put(struct bio *);
@@ -271,13 +276,6 @@ static inline struct bio *bio_clone_kmalloc(struct bio *bio, gfp_t gfp_mask)
 }
 
 extern void bio_endio(struct bio *);
-extern void bio_endio_nodec(struct bio *);
-
-static inline void bio_io_error(struct bio *bio)
-{
-	bio->bi_error = -EIO;
-	bio_endio(bio);
-}
 
 extern void bio_advance(struct bio *, unsigned);
 

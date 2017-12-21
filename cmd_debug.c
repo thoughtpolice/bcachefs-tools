@@ -293,11 +293,11 @@ int cmd_list(int argc, char *argv[])
 						list_modes, "list mode");
 			break;
 		case 'f':
-			opts.fix_errors = FSCK_ERR_YES;
-			opts.norecovery	= false;
+			opt_set(opts, fix_errors, FSCK_OPT_YES);
+			opt_set(opts, norecovery, false);
 			break;
 		case 'v':
-			opts.verbose_recovery = true;
+			opt_set(opts, verbose_recovery, true);
 			break;
 		case 'h':
 			list_keys_usage();

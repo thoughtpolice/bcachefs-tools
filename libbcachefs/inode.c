@@ -198,6 +198,12 @@ static const char *bch2_inode_invalid(const struct bch_fs *c,
 		if (bch2_inode_unpack(inode, &unpacked))
 			return "invalid variable length fields";
 
+		if (unpacked.bi_data_checksum >= BCH_CSUM_OPT_NR + 1)
+			return "invalid data checksum type";
+
+		if (unpacked.bi_compression >= BCH_COMPRESSION_OPT_NR + 1)
+			return "invalid data checksum type";
+
 		return NULL;
 	}
 	case BCH_INODE_BLOCKDEV:
@@ -221,6 +227,7 @@ static const char *bch2_inode_invalid(const struct bch_fs *c,
 static void bch2_inode_to_text(struct bch_fs *c, char *buf,
 			       size_t size, struct bkey_s_c k)
 {
+	char *out = buf, *end = out + size;
 	struct bkey_s_c_inode inode;
 	struct bch_inode_unpacked unpacked;
 
@@ -228,11 +235,14 @@ static void bch2_inode_to_text(struct bch_fs *c, char *buf,
 	case BCH_INODE_FS:
 		inode = bkey_s_c_to_inode(k);
 		if (bch2_inode_unpack(inode, &unpacked)) {
-			scnprintf(buf, size, "(unpack error)");
+			out += scnprintf(out, end - out, "(unpack error)");
 			break;
 		}
 
-		scnprintf(buf, size, "i_size %llu", unpacked.bi_size);
+#define BCH_INODE_FIELD(_name, _bits)						\
+		out += scnprintf(out, end - out, #_name ": %llu ", (u64) unpacked._name);
+		BCH_INODE_FIELDS()
+#undef  BCH_INODE_FIELD
 		break;
 	}
 }
@@ -243,9 +253,12 @@ const struct bkey_ops bch2_bkey_inode_ops = {
 };
 
 void bch2_inode_init(struct bch_fs *c, struct bch_inode_unpacked *inode_u,
-		     uid_t uid, gid_t gid, umode_t mode, dev_t rdev)
+		     uid_t uid, gid_t gid, umode_t mode, dev_t rdev,
+		     struct bch_inode_unpacked *parent)
 {
-	s64 now = timespec_to_bch2_time(c, CURRENT_TIME);
+	s64 now = timespec_to_bch2_time(c,
+		timespec_trunc(current_kernel_time(),
+			       c->sb.time_precision));
 
 	memset(inode_u, 0, sizeof(*inode_u));
 
@@ -261,6 +274,12 @@ void bch2_inode_init(struct bch_fs *c, struct bch_inode_unpacked *inode_u,
 	inode_u->bi_mtime	= now;
 	inode_u->bi_ctime	= now;
 	inode_u->bi_otime	= now;
+
+	if (parent) {
+#define BCH_INODE_FIELD(_name)	inode_u->_name = parent->_name;
+		BCH_INODE_FIELDS_INHERIT()
+#undef BCH_INODE_FIELD
+	}
 }
 
 int bch2_inode_create(struct bch_fs *c, struct bch_inode_unpacked *inode_u,
@@ -416,7 +435,7 @@ int bch2_inode_rm(struct bch_fs *c, u64 inode_nr)
 			struct bch_inode_unpacked inode_u;
 
 			if (!bch2_inode_unpack(bkey_s_c_to_inode(k), &inode_u))
-				bi_generation = cpu_to_le32(inode_u.bi_generation) + 1;
+				bi_generation = inode_u.bi_generation + 1;
 			break;
 		}
 		case BCH_INODE_GENERATION: {

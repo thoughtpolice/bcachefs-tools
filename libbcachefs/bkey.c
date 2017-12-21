@@ -1,6 +1,7 @@
 
 #include "bcachefs.h"
 #include "bkey.h"
+#include "bkey_methods.h"
 #include "bset.h"
 #include "util.h"
 
@@ -79,37 +80,6 @@ static inline void bch2_bkey_pack_verify(const struct bkey_packed *packed,
 					const struct bkey *unpacked,
 					const struct bkey_format *format) {}
 #endif
-
-int bch2_bkey_to_text(char *buf, size_t size, const struct bkey *k)
-{
-	char *out = buf, *end = buf + size;
-
-#define p(...)	(out += scnprintf(out, end - out, __VA_ARGS__))
-
-	p("u64s %u type %u %llu:%llu snap %u len %u ver %llu",
-	  k->u64s, k->type, k->p.inode, k->p.offset,
-	  k->p.snapshot, k->size, k->version.lo);
-
-	BUG_ON(bkey_packed(k));
-
-	switch (k->type) {
-	case KEY_TYPE_DELETED:
-		p(" deleted");
-		break;
-	case KEY_TYPE_DISCARD:
-		p(" discard");
-		break;
-	case KEY_TYPE_ERROR:
-		p(" error");
-		break;
-	case KEY_TYPE_COOKIE:
-		p(" cookie");
-		break;
-	}
-#undef p
-
-	return out - buf;
-}
 
 struct pack_state {
 	const struct bkey_format *format;
@@ -336,7 +306,8 @@ bool bch2_bkey_pack_key(struct bkey_packed *out, const struct bkey *in,
 	 * Extents - we have to guarantee that if an extent is packed, a trimmed
 	 * version will also pack:
 	 */
-	if (bkey_start_offset(in) < format->field_offset[BKEY_FIELD_OFFSET])
+	if (bkey_start_offset(in) <
+	    le64_to_cpu(format->field_offset[BKEY_FIELD_OFFSET]))
 		return false;
 
 	pack_state_finish(&state, out);
@@ -800,7 +771,7 @@ static u8 *compile_bkey_field(const struct bkey_format *format, u8 *out,
 			      bool *eax_zeroed)
 {
 	unsigned bits = format->bits_per_field[field];
-	u64 offset = format->field_offset[field];
+	u64 offset = le64_to_cpu(format->field_offset[field]);
 	unsigned i, byte, bit_offset, align, shl, shr;
 
 	if (!bits && !offset) {
