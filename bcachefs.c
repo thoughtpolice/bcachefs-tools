@@ -42,8 +42,7 @@ static void usage(void)
 	     "  stop	               Stop a running filesystem\n"
 	     "\n"
 	     "Commands for managing a running filesystem:\n"
-	     "  fs show              Show various information about a filesystem\n"
-	     "  fs set               Modify filesystem options\n"
+	     "  fs usage             Show disk usage\n"
 	     "\n"
 	     "Commands for managing devices within a running filesystem:\n"
 	     "  device add           Add a new device to an existing filesystem\n"
@@ -90,10 +89,8 @@ static int fs_cmds(int argc, char *argv[])
 {
 	char *cmd = pop_cmd(&argc, argv);
 
-	if (!strcmp(cmd, "show"))
-		return cmd_fs_show(argc, argv);
-	if (!strcmp(cmd, "set"))
-		return cmd_fs_set(argc, argv);
+	if (!strcmp(cmd, "usage"))
+		return cmd_fs_usage(argc, argv);
 
 	usage();
 	return 0;

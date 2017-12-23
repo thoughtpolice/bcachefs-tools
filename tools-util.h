@@ -15,12 +15,14 @@
 #include <linux/log2.h>
 #include <linux/string.h>
 #include <linux/types.h>
+#include <linux/uuid.h>
 #include "ccan/darray/darray.h"
 
 void die(const char *, ...);
 char *mprintf(const char *, ...);
 void *xcalloc(size_t, size_t);
 void *xmalloc(size_t);
+void *xrealloc(void *, size_t);
 void xpread(int, void *, size_t, off_t);
 void xpwrite(int, const void *, size_t, off_t);
 struct stat xfstatat(int, const char *, int);
@@ -48,7 +50,7 @@ enum units {
 	HUMAN_READABLE,
 };
 
-struct units_buf __pr_units(u64, enum units);
+struct units_buf __pr_units(s64, enum units);
 
 struct units_buf {
 	char	b[20];
@@ -69,10 +71,12 @@ int open_for_format(const char *, bool);
 int bcachectl_open(void);
 
 struct bcache_handle {
+	uuid_le	uuid;
 	int	ioctl_fd;
 	int	sysfs_fd;
 };
 
+void bcache_fs_close(struct bcache_handle);
 struct bcache_handle bcache_fs_open(const char *);
 
 bool ask_yn(void);
@@ -150,5 +154,7 @@ const char *strcmp_prefix(const char *, const char *);
 unsigned hatoi_validate(const char *, const char *);
 
 u32 crc32c(u32, const void *, size_t);
+
+char *dev_to_path(dev_t);
 
 #endif /* _TOOLS_UTIL_H */

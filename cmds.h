@@ -17,8 +17,7 @@ int cmd_incremental(int argc, char *argv[]);
 int cmd_run(int argc, char *argv[]);
 int cmd_stop(int argc, char *argv[]);
 
-int cmd_fs_show(int argc, char *argv[]);
-int cmd_fs_set(int argc, char *argv[]);
+int cmd_fs_usage(int argc, char *argv[]);
 
 int cmd_device_add(int argc, char *argv[]);
 int cmd_device_remove(int argc, char *argv[]);

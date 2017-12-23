@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -70,6 +71,15 @@ void *xmalloc(size_t size)
 	return p;
 }
 
+void *xrealloc(void *p, size_t size)
+{
+	p = realloc(p, size);
+	if (!p)
+		die("insufficient memory");
+
+	return p;
+}
+
 void xpread(int fd, void *buf, size_t count, off_t offset)
 {
 	ssize_t r = pread(fd, buf, count, offset);
@@ -104,27 +114,34 @@ struct stat xfstat(int fd)
 
 /* Integer stuff: */
 
-struct units_buf __pr_units(u64 v, enum units units)
+struct units_buf __pr_units(s64 _v, enum units units)
 {
 	struct units_buf ret;
+	char *out = ret.b, *end = out + sizeof(ret.b);
+	u64 v = _v;
+
+	if (_v < 0) {
+		out += scnprintf(out, end - out, "-");
+		v = -_v;
+	}
 
 	switch (units) {
 	case BYTES:
-		snprintf(ret.b, sizeof(ret.b), "%llu", v << 9);
+		snprintf(out, end - out, "%llu", v << 9);
 		break;
 	case SECTORS:
-		snprintf(ret.b, sizeof(ret.b), "%llu", v);
+		snprintf(out, end - out, "%llu", v);
 		break;
 	case HUMAN_READABLE:
 		v <<= 9;
 
 		if (v >= 1024) {
 			int exp = log(v) / log(1024);
-			snprintf(ret.b, sizeof(ret.b), "%.1f%c",
+			snprintf(out, end - out, "%.1f%c",
 				 v / pow(1024, exp),
 				 "KMGTPE"[exp-1]);
 		} else {
-			snprintf(ret.b, sizeof(ret.b), "%llu", v);
+			snprintf(out, end - out, "%llu", v);
 		}
 
 		break;
@@ -255,12 +272,17 @@ int bcachectl_open(void)
 
 #define SYSFS_BASE "/sys/fs/bcachefs/"
 
+void bcache_fs_close(struct bcache_handle fs)
+{
+	close(fs.ioctl_fd);
+	close(fs.sysfs_fd);
+}
+
 struct bcache_handle bcache_fs_open(const char *path)
 {
 	struct bcache_handle ret;
-	uuid_t tmp;
 
-	if (!uuid_parse(path, tmp)) {
+	if (!uuid_parse(path, ret.uuid.b)) {
 		/* It's a UUID, look it up in sysfs: */
 		char *sysfs = mprintf("%s%s", SYSFS_BASE, path);
 		ret.sysfs_fd = xopen(sysfs, O_RDONLY);
@@ -278,6 +300,8 @@ struct bcache_handle bcache_fs_open(const char *path)
 
 		struct bch_ioctl_query_uuid uuid;
 		xioctl(ret.ioctl_fd, BCH_IOCTL_QUERY_UUID, &uuid);
+
+		ret.uuid = uuid.uuid;
 
 		char uuid_str[40];
 		uuid_unparse(uuid.uuid.b, uuid_str);
@@ -561,5 +585,34 @@ u32 crc32c(u32 crc, const void *buf, size_t size)
 }
 
 #endif /* HAVE_WORKING_IFUNC */
+
+char *dev_to_path(dev_t dev)
+{
+	char *line = NULL, *name = NULL, *path = NULL;
+	size_t n = 0;
+
+	FILE *f = fopen("/proc/partitions", "r");
+	if (!f)
+		die("error opening /proc/partitions: %m");
+
+	while (getline(&line, &n, f) != -1) {
+		unsigned ma, mi;
+		u64 sectors;
+
+		name = realloc(name, n + 1);
+
+		if (sscanf(line, " %u %u %llu %s", &ma, &mi, &sectors, name) == 4 &&
+		    ma == major(dev) && mi == minor(dev)) {
+			path = mprintf("/dev/%s", name);
+			break;
+		}
+
+	}
+
+	fclose(f);
+	free(line);
+	free(name);
+	return path;
+}
 
 #endif
