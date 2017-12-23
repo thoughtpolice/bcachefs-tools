@@ -877,10 +877,40 @@ static inline unsigned replicas_dev_slots(struct bch_replicas_cpu *r)
 		offsetof(struct bch_replicas_cpu_entry, devs)) * 8;
 }
 
-static unsigned bkey_to_replicas(struct bkey_s_c_extent e,
-			     enum bch_data_type data_type,
-			     struct bch_replicas_cpu_entry *r,
-			     unsigned *max_dev)
+int bch2_cpu_replicas_to_text(struct bch_replicas_cpu *r,
+			      char *buf, size_t size)
+{
+	char *out = buf, *end = out + size;
+	struct bch_replicas_cpu_entry *e;
+	bool first = true;
+	unsigned i;
+
+	for_each_cpu_replicas_entry(r, e) {
+		bool first_e = true;
+
+		if (!first)
+			out += scnprintf(out, end - out, " ");
+		first = false;
+
+		out += scnprintf(out, end - out, "%u: [", e->data_type);
+
+		for (i = 0; i < replicas_dev_slots(r); i++)
+			if (replicas_test_dev(e, i)) {
+				if (!first_e)
+					out += scnprintf(out, end - out, " ");
+				first_e = false;
+				out += scnprintf(out, end - out, "%u", i);
+			}
+		out += scnprintf(out, end - out, "]");
+	}
+
+	return out - buf;
+}
+
+static inline unsigned bkey_to_replicas(struct bkey_s_c_extent e,
+					enum bch_data_type data_type,
+					struct bch_replicas_cpu_entry *r,
+					unsigned *max_dev)
 {
 	const struct bch_extent_ptr *ptr;
 	unsigned nr = 0;
@@ -901,6 +931,28 @@ static unsigned bkey_to_replicas(struct bkey_s_c_extent e,
 			nr++;
 		}
 	return nr;
+}
+
+static inline void devlist_to_replicas(struct bch_devs_list devs,
+				       enum bch_data_type data_type,
+				       struct bch_replicas_cpu_entry *r,
+				       unsigned *max_dev)
+{
+	unsigned i;
+
+	BUG_ON(!data_type ||
+	       data_type == BCH_DATA_SB ||
+	       data_type >= BCH_DATA_NR);
+
+	memset(r, 0, sizeof(*r));
+	r->data_type = data_type;
+
+	*max_dev = 0;
+
+	for (i = 0; i < devs.nr; i++) {
+		*max_dev = max_t(unsigned, *max_dev, devs.devs[i]);
+		replicas_set_dev(r, devs.devs[i]);
+	}
 }
 
 static struct bch_replicas_cpu *
@@ -952,7 +1004,7 @@ static int bch2_check_mark_super_slowpath(struct bch_fs *c,
 				struct bch_replicas_cpu_entry new_entry,
 				unsigned max_dev)
 {
-	struct bch_replicas_cpu *old_gc, *new_gc = NULL, *old_r, *new_r;
+	struct bch_replicas_cpu *old_gc, *new_gc = NULL, *old_r, *new_r = NULL;
 	int ret = -ENOMEM;
 
 	mutex_lock(&c->sb_lock);
@@ -967,31 +1019,37 @@ static int bch2_check_mark_super_slowpath(struct bch_fs *c,
 
 	old_r = rcu_dereference_protected(c->replicas,
 					  lockdep_is_held(&c->sb_lock));
-	/* recheck, might have raced */
-	if (replicas_has_entry(old_r, new_entry, max_dev))
-		goto out;
+	if (!replicas_has_entry(old_r, new_entry, max_dev)) {
+		new_r = cpu_replicas_add_entry(old_r, new_entry, max_dev);
+		if (!new_r)
+			goto err;
 
-	new_r = cpu_replicas_add_entry(old_r, new_entry, max_dev);
-	if (!new_r)
-		goto err;
+		ret = bch2_cpu_replicas_to_sb_replicas(c, new_r);
+		if (ret)
+			goto err;
+	}
 
-	ret = bch2_cpu_replicas_to_sb_replicas(c, new_r);
-	if (ret)
-		goto err;
+	/* allocations done, now commit: */
 
 	if (new_gc) {
 		rcu_assign_pointer(c->replicas_gc, new_gc);
 		kfree_rcu(old_gc, rcu);
 	}
 
-	rcu_assign_pointer(c->replicas, new_r);
-	kfree_rcu(old_r, rcu);
+	if (new_r) {
+		rcu_assign_pointer(c->replicas, new_r);
+		kfree_rcu(old_r, rcu);
+		bch2_write_super(c);
+	}
 
-	bch2_write_super(c);
-out:
-	ret = 0;
+	mutex_unlock(&c->sb_lock);
+	return 0;
 err:
 	mutex_unlock(&c->sb_lock);
+	if (new_gc)
+		kfree(new_gc);
+	if (new_r)
+		kfree(new_r);
 	return ret;
 }
 
@@ -1029,17 +1087,13 @@ int bch2_check_mark_super_devlist(struct bch_fs *c,
 				  struct bch_devs_list *devs,
 				  enum bch_data_type data_type)
 {
-	struct bch_replicas_cpu_entry search = { .data_type = data_type };
-	unsigned i, max_dev = 0;
+	struct bch_replicas_cpu_entry search;
+	unsigned max_dev;
 
 	if (!devs->nr)
 		return 0;
 
-	for (i = 0; i < devs->nr; i++) {
-		max_dev = max_t(unsigned, max_dev, devs->devs[i]);
-		replicas_set_dev(&search, devs->devs[i]);
-	}
-
+	devlist_to_replicas(*devs, data_type, &search, &max_dev);
 	return __bch2_check_mark_super(c, search, max_dev);
 }
 
@@ -1300,17 +1354,41 @@ err:
 	return err;
 }
 
+int bch2_sb_replicas_to_text(struct bch_sb_field_replicas *r, char *buf, size_t size)
+{
+	char *out = buf, *end = out + size;
+	struct bch_replicas_entry *e;
+	bool first = true;
+	unsigned i;
+
+	if (!r) {
+		out += scnprintf(out, end - out, "(no replicas section found)");
+		return out - buf;
+	}
+
+	for_each_replicas_entry(r, e) {
+		if (!first)
+			out += scnprintf(out, end - out, " ");
+		first = false;
+
+		out += scnprintf(out, end - out, "%u: [", e->data_type);
+
+		for (i = 0; i < e->nr; i++)
+			out += scnprintf(out, end - out,
+					 i ? " %u" : "%u", e->devs[i]);
+		out += scnprintf(out, end - out, "]");
+	}
+
+	return out - buf;
+}
+
 /* Query replicas: */
 
-bool bch2_sb_has_replicas(struct bch_fs *c, struct bkey_s_c_extent e,
-			  enum bch_data_type data_type)
+static bool __bch2_sb_has_replicas(struct bch_fs *c,
+				   struct bch_replicas_cpu_entry search,
+				   unsigned max_dev)
 {
-	struct bch_replicas_cpu_entry search;
-	unsigned max_dev;
 	bool ret;
-
-	if (!bkey_to_replicas(e, data_type, &search, &max_dev))
-		return true;
 
 	rcu_read_lock();
 	ret = replicas_has_entry(rcu_dereference(c->replicas),
@@ -1318,6 +1396,31 @@ bool bch2_sb_has_replicas(struct bch_fs *c, struct bkey_s_c_extent e,
 	rcu_read_unlock();
 
 	return ret;
+}
+
+bool bch2_sb_has_replicas(struct bch_fs *c, struct bkey_s_c_extent e,
+			  enum bch_data_type data_type)
+{
+	struct bch_replicas_cpu_entry search;
+	unsigned max_dev;
+
+	if (!bkey_to_replicas(e, data_type, &search, &max_dev))
+		return true;
+
+	return __bch2_sb_has_replicas(c, search, max_dev);
+}
+
+bool bch2_sb_has_replicas_devlist(struct bch_fs *c, struct bch_devs_list *devs,
+				  enum bch_data_type data_type)
+{
+	struct bch_replicas_cpu_entry search;
+	unsigned max_dev;
+
+	if (!devs->nr)
+		return true;
+
+	devlist_to_replicas(*devs, data_type, &search, &max_dev);
+	return __bch2_sb_has_replicas(c, search, max_dev);
 }
 
 struct replicas_status __bch2_replicas_status(struct bch_fs *c,

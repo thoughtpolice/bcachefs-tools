@@ -82,7 +82,7 @@ static void bch2_fs_stats_verify(struct bch_fs *c)
 		__bch2_fs_usage_read(c);
 	unsigned i;
 
-	for (i = 0; i < BCH_REPLICAS_MAX; i++) {
+	for (i = 0; i < ARRAY_SIZE(stats.s); i++) {
 		if ((s64) stats.s[i].data[S_META] < 0)
 			panic("replicas %u meta underflow: %lli\n",
 			      i + 1, stats.s[i].data[S_META]);
@@ -106,10 +106,10 @@ static void bch2_dev_stats_verify(struct bch_dev *ca)
 	struct bch_dev_usage stats =
 		__bch2_dev_usage_read(ca);
 	u64 n = ca->mi.nbuckets - ca->mi.first_bucket;
+	unsigned i;
 
-	BUG_ON(stats.buckets[S_META]		> n);
-	BUG_ON(stats.buckets[S_DIRTY]		> n);
-	BUG_ON(stats.buckets_cached		> n);
+	for (i = 0; i < ARRAY_SIZE(stats.buckets); i++)
+		BUG_ON(stats.buckets[i]		> n);
 	BUG_ON(stats.buckets_alloc		> n);
 	BUG_ON(stats.buckets_unavailable	> n);
 }
@@ -224,20 +224,43 @@ bch2_fs_usage_read(struct bch_fs *c)
 				     c->usage_percpu);
 }
 
-static inline int is_meta_bucket(struct bucket_mark m)
+struct fs_usage_sum {
+	u64	data;
+	u64	reserved;
+};
+
+static inline struct fs_usage_sum __fs_usage_sum(struct bch_fs_usage stats)
 {
-	return m.data_type != BUCKET_DATA;
+	struct fs_usage_sum sum = { 0 };
+	unsigned i;
+
+	for (i = 0; i < ARRAY_SIZE(stats.s); i++) {
+		sum.data += (stats.s[i].data[S_META] +
+			     stats.s[i].data[S_DIRTY]) * (i + 1);
+		sum.reserved += stats.s[i].persistent_reserved * (i + 1);
+	}
+
+	sum.reserved += stats.online_reserved;
+	return sum;
 }
 
-static inline int is_dirty_bucket(struct bucket_mark m)
+#define RESERVE_FACTOR	6
+
+static u64 reserve_factor(u64 r)
 {
-	return m.data_type == BUCKET_DATA && !!m.dirty_sectors;
+	return r + (round_up(r, (1 << RESERVE_FACTOR)) >> RESERVE_FACTOR);
 }
 
-static inline int is_cached_bucket(struct bucket_mark m)
+u64 __bch2_fs_sectors_used(struct bch_fs *c, struct bch_fs_usage stats)
 {
-	return m.data_type == BUCKET_DATA &&
-		!m.dirty_sectors && !!m.cached_sectors;
+	struct fs_usage_sum sum = __fs_usage_sum(stats);
+
+	return sum.data + reserve_factor(sum.reserved);
+}
+
+u64 bch2_fs_sectors_used(struct bch_fs *c, struct bch_fs_usage stats)
+{
+	return min(c->capacity, __bch2_fs_sectors_used(c, stats));
 }
 
 static inline int is_unavailable_bucket(struct bucket_mark m)
@@ -245,9 +268,11 @@ static inline int is_unavailable_bucket(struct bucket_mark m)
 	return !is_available_bucket(m);
 }
 
-static inline enum s_alloc bucket_type(struct bucket_mark m)
+static inline enum bch_data_type bucket_type(struct bucket_mark m)
 {
-	return is_meta_bucket(m) ? S_META : S_DIRTY;
+	return m.cached_sectors && !m.dirty_sectors
+		?  BCH_DATA_CACHED
+		: m.data_type;
 }
 
 static bool bucket_became_unavailable(struct bch_fs *c,
@@ -304,26 +329,23 @@ static void bch2_dev_usage_update(struct bch_fs *c, struct bch_dev *ca,
 
 	bch2_fs_inconsistent_on(old.data_type && new.data_type &&
 			old.data_type != new.data_type, c,
-			"different types of metadata in same bucket: %u, %u",
+			"different types of data in same bucket: %u, %u",
 			old.data_type, new.data_type);
 
 	preempt_disable();
 	dev_usage = this_cpu_ptr(ca->usage_percpu);
 
-	dev_usage->buckets[S_META] +=
-		is_meta_bucket(new) - is_meta_bucket(old);
-	dev_usage->buckets[S_DIRTY] +=
-		is_dirty_bucket(new) - is_dirty_bucket(old);
-	dev_usage->buckets_cached +=
-		is_cached_bucket(new) - is_cached_bucket(old);
+	dev_usage->buckets[bucket_type(old)]--;
+	dev_usage->buckets[bucket_type(new)]++;
+
 	dev_usage->buckets_alloc +=
 		(int) new.owned_by_allocator - (int) old.owned_by_allocator;
 	dev_usage->buckets_unavailable +=
 		is_unavailable_bucket(new) - is_unavailable_bucket(old);
 
-	dev_usage->sectors[bucket_type(old)] -= old.dirty_sectors;
-	dev_usage->sectors[bucket_type(new)] += new.dirty_sectors;
-	dev_usage->sectors_cached +=
+	dev_usage->sectors[old.data_type] -= old.dirty_sectors;
+	dev_usage->sectors[new.data_type] += new.dirty_sectors;
+	dev_usage->sectors[BCH_DATA_CACHED] +=
 		(int) new.cached_sectors - (int) old.cached_sectors;
 	preempt_enable();
 
@@ -348,8 +370,10 @@ bool bch2_invalidate_bucket(struct bch_fs *c, struct bch_dev *ca,
 
 	lg_local_lock(&c->usage_lock);
 	*old = bucket_data_cmpxchg(c, ca, g, new, ({
-		if (!is_available_bucket(new))
+		if (!is_available_bucket(new)) {
+			lg_local_unlock(&c->usage_lock);
 			return false;
+		}
 
 		new.owned_by_allocator	= 1;
 		new.touched_this_mount	= 1;
@@ -374,8 +398,10 @@ bool bch2_mark_alloc_bucket_startup(struct bch_fs *c, struct bch_dev *ca,
 	lg_local_lock(&c->usage_lock);
 	old = bucket_data_cmpxchg(c, ca, g, new, ({
 		if (new.touched_this_mount ||
-		    !is_available_bucket(new))
+		    !is_available_bucket(new)) {
+			lg_local_unlock(&c->usage_lock);
 			return false;
+		}
 
 		new.owned_by_allocator	= 1;
 		new.touched_this_mount	= 1;
@@ -422,8 +448,9 @@ do {								\
 } while (0)
 
 void bch2_mark_metadata_bucket(struct bch_fs *c, struct bch_dev *ca,
-			       struct bucket *g, enum bucket_data_type type,
-			       struct gc_pos pos, unsigned flags)
+			       struct bucket *g, enum bch_data_type type,
+			       unsigned sectors, struct gc_pos pos,
+			       unsigned flags)
 {
 	struct bucket_mark old, new;
 
@@ -437,19 +464,12 @@ void bch2_mark_metadata_bucket(struct bch_fs *c, struct bch_dev *ca,
 	}
 
 	old = bucket_data_cmpxchg(c, ca, g, new, ({
-		saturated_add(ca, new.dirty_sectors, ca->mi.bucket_size,
+		saturated_add(ca, new.dirty_sectors, sectors,
 			      GC_MAX_SECTORS_USED);
 		new.data_type		= type;
 		new.touched_this_mount	= 1;
 	}));
 	lg_local_unlock(&c->usage_lock);
-
-	if (old.data_type != type &&
-	    (old.data_type ||
-	     old.cached_sectors ||
-	     old.dirty_sectors))
-		bch_err(c, "bucket %zu has multiple types of data (%u, %u)",
-			g - ca->buckets, old.data_type, new.data_type);
 
 	BUG_ON(!(flags & BCH_BUCKET_MARK_MAY_MAKE_UNAVAILABLE) &&
 	       bucket_became_unavailable(c, old, new));
@@ -483,8 +503,8 @@ static void bch2_mark_pointer(struct bch_fs *c,
 	unsigned saturated;
 	struct bch_dev *ca = bch_dev_bkey_exists(c, ptr->dev);
 	struct bucket *g = ca->buckets + PTR_BUCKET_NR(ca, ptr);
-	unsigned data_type = type == S_META
-		? BUCKET_BTREE : BUCKET_DATA;
+	enum bch_data_type data_type = type == S_META
+		? BCH_DATA_BTREE : BCH_DATA_USER;
 	u64 v;
 
 	if (crc.compression_type) {
@@ -566,13 +586,6 @@ static void bch2_mark_pointer(struct bch_fs *c,
 
 	bch2_dev_usage_update(c, ca, g, old, new);
 
-	if (old.data_type != data_type &&
-	    (old.data_type ||
-	     old.cached_sectors ||
-	     old.dirty_sectors))
-		bch_err(c, "bucket %zu has multiple types of data (%u, %u)",
-			g - ca->buckets, old.data_type, new.data_type);
-
 	BUG_ON(!(flags & BCH_BUCKET_MARK_MAY_MAKE_UNAVAILABLE) &&
 	       bucket_became_unavailable(c, old, new));
 
@@ -644,17 +657,19 @@ void bch2_mark_key(struct bch_fs *c, struct bkey_s_c k,
 			replicas += !ptr->cached;
 		}
 
-		BUG_ON(replicas >= BCH_REPLICAS_MAX);
-
-		if (replicas)
+		if (replicas) {
+			BUG_ON(replicas - 1 > ARRAY_SIZE(stats->s));
 			stats->s[replicas - 1].data[type] += sectors;
+		}
 		break;
 	}
 	case BCH_RESERVATION: {
 		struct bkey_s_c_reservation r = bkey_s_c_to_reservation(k);
 
-		if (r.v->nr_replicas)
+		if (r.v->nr_replicas) {
+			BUG_ON(r.v->nr_replicas - 1 > ARRAY_SIZE(stats->s));
 			stats->s[r.v->nr_replicas - 1].persistent_reserved += sectors;
+		}
 		break;
 	}
 	}
@@ -671,7 +686,7 @@ static u64 __recalc_sectors_available(struct bch_fs *c)
 	for_each_possible_cpu(cpu)
 		per_cpu_ptr(c->usage_percpu, cpu)->available_cache = 0;
 
-	avail = c->capacity - bch2_fs_sectors_used(c);
+	avail = c->capacity - bch2_fs_sectors_used(c, bch2_fs_usage_read(c));
 
 	avail <<= RESERVE_FACTOR;
 	avail /= (1 << RESERVE_FACTOR) + 1;

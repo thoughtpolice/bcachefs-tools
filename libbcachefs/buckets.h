@@ -92,7 +92,7 @@ static inline bool bucket_unused(struct bucket_mark mark)
 		!bucket_sectors_used(mark);
 }
 
-/* Per device stats: */
+/* Device usage: */
 
 struct bch_dev_usage __bch2_dev_usage_read(struct bch_dev *);
 struct bch_dev_usage bch2_dev_usage_read(struct bch_fs *, struct bch_dev *);
@@ -130,56 +130,31 @@ static inline u64 dev_buckets_free(struct bch_fs *c, struct bch_dev *ca)
 	return __dev_buckets_free(ca, bch2_dev_usage_read(c, ca));
 }
 
-/* Cache set stats: */
+/* Filesystem usage: */
+
+static inline enum bch_data_type s_alloc_to_data_type(enum s_alloc s)
+{
+	switch (s) {
+	case S_META:
+		return BCH_DATA_BTREE;
+	case S_DIRTY:
+		return BCH_DATA_USER;
+	default:
+		BUG();
+	}
+}
 
 struct bch_fs_usage __bch2_fs_usage_read(struct bch_fs *);
 struct bch_fs_usage bch2_fs_usage_read(struct bch_fs *);
 void bch2_fs_usage_apply(struct bch_fs *, struct bch_fs_usage *,
 			 struct disk_reservation *, struct gc_pos);
 
-struct fs_usage_sum {
-	u64	data;
-	u64	reserved;
-};
-
-static inline struct fs_usage_sum __fs_usage_sum(struct bch_fs_usage stats)
-{
-	struct fs_usage_sum sum = { 0 };
-	unsigned i;
-
-	for (i = 0; i < BCH_REPLICAS_MAX; i++) {
-		sum.data += (stats.s[i].data[S_META] +
-			     stats.s[i].data[S_DIRTY]) * (i + 1);
-		sum.reserved += stats.s[i].persistent_reserved * (i + 1);
-	}
-
-	sum.reserved += stats.online_reserved;
-	return sum;
-}
-
-#define RESERVE_FACTOR	6
-
-static u64 reserve_factor(u64 r)
-{
-	return r + (round_up(r, (1 << RESERVE_FACTOR)) >> RESERVE_FACTOR);
-}
-
-static inline u64 __bch2_fs_sectors_used(struct bch_fs *c)
-{
-	struct fs_usage_sum sum = __fs_usage_sum(__bch2_fs_usage_read(c));
-
-	return sum.data + reserve_factor(sum.reserved);
-}
-
-static inline u64 bch2_fs_sectors_used(struct bch_fs *c)
-{
-	return min(c->capacity, __bch2_fs_sectors_used(c));
-}
+u64 __bch2_fs_sectors_used(struct bch_fs *, struct bch_fs_usage);
+u64 bch2_fs_sectors_used(struct bch_fs *, struct bch_fs_usage);
 
 static inline bool is_available_bucket(struct bucket_mark mark)
 {
 	return (!mark.owned_by_allocator &&
-		mark.data_type == BUCKET_DATA &&
 		!mark.dirty_sectors &&
 		!mark.nouse);
 }
@@ -201,8 +176,8 @@ void bch2_mark_alloc_bucket(struct bch_fs *, struct bch_dev *,
 			    struct bucket *, bool,
 			    struct gc_pos, unsigned);
 void bch2_mark_metadata_bucket(struct bch_fs *, struct bch_dev *,
-			       struct bucket *, enum bucket_data_type,
-			       struct gc_pos, unsigned);
+			       struct bucket *, enum bch_data_type,
+			       unsigned, struct gc_pos, unsigned);
 
 #define BCH_BUCKET_MARK_NOATOMIC		(1 << 0)
 #define BCH_BUCKET_MARK_MAY_MAKE_UNAVAILABLE	(1 << 1)

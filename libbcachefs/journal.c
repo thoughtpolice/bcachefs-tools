@@ -992,6 +992,17 @@ int bch2_journal_read(struct bch_fs *c, struct list_head *list)
 		ret = journal_entry_validate_entries(c, &i->j, READ);
 		if (ret)
 			goto fsck_err;
+
+		if (test_bit(BCH_FS_REBUILD_REPLICAS, &c->flags) ||
+		    fsck_err_on(!bch2_sb_has_replicas_devlist(c, &i->devs,
+							      BCH_DATA_JOURNAL), c,
+				"superblock not marked as containing replicas (type %u)",
+				BCH_DATA_JOURNAL)) {
+			ret = bch2_check_mark_super_devlist(c, &i->devs,
+							    BCH_DATA_JOURNAL);
+			if (ret)
+				return ret;
+		}
 	}
 
 	i = list_last_entry(list, struct journal_replay, list);
@@ -1619,7 +1630,8 @@ static int bch2_set_nr_journal_buckets(struct bch_fs *c, struct bch_dev *ca,
 		spin_unlock(&j->lock);
 
 		bch2_mark_metadata_bucket(c, ca, &ca->buckets[bucket],
-					  BUCKET_JOURNAL,
+					  BCH_DATA_JOURNAL,
+					  ca->mi.bucket_size,
 					  gc_phase(GC_PHASE_SB), 0);
 
 		bch2_open_bucket_put(c, ob);
