@@ -1,14 +1,14 @@
-{ system  ? builtins.currentSystem
-, nixpkgs ? (import ./nix/nixpkgs.nix { inherit system; })
+{ stdenv
+, git, pkgconfig
+, libscrypt, libsodium, liburcu, libuuid, libaio, zlib, attr, keyutils
 }:
-
-with nixpkgs;
 
 stdenv.mkDerivation rec {
   name = "bcachefs-tools-${version}";
   version = "git";
 
-  src = lib.cleanSource ./.; # NOTE: ignore .git, otherwise things get weird!
+  # NOTE: ignore .git, otherwise things get weird!
+  src = stdenv.lib.cleanSource ./.;
 
   nativeBuildInputs = [ git pkgconfig ];
   buildInputs =
