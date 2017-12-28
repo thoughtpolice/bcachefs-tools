@@ -105,7 +105,8 @@ static void mark_unreserved_space(struct bch_fs *c, ranges extents)
 
 		b = sector_to_bucket(ca, i.start >> 9);
 		do {
-			bucket_cmpxchg(&ca->buckets[b], new, new.nouse = 1);
+			struct bucket *g = bucket(ca, b);
+			bucket_cmpxchg(g, new, new.nouse = 1);
 			b++;
 		} while (bucket_to_sector(ca, b) << 9 < i.end);
 	}
@@ -324,7 +325,7 @@ static void link_data(struct bch_fs *c, struct bch_inode_unpacked *dst,
 		extent_ptr_append(e, (struct bch_extent_ptr) {
 					.offset = physical,
 					.dev = 0,
-					.gen = ca->buckets[b].mark.gen,
+					.gen = bucket(ca, b)->mark.gen,
 				  });
 
 		ret = bch2_disk_reservation_get(c, &res, sectors,
