@@ -25,6 +25,7 @@ int cmd_device_online(int argc, char *argv[]);
 int cmd_device_offline(int argc, char *argv[]);
 int cmd_device_evacuate(int argc, char *argv[]);
 int cmd_device_set_state(int argc, char *argv[]);
+int cmd_device_resize(int argc, char *argv[]);
 
 int cmd_unlock(int argc, char *argv[]);
 int cmd_set_passphrase(int argc, char *argv[]);

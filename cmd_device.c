@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "libbcachefs/bcachefs_ioctl.h"
+#include "libbcachefs/super-io.h"
 #include "cmds.h"
 #include "libbcachefs.h"
 #include "libbcachefs/opts.h"
@@ -99,7 +100,7 @@ int cmd_device_show(int argc, char *argv[])
 	if (argc != 2)
 		die("Please supply a single device");
 
-	struct bcache_handle fs = bcache_fs_open(argv[1]);
+	struct bchfs_handle fs = bcache_fs_open(argv[1]);
 	struct dirent *entry;
 
 	struct bcache_dev devices[256];
@@ -240,7 +241,7 @@ int cmd_device_add(int argc, char *argv[])
 	if (argc - optind != 2)
 		die("Please supply a filesystem and a device to add");
 
-	struct bcache_handle fs = bcache_fs_open(argv[optind]);
+	struct bchfs_handle fs = bcache_fs_open(argv[optind]);
 
 	dev_opts.path = argv[optind + 1];
 	dev_opts.fd = open_for_format(dev_opts.path, force);
@@ -255,9 +256,7 @@ int cmd_device_add(int argc, char *argv[])
 	fsync(dev_opts.fd);
 	close(dev_opts.fd);
 
-	struct bch_ioctl_disk i = { .dev = (__u64) dev_opts.path, };
-
-	xioctl(fs.ioctl_fd, BCH_IOCTL_DISK_ADD, &i);
+	bchu_disk_add(fs, dev_opts.path);
 	return 0;
 }
 
@@ -436,20 +435,113 @@ int cmd_device_set_state(int argc, char *argv[])
 	if (argc - optind != 3)
 		die("Please supply a filesystem, device and state");
 
-	struct bcache_handle fs = bcache_fs_open(argv[optind]);
+	struct bchfs_handle fs = bcache_fs_open(argv[optind]);
 
-	struct bch_ioctl_disk_set_state i = {
-		.flags		= flags,
-		.new_state	= read_string_list_or_die(argv[optind + 2],
-						bch2_dev_state, "device state"),
+	bchu_disk_set_state(fs, argv[optind + 1],
+			    read_string_list_or_die(argv[optind + 2],
+					bch2_dev_state, "device state"),
+			    flags);
+	return 0;
+}
+
+static void device_resize_usage(void)
+{
+	puts("bcachefs device resize \n"
+	     "Usage: bcachefs device resize device [ size ]\n"
+	     "\n"
+	     "Options:\n"
+	     "  -h, --help                  display this help and exit\n"
+	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	exit(EXIT_SUCCESS);
+}
+
+int cmd_device_resize(int argc, char *argv[])
+{
+	static const struct option longopts[] = {
+		{ "help",			0, NULL, 'h' },
+		{ NULL }
 	};
+	u64 size;
+	int opt;
 
-	const char *dev = argv[optind + 1];
-	if (!kstrtoull(dev, 10, &i.dev))
-		i.flags |= BCH_BY_INDEX;
-	else
-		i.dev = (u64) dev;
+	while ((opt = getopt_long(argc, argv, "h", longopts, NULL)) != -1)
+		switch (opt) {
+		case 'h':
+			device_resize_usage();
+		}
 
-	xioctl(fs.ioctl_fd, BCH_IOCTL_DISK_SET_STATE, &i);
+	if (argc < optind + 1)
+		die("Please supply a device to resize");
+
+	char *dev = argv[optind];
+	int dev_fd = xopen(dev, O_RDONLY);
+
+	if (argc == optind + 1)
+		size = get_size(dev, dev_fd);
+	else if (bch2_strtoull_h(argv[optind + 1], &size))
+		die("invalid size");
+
+	size >>= 9;
+
+	if (argc > optind + 2)
+		die("Too many arguments");
+
+	struct stat dev_stat = xfstat(dev_fd);
+
+	char *mount = dev_to_mount(dev);
+	if (mount) {
+		if (!S_ISBLK(dev_stat.st_mode))
+			die("%s is mounted but isn't a block device?!", dev);
+
+		printf("Doing online resize of %s\n", dev);
+
+		struct bchfs_handle fs = bcache_fs_open(mount);
+
+		unsigned idx = bchu_disk_get_idx(fs, dev_stat.st_rdev);
+
+		struct bch_sb *sb = bchu_read_super(fs, -1);
+		if (idx >= sb->nr_devices)
+			die("error reading superblock: dev idx >= sb->nr_devices");
+
+		struct bch_sb_field_members *mi = bch2_sb_get_members(sb);
+		if (!mi)
+			die("error reading superblock: no member info");
+
+		/* could also just read this out of sysfs... meh */
+		struct bch_member *m = mi->members + idx;
+
+		u64 nbuckets = size / le16_to_cpu(m->bucket_size);
+
+		printf("resizing %s to %llu buckets\n", dev, nbuckets);
+		bchu_disk_resize(fs, idx, nbuckets);
+	} else {
+		printf("Doing offline resize of %s\n", dev);
+
+		struct bch_fs *c = NULL;
+		struct bch_opts opts = bch2_opts_empty();
+		const char *err = bch2_fs_open(&dev, 1, opts, &c);
+		if (err)
+			die("error opening %s: %s", argv[optind], err);
+
+		struct bch_dev *ca, *resize = NULL;
+		unsigned i;
+
+		for_each_online_member(ca, c, i) {
+			if (resize)
+				die("confused: more than one online device?");
+			resize = ca;
+			percpu_ref_get(&resize->io_ref);
+		}
+
+		u64 nbuckets = size / le16_to_cpu(resize->mi.bucket_size);
+
+		printf("resizing %s to %llu buckets\n", dev, nbuckets);
+		int ret = bch2_dev_resize(c, resize, nbuckets);
+		if (ret)
+			fprintf(stderr, "resize error: %s\n", strerror(-ret));
+
+		percpu_ref_put(&resize->io_ref);
+		bch2_fs_stop(c);
+	}
 	return 0;
 }

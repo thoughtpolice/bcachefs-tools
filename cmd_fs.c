@@ -8,6 +8,7 @@
 #include "libbcachefs/opts.h"
 
 #include "cmds.h"
+#include "libbcachefs.h"
 
 static inline int printf_pad(unsigned pad, const char * fmt, ...)
 {
@@ -26,21 +27,11 @@ static inline int printf_pad(unsigned pad, const char * fmt, ...)
 
 static void print_fs_usage(const char *path, enum units units)
 {
-	unsigned i, j, nr_devices = 4;
-	struct bcache_handle fs = bcache_fs_open(path);
-	struct bch_ioctl_usage *u = NULL;
+	unsigned i, j;
 	char uuid[40];
 
-	while (1) {
-		u = xrealloc(u, sizeof(*u) + sizeof(u->devs[0]) * nr_devices);
-		u->nr_devices = nr_devices;
-
-		if (!ioctl(fs.ioctl_fd, BCH_IOCTL_USAGE, u))
-			break;
-		if (errno != ENOSPC)
-			die("BCH_IOCTL_USAGE error: %m");
-		nr_devices *= 2;
-	}
+	struct bchfs_handle fs = bcache_fs_open(path);
+	struct bch_ioctl_usage *u = bchu_usage(fs);
 
 	uuid_unparse(fs.uuid.b, uuid);
 	printf("Filesystem %s:\n", uuid);

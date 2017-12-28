@@ -455,3 +455,57 @@ void bch2_super_print(struct bch_sb *sb, int units)
 		       BCH_MEMBER_DISCARD(m));
 	}
 }
+
+/* ioctl interface: */
+
+/* Global control device: */
+int bcachectl_open(void)
+{
+	return xopen("/dev/bcachefs-ctl", O_RDWR);
+}
+
+/* Filesystem handles (ioctl, sysfs dir): */
+
+#define SYSFS_BASE "/sys/fs/bcachefs/"
+
+void bcache_fs_close(struct bchfs_handle fs)
+{
+	close(fs.ioctl_fd);
+	close(fs.sysfs_fd);
+}
+
+struct bchfs_handle bcache_fs_open(const char *path)
+{
+	struct bchfs_handle ret;
+
+	if (!uuid_parse(path, ret.uuid.b)) {
+		/* It's a UUID, look it up in sysfs: */
+		char *sysfs = mprintf("%s%s", SYSFS_BASE, path);
+		ret.sysfs_fd = xopen(sysfs, O_RDONLY);
+
+		char *minor = read_file_str(ret.sysfs_fd, "minor");
+		char *ctl = mprintf("/dev/bcachefs%s-ctl", minor);
+		ret.ioctl_fd = xopen(ctl, O_RDWR);
+
+		free(sysfs);
+		free(minor);
+		free(ctl);
+	} else {
+		/* It's a path: */
+		ret.ioctl_fd = xopen(path, O_RDONLY);
+
+		struct bch_ioctl_query_uuid uuid;
+		xioctl(ret.ioctl_fd, BCH_IOCTL_QUERY_UUID, &uuid);
+
+		ret.uuid = uuid.uuid;
+
+		char uuid_str[40];
+		uuid_unparse(uuid.uuid.b, uuid_str);
+
+		char *sysfs = mprintf("%s%s", SYSFS_BASE, uuid_str);
+		ret.sysfs_fd = xopen(sysfs, O_RDONLY);
+		free(sysfs);
+	}
+
+	return ret;
+}

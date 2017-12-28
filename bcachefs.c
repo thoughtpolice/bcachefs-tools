@@ -51,6 +51,7 @@ static void usage(void)
 	     "  device offline       Take a device offline, without removing it\n"
 	     "  device evacuate      Migrate data off of a specific device\n"
 	     "  device set-state     Mark a device as failed\n"
+	     "  device resize        Resize filesystem on a device\n"
 	     "\n"
 	     "Encryption:\n"
 	     "  unlock               Unlock an encrypted filesystem prior to running/mounting\n"
@@ -112,6 +113,8 @@ static int device_cmds(int argc, char *argv[])
 		return cmd_device_offline(argc, argv);
 	if (!strcmp(cmd, "set-state"))
 		return cmd_device_set_state(argc, argv);
+	if (!strcmp(cmd, "resize"))
+		return cmd_device_resize(argc, argv);
 
 	usage();
 	return 0;

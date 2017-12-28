@@ -262,58 +262,6 @@ int open_for_format(const char *dev, bool force)
 	return fd;
 }
 
-/* Global control device: */
-int bcachectl_open(void)
-{
-	return xopen("/dev/bcachefs-ctl", O_RDWR);
-}
-
-/* Filesystem handles (ioctl, sysfs dir): */
-
-#define SYSFS_BASE "/sys/fs/bcachefs/"
-
-void bcache_fs_close(struct bcache_handle fs)
-{
-	close(fs.ioctl_fd);
-	close(fs.sysfs_fd);
-}
-
-struct bcache_handle bcache_fs_open(const char *path)
-{
-	struct bcache_handle ret;
-
-	if (!uuid_parse(path, ret.uuid.b)) {
-		/* It's a UUID, look it up in sysfs: */
-		char *sysfs = mprintf("%s%s", SYSFS_BASE, path);
-		ret.sysfs_fd = xopen(sysfs, O_RDONLY);
-
-		char *minor = read_file_str(ret.sysfs_fd, "minor");
-		char *ctl = mprintf("/dev/bcachefs%s-ctl", minor);
-		ret.ioctl_fd = xopen(ctl, O_RDWR);
-
-		free(sysfs);
-		free(minor);
-		free(ctl);
-	} else {
-		/* It's a path: */
-		ret.ioctl_fd = xopen(path, O_RDONLY);
-
-		struct bch_ioctl_query_uuid uuid;
-		xioctl(ret.ioctl_fd, BCH_IOCTL_QUERY_UUID, &uuid);
-
-		ret.uuid = uuid.uuid;
-
-		char uuid_str[40];
-		uuid_unparse(uuid.uuid.b, uuid_str);
-
-		char *sysfs = mprintf("%s%s", SYSFS_BASE, uuid_str);
-		ret.sysfs_fd = xopen(sysfs, O_RDONLY);
-		free(sysfs);
-	}
-
-	return ret;
-}
-
 bool ask_yn(void)
 {
 	const char *short_yes = "yY";
@@ -586,9 +534,9 @@ u32 crc32c(u32 crc, const void *buf, size_t size)
 
 #endif /* HAVE_WORKING_IFUNC */
 
-char *dev_to_path(dev_t dev)
+char *dev_to_name(dev_t dev)
 {
-	char *line = NULL, *name = NULL, *path = NULL;
+	char *line = NULL, *name = NULL;
 	size_t n = 0;
 
 	FILE *f = fopen("/proc/partitions", "r");
@@ -602,17 +550,58 @@ char *dev_to_path(dev_t dev)
 		name = realloc(name, n + 1);
 
 		if (sscanf(line, " %u %u %llu %s", &ma, &mi, &sectors, name) == 4 &&
-		    ma == major(dev) && mi == minor(dev)) {
-			path = mprintf("/dev/%s", name);
-			break;
-		}
-
+		    ma == major(dev) && mi == minor(dev))
+			goto found;
 	}
 
+	free(name);
+	name = NULL;
+found:
 	fclose(f);
 	free(line);
+	return name;
+}
+
+char *dev_to_path(dev_t dev)
+{
+	char *name = dev_to_name(dev);
+	if (!name)
+		return NULL;
+
+	char *path = mprintf("/dev/%s", name);
+
 	free(name);
 	return path;
+}
+
+char *dev_to_mount(char *dev)
+{
+	char *line = NULL, *ret = NULL;
+	size_t n = 0;
+
+	FILE *f = fopen("/proc/mounts", "r");
+	if (!f)
+		die("error opening /proc/mounts: %m");
+
+	while (getline(&line, &n, f) != -1) {
+		char *d, *p = line;
+		char *devs = strsep(&p, " ");
+		char *mount = strsep(&p, " ");
+
+		if (!devs || !mount)
+			continue;
+
+		p = devs;
+		while ((d = strsep(&p, ":")))
+			if (!strcmp(d, dev)) {
+				ret = strdup(mount);
+				goto found;
+			}
+	}
+found:
+	fclose(f);
+	free(line);
+	return ret;
 }
 
 #endif

@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -39,10 +40,12 @@ struct stat xfstat(int);
 #define xopen(...)	xopenat(AT_FDCWD, __VA_ARGS__)
 
 #define xioctl(_fd, _nr, ...)						\
-do {									\
-	if (ioctl((_fd), (_nr), ##__VA_ARGS__))				\
+({									\
+	int _ret = ioctl((_fd), (_nr), ##__VA_ARGS__);			\
+	if (_ret < 0)							\
 		die(#_nr " ioctl error: %m");				\
-} while (0)
+	_ret;								\
+})
 
 enum units {
 	BYTES,
@@ -67,17 +70,6 @@ ssize_t read_string_list_or_die(const char *, const char * const[],
 u64 get_size(const char *, int);
 unsigned get_blocksize(const char *, int);
 int open_for_format(const char *, bool);
-
-int bcachectl_open(void);
-
-struct bcache_handle {
-	uuid_le	uuid;
-	int	ioctl_fd;
-	int	sysfs_fd;
-};
-
-void bcache_fs_close(struct bcache_handle);
-struct bcache_handle bcache_fs_open(const char *);
 
 bool ask_yn(void);
 
@@ -155,6 +147,8 @@ unsigned hatoi_validate(const char *, const char *);
 
 u32 crc32c(u32, const void *, size_t);
 
+char *dev_to_name(dev_t);
 char *dev_to_path(dev_t);
+char *dev_to_mount(char *);
 
 #endif /* _TOOLS_UTIL_H */

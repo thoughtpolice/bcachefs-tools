@@ -13,6 +13,7 @@
 
 #include "libbcachefs/bcachefs_ioctl.h"
 #include "cmds.h"
+#include "libbcachefs.h"
 
 int cmd_run(int argc, char *argv[])
 {
@@ -24,7 +25,7 @@ int cmd_stop(int argc, char *argv[])
 	if (argc != 2)
 		die("Please supply a filesystem");
 
-	struct bcache_handle fs = bcache_fs_open(argv[1]);
+	struct bchfs_handle fs = bcache_fs_open(argv[1]);
 	xioctl(fs.ioctl_fd, BCH_IOCTL_STOP);
 	return 0;
 }

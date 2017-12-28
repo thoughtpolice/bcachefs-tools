@@ -9,6 +9,7 @@
 
 #include "libbcachefs/bcachefs_ioctl.h"
 #include "cmds.h"
+#include "libbcachefs.h"
 
 int cmd_assemble(int argc, char *argv[])
 {
