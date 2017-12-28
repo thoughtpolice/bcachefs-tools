@@ -123,6 +123,22 @@ bch2_extent_has_device(struct bkey_s_c_extent e, unsigned dev)
 	return NULL;
 }
 
+bool bch2_extent_drop_device(struct bkey_s_extent e, unsigned dev)
+{
+	struct bch_extent_ptr *ptr;
+	bool dropped = false;
+
+	extent_for_each_ptr_backwards(e, ptr)
+		if (ptr->dev == dev) {
+			__bch2_extent_drop_ptr(e, ptr);
+			dropped = true;
+		}
+
+	if (dropped)
+		bch2_extent_drop_redundant_crcs(e);
+	return dropped;
+}
+
 unsigned bch2_extent_nr_ptrs(struct bkey_s_c_extent e)
 {
 	const struct bch_extent_ptr *ptr;
@@ -223,20 +239,6 @@ void bch2_extent_drop_ptr(struct bkey_s_extent e, struct bch_extent_ptr *ptr)
 {
 	__bch2_extent_drop_ptr(e, ptr);
 	bch2_extent_drop_redundant_crcs(e);
-}
-
-void bch2_extent_drop_ptr_idx(struct bkey_s_extent e, unsigned idx)
-{
-	struct bch_extent_ptr *ptr;
-	unsigned i = 0;
-
-	extent_for_each_ptr(e, ptr)
-		if (i++ == idx)
-			goto found;
-
-	BUG();
-found:
-	bch2_extent_drop_ptr(e, ptr);
 }
 
 static inline bool can_narrow_crc(struct bch_extent_crc_unpacked u,
@@ -634,14 +636,13 @@ static void btree_ptr_debugcheck(struct bch_fs *c, struct btree *b,
 	unsigned seq;
 	const char *err;
 	char buf[160];
-	struct bucket *g;
+	struct bucket_mark mark;
 	struct bch_dev *ca;
 	unsigned replicas = 0;
 	bool bad;
 
 	extent_for_each_ptr(e, ptr) {
 		ca = bch_dev_bkey_exists(c, ptr->dev);
-		g = PTR_BUCKET(ca, ptr);
 		replicas++;
 
 		if (!test_bit(BCH_FS_ALLOC_READ_DONE, &c->flags))
@@ -653,9 +654,11 @@ static void btree_ptr_debugcheck(struct bch_fs *c, struct btree *b,
 
 		do {
 			seq = read_seqcount_begin(&c->gc_pos_lock);
+			mark = ptr_bucket_mark(ca, ptr);
+
 			bad = gc_pos_cmp(c->gc_pos, gc_pos_btree_node(b)) > 0 &&
-				(g->mark.data_type != BCH_DATA_BTREE ||
-				 g->mark.dirty_sectors < c->opts.btree_node_size);
+				(mark.data_type != BCH_DATA_BTREE ||
+				 mark.dirty_sectors < c->opts.btree_node_size);
 		} while (read_seqcount_retry(&c->gc_pos_lock, seq));
 
 		err = "inconsistent";
@@ -676,11 +679,9 @@ static void btree_ptr_debugcheck(struct bch_fs *c, struct btree *b,
 err:
 	bch2_bkey_val_to_text(c, btree_node_type(b), buf, sizeof(buf), k);
 	bch2_fs_bug(c, "%s btree pointer %s: bucket %zi "
-		      "gen %i last_gc %i mark %08x",
+		      "gen %i mark %08x",
 		      err, buf, PTR_BUCKET_NR(ca, ptr),
-		      PTR_BUCKET(ca, ptr)->mark.gen,
-		      ca->oldest_gens[PTR_BUCKET_NR(ca, ptr)],
-		      (unsigned) g->mark.counter);
+		      mark.gen, (unsigned) mark.counter);
 }
 
 static void bch2_btree_ptr_to_text(struct bch_fs *c, char *buf,
@@ -1730,7 +1731,6 @@ static void bch2_extent_debugcheck_extent(struct bch_fs *c, struct btree *b,
 {
 	const struct bch_extent_ptr *ptr;
 	struct bch_dev *ca;
-	struct bucket *g;
 	struct bucket_mark mark;
 	unsigned seq, stale;
 	char buf[160];
@@ -1751,7 +1751,6 @@ static void bch2_extent_debugcheck_extent(struct bch_fs *c, struct btree *b,
 
 	extent_for_each_ptr(e, ptr) {
 		ca = bch_dev_bkey_exists(c, ptr->dev);
-		g = PTR_BUCKET(ca, ptr);
 		replicas++;
 		ptrs_per_tier[ca->mi.tier]++;
 
@@ -1766,7 +1765,7 @@ static void bch2_extent_debugcheck_extent(struct bch_fs *c, struct btree *b,
 
 		do {
 			seq = read_seqcount_begin(&c->gc_pos_lock);
-			mark = READ_ONCE(g->mark);
+			mark = ptr_bucket_mark(ca, ptr);
 
 			/* between mark and bucket gen */
 			smp_rmb();
@@ -1819,10 +1818,8 @@ bad_ptr:
 	bch2_bkey_val_to_text(c, btree_node_type(b), buf,
 			     sizeof(buf), e.s_c);
 	bch2_fs_bug(c, "extent pointer bad gc mark: %s:\nbucket %zu "
-		   "gen %i last_gc %i type %u",
-		   buf, PTR_BUCKET_NR(ca, ptr), mark.gen,
-		   ca->oldest_gens[PTR_BUCKET_NR(ca, ptr)],
-		   mark.data_type);
+		   "gen %i type %u", buf,
+		   PTR_BUCKET_NR(ca, ptr), mark.gen, mark.data_type);
 	return;
 }
 

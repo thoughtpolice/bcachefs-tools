@@ -88,7 +88,7 @@ static DECLARE_WAIT_QUEUE_HEAD(bch_read_only_wait);
 
 static void bch2_dev_free(struct bch_dev *);
 static int bch2_dev_alloc(struct bch_fs *, unsigned);
-static int bch2_dev_sysfs_online(struct bch_dev *);
+static int bch2_dev_sysfs_online(struct bch_fs *, struct bch_dev *);
 static void __bch2_dev_read_only(struct bch_fs *, struct bch_dev *);
 
 struct bch_fs *bch2_bdev_to_fs(struct block_device *bdev)
@@ -480,7 +480,6 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	mutex_init(&c->state_lock);
 	mutex_init(&c->sb_lock);
 	mutex_init(&c->replicas_gc_lock);
-	mutex_init(&c->bucket_lock);
 	mutex_init(&c->btree_root_lock);
 	INIT_WORK(&c->read_only_work, bch2_fs_read_only_work);
 
@@ -511,11 +510,6 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	mutex_init(&c->fsck_error_lock);
 
 	seqcount_init(&c->gc_pos_lock);
-
-	c->prio_clock[READ].hand = 1;
-	c->prio_clock[READ].min_prio = 0;
-	c->prio_clock[WRITE].hand = 1;
-	c->prio_clock[WRITE].min_prio = 0;
 
 	init_waitqueue_head(&c->writeback_wait);
 	c->writeback_pages_max = (256 << 10) / PAGE_SIZE;
@@ -649,7 +643,7 @@ static const char *__bch2_fs_online(struct bch_fs *c)
 
 	err = "error creating sysfs objects";
 	__for_each_member_device(ca, c, i, NULL)
-		if (bch2_dev_sysfs_online(ca))
+		if (bch2_dev_sysfs_online(c, ca))
 			goto err;
 
 	list_add(&c->list, &bch_fs_list);
@@ -958,8 +952,6 @@ static void bch2_dev_release(struct kobject *kobj)
 
 static void bch2_dev_free(struct bch_dev *ca)
 {
-	unsigned i;
-
 	cancel_work_sync(&ca->io_error_work);
 
 	if (ca->kobj.state_in_sysfs &&
@@ -975,25 +967,15 @@ static void bch2_dev_free(struct bch_dev *ca)
 
 	free_percpu(ca->io_done);
 	bioset_exit(&ca->replica_set);
-	free_percpu(ca->usage_percpu);
-	kvpfree(ca->bucket_dirty, BITS_TO_LONGS(ca->mi.nbuckets) * sizeof(unsigned long));
-	kvpfree(ca->buckets,	 ca->mi.nbuckets * sizeof(struct bucket));
-	kvpfree(ca->oldest_gens, ca->mi.nbuckets * sizeof(u8));
-	free_heap(&ca->copygc_heap);
-	free_heap(&ca->alloc_heap);
-	free_fifo(&ca->free_inc);
-
-	for (i = 0; i < RESERVE_NR; i++)
-		free_fifo(&ca->free[i]);
+	bch2_dev_buckets_free(ca);
 
 	percpu_ref_exit(&ca->io_ref);
 	percpu_ref_exit(&ca->ref);
 	kobject_put(&ca->kobj);
 }
 
-static void __bch2_dev_offline(struct bch_dev *ca)
+static void __bch2_dev_offline(struct bch_fs *c, struct bch_dev *ca)
 {
-	struct bch_fs *c = ca->fs;
 
 	lockdep_assert_held(&c->state_lock);
 
@@ -1032,9 +1014,8 @@ static void bch2_dev_io_ref_complete(struct percpu_ref *ref)
 	complete(&ca->io_ref_completion);
 }
 
-static int bch2_dev_sysfs_online(struct bch_dev *ca)
+static int bch2_dev_sysfs_online(struct bch_fs *c, struct bch_dev *ca)
 {
-	struct bch_fs *c = ca->fs;
 	int ret;
 
 	if (!c->kobj.state_in_sysfs)
@@ -1065,9 +1046,6 @@ static int bch2_dev_sysfs_online(struct bch_dev *ca)
 static int bch2_dev_alloc(struct bch_fs *c, unsigned dev_idx)
 {
 	struct bch_member *member;
-	size_t reserve_none, movinggc_reserve, free_inc_reserve, total_reserve;
-	size_t heap_size;
-	unsigned i, btree_node_reserve_buckets;
 	struct bch_dev *ca;
 
 	if (bch2_fs_init_fault("dev_alloc"))
@@ -1083,6 +1061,8 @@ static int bch2_dev_alloc(struct bch_fs *c, unsigned dev_idx)
 
 	ca->dev_idx = dev_idx;
 	__set_bit(ca->dev_idx, ca->self.d);
+
+	init_rwsem(&ca->bucket_lock);
 
 	writepoint_init(&ca->copygc_write_point, BCH_DATA_USER);
 
@@ -1100,56 +1080,20 @@ static int bch2_dev_alloc(struct bch_fs *c, unsigned dev_idx)
 	ca->uuid = member->uuid;
 	scnprintf(ca->name, sizeof(ca->name), "dev-%u", dev_idx);
 
-	/* XXX: tune these */
-	movinggc_reserve = max_t(size_t, 16, ca->mi.nbuckets >> 7);
-	reserve_none = max_t(size_t, 4, ca->mi.nbuckets >> 9);
-	/*
-	 * free_inc must be smaller than the copygc reserve: if it was bigger,
-	 * one copygc iteration might not make enough buckets available to fill
-	 * up free_inc and allow the allocator to make forward progress
-	 */
-	free_inc_reserve = movinggc_reserve / 2;
-	heap_size = movinggc_reserve * 8;
-
-	btree_node_reserve_buckets =
-		DIV_ROUND_UP(BTREE_NODE_RESERVE,
-			     ca->mi.bucket_size / c->opts.btree_node_size);
-
 	if (percpu_ref_init(&ca->ref, bch2_dev_ref_complete,
 			    0, GFP_KERNEL) ||
 	    percpu_ref_init(&ca->io_ref, bch2_dev_io_ref_complete,
 			    PERCPU_REF_INIT_DEAD, GFP_KERNEL) ||
-	    !init_fifo(&ca->free[RESERVE_BTREE], btree_node_reserve_buckets,
-		       GFP_KERNEL) ||
-	    !init_fifo(&ca->free[RESERVE_MOVINGGC],
-		       movinggc_reserve, GFP_KERNEL) ||
-	    !init_fifo(&ca->free[RESERVE_NONE], reserve_none, GFP_KERNEL) ||
-	    !init_fifo(&ca->free_inc,	free_inc_reserve, GFP_KERNEL) ||
-	    !init_heap(&ca->alloc_heap,	free_inc_reserve, GFP_KERNEL) ||
-	    !init_heap(&ca->copygc_heap,heap_size, GFP_KERNEL) ||
-	    !(ca->oldest_gens	= kvpmalloc(ca->mi.nbuckets *
-					    sizeof(u8),
-					    GFP_KERNEL|__GFP_ZERO)) ||
-	    !(ca->buckets	= kvpmalloc(ca->mi.nbuckets *
-					    sizeof(struct bucket),
-					    GFP_KERNEL|__GFP_ZERO)) ||
-	    !(ca->bucket_dirty	= kvpmalloc(BITS_TO_LONGS(ca->mi.nbuckets) *
-					    sizeof(unsigned long),
-					    GFP_KERNEL|__GFP_ZERO)) ||
-	    !(ca->usage_percpu = alloc_percpu(struct bch_dev_usage)) ||
+	    bch2_dev_buckets_alloc(c, ca) ||
 	    bioset_init(&ca->replica_set, 4,
 			offsetof(struct bch_write_bio, bio), 0) ||
 	    !(ca->io_done	= alloc_percpu(*ca->io_done)))
 		goto err;
 
-	total_reserve = ca->free_inc.size;
-	for (i = 0; i < RESERVE_NR; i++)
-		total_reserve += ca->free[i].size;
-
 	ca->fs = c;
 	rcu_assign_pointer(c->devs[ca->dev_idx], ca);
 
-	if (bch2_dev_sysfs_online(ca))
+	if (bch2_dev_sysfs_online(c, ca))
 		pr_warn("error creating sysfs objects");
 
 	return 0;
@@ -1201,9 +1145,6 @@ static int __bch2_dev_online(struct bch_fs *c, struct bch_sb_handle *sb)
 	if (c->sb.nr_devices == 1)
 		bdevname(ca->disk_sb.bdev, c->name);
 	bdevname(ca->disk_sb.bdev, ca->name);
-
-	if (bch2_dev_sysfs_online(ca))
-		pr_warn("error creating sysfs objects");
 
 	bch2_mark_dev_superblock(c, ca, BCH_BUCKET_MARK_MAY_MAKE_UNAVAILABLE);
 
@@ -1311,12 +1252,11 @@ static void __bch2_dev_read_only(struct bch_fs *c, struct bch_dev *ca)
 	bch2_copygc_stop(ca);
 
 	/*
-	 * This stops new data writes (e.g. to existing open data
-	 * buckets) and then waits for all existing writes to
-	 * complete.
+	 * The allocator thread itself allocates btree nodes, so stop it first:
 	 */
 	bch2_dev_allocator_stop(ca);
 	bch2_dev_allocator_remove(c, ca);
+	bch2_dev_journal_stop(&c->journal, ca);
 }
 
 static const char *__bch2_dev_read_write(struct bch_fs *c, struct bch_dev *ca)
@@ -1393,15 +1333,12 @@ int bch2_dev_remove(struct bch_fs *c, struct bch_dev *ca, int flags)
 
 	percpu_ref_put(&ca->ref); /* XXX */
 
-	if (ca->mi.state == BCH_MEMBER_STATE_RW) {
-		bch_err(ca, "Cannot remove RW device");
-		goto err;
-	}
-
 	if (!bch2_dev_state_allowed(c, ca, BCH_MEMBER_STATE_FAILED, flags)) {
 		bch_err(ca, "Cannot remove without losing data");
 		goto err;
 	}
+
+	__bch2_dev_read_only(c, ca);
 
 	/*
 	 * XXX: verify that dev_idx is really not in use anymore, anywhere
@@ -1452,7 +1389,7 @@ int bch2_dev_remove(struct bch_fs *c, struct bch_dev *ca, int flags)
 		goto err;
 	}
 
-	__bch2_dev_offline(ca);
+	__bch2_dev_offline(c, ca);
 
 	mutex_lock(&c->sb_lock);
 	rcu_assign_pointer(c->devs[ca->dev_idx], NULL);
@@ -1477,6 +1414,8 @@ int bch2_dev_remove(struct bch_fs *c, struct bch_dev *ca, int flags)
 	mutex_unlock(&c->state_lock);
 	return 0;
 err:
+	if (ca->mi.state == BCH_MEMBER_STATE_RW)
+		__bch2_dev_read_write(c, ca);
 	mutex_unlock(&c->state_lock);
 	return ret;
 }
@@ -1645,7 +1584,7 @@ int bch2_dev_offline(struct bch_fs *c, struct bch_dev *ca, int flags)
 		return -EINVAL;
 	}
 
-	__bch2_dev_offline(ca);
+	__bch2_dev_offline(c, ca);
 
 	mutex_unlock(&c->state_lock);
 	return 0;
@@ -1658,7 +1597,8 @@ int bch2_dev_evacuate(struct bch_fs *c, struct bch_dev *ca)
 
 	mutex_lock(&c->state_lock);
 
-	if (ca->mi.state == BCH_MEMBER_STATE_RW) {
+	if (ca->mi.state == BCH_MEMBER_STATE_RW &&
+	    bch2_dev_is_online(ca)) {
 		bch_err(ca, "Cannot migrate data off RW device");
 		ret = -EINVAL;
 		goto err;
@@ -1676,6 +1616,46 @@ int bch2_dev_evacuate(struct bch_fs *c, struct bch_dev *ca)
 		ret = -EINVAL;
 		goto err;
 	}
+err:
+	mutex_unlock(&c->state_lock);
+	return ret;
+}
+
+int bch2_dev_resize(struct bch_fs *c, struct bch_dev *ca, u64 nbuckets)
+{
+	struct bch_member *mi;
+	int ret = 0;
+
+	mutex_lock(&c->state_lock);
+
+	if (nbuckets < ca->mi.nbuckets) {
+		bch_err(ca, "Cannot shrink yet");
+		ret = -EINVAL;
+		goto err;
+	}
+
+	if (bch2_dev_is_online(ca) &&
+	    get_capacity(ca->disk_sb.bdev->bd_disk) <
+	    ca->mi.bucket_size * nbuckets) {
+		bch_err(ca, "New size larger than device");
+		ret = -EINVAL;
+		goto err;
+	}
+
+	ret = bch2_dev_buckets_resize(c, ca, nbuckets);
+	if (ret) {
+		bch_err(ca, "Resize error: %i", ret);
+		goto err;
+	}
+
+	mutex_lock(&c->sb_lock);
+	mi = &bch2_sb_get_members(c->disk_sb)->members[ca->dev_idx];
+	mi->nbuckets = cpu_to_le64(nbuckets);
+
+	bch2_write_super(c);
+	mutex_unlock(&c->sb_lock);
+
+	bch2_recalc_capacity(c);
 err:
 	mutex_unlock(&c->state_lock);
 	return ret;

@@ -5,12 +5,9 @@
 #include <linux/spinlock.h>
 
 #include "clock_types.h"
+#include "fifo.h"
 
-/*
- * There's two of these clocks, one for reads and one for writes:
- *
- * All fields protected by bucket_lock
- */
+/* There's two of these clocks, one for reads and one for writes: */
 struct prio_clock {
 	/*
 	 * "now" in (read/write) IO time - incremented whenever we do X amount
@@ -31,6 +28,7 @@ struct prio_clock {
 	int			rw;
 
 	struct io_timer		rescale;
+	struct mutex		lock;
 };
 
 /* There is one reserve for each type of btree, one for prios and gens
@@ -42,6 +40,8 @@ enum alloc_reserve {
 	RESERVE_NONE		= 2,
 	RESERVE_NR		= 3,
 };
+
+typedef FIFO(long)	alloc_fifo;
 
 /* Enough for 16 cache devices, 2 tiers and some left over for pipelining */
 #define OPEN_BUCKETS_COUNT	256

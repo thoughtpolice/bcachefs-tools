@@ -363,6 +363,82 @@ static long bch2_ioctl_usage(struct bch_fs *c,
 	return 0;
 }
 
+static long bch2_ioctl_read_super(struct bch_fs *c,
+				  struct bch_ioctl_read_super arg)
+{
+	struct bch_dev *ca = NULL;
+	struct bch_sb *sb;
+	int ret = 0;
+
+	if ((arg.flags & ~(BCH_BY_INDEX|BCH_READ_DEV)) ||
+	    arg.pad)
+		return -EINVAL;
+
+	mutex_lock(&c->sb_lock);
+
+	if (arg.flags & BCH_READ_DEV) {
+		ca = bch2_device_lookup(c, arg.dev, arg.flags);
+
+		if (IS_ERR(ca)) {
+			ret = PTR_ERR(ca);
+			goto err;
+		}
+
+		sb = ca->disk_sb.sb;
+	} else {
+		sb = c->disk_sb;
+	}
+
+	if (vstruct_bytes(sb) > arg.size) {
+		ret = -ERANGE;
+		goto err;
+	}
+
+	ret = copy_to_user((void __user *)(unsigned long)arg.sb,
+			   sb, vstruct_bytes(sb));
+err:
+	if (ca)
+		percpu_ref_put(&ca->ref);
+	mutex_unlock(&c->sb_lock);
+	return ret;
+}
+
+static long bch2_ioctl_disk_get_idx(struct bch_fs *c,
+				    struct bch_ioctl_disk_get_idx arg)
+{
+	dev_t dev = huge_decode_dev(arg.dev);
+	struct bch_dev *ca;
+	unsigned i;
+
+	for_each_online_member(ca, c, i)
+		if (ca->disk_sb.bdev->bd_dev == dev) {
+			percpu_ref_put(&ca->io_ref);
+			return i;
+		}
+
+	return -ENOENT;
+}
+
+static long bch2_ioctl_disk_resize(struct bch_fs *c,
+				   struct bch_ioctl_disk_resize arg)
+{
+	struct bch_dev *ca;
+	int ret;
+
+	if ((arg.flags & ~BCH_BY_INDEX) ||
+	    arg.pad)
+		return -EINVAL;
+
+	ca = bch2_device_lookup(c, arg.dev, arg.flags);
+	if (IS_ERR(ca))
+		return PTR_ERR(ca);
+
+	ret = bch2_dev_resize(c, ca, arg.nbuckets);
+
+	percpu_ref_put(&ca->ref);
+	return ret;
+}
+
 #define BCH_IOCTL(_name, _argtype)					\
 do {									\
 	_argtype i;							\
@@ -404,6 +480,12 @@ long bch2_fs_ioctl(struct bch_fs *c, unsigned cmd, void __user *arg)
 		BCH_IOCTL(disk_set_state, struct bch_ioctl_disk_set_state);
 	case BCH_IOCTL_DISK_EVACUATE:
 		BCH_IOCTL(disk_evacuate, struct bch_ioctl_disk);
+	case BCH_IOCTL_READ_SUPER:
+		BCH_IOCTL(read_super, struct bch_ioctl_read_super);
+	case BCH_IOCTL_DISK_GET_IDX:
+		BCH_IOCTL(disk_get_idx, struct bch_ioctl_disk_get_idx);
+	case BCH_IOCTL_DISK_RESIZE:
+		BCH_IOCTL(disk_resize, struct bch_ioctl_disk_resize);
 
 	default:
 		return -ENOTTY;
