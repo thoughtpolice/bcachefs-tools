@@ -47,6 +47,8 @@ struct stat xfstat(int);
 	_ret;								\
 })
 
+int printf_pad(unsigned pad, const char * fmt, ...);
+
 enum units {
 	BYTES,
 	SECTORS,
@@ -150,5 +152,19 @@ u32 crc32c(u32, const void *, size_t);
 char *dev_to_name(dev_t);
 char *dev_to_path(dev_t);
 char *dev_to_mount(char *);
+
+#define args_shift(_nr)							\
+do {									\
+	argc -= (_nr);							\
+	argv += (_nr);							\
+} while (0)
+
+#define arg_pop()							\
+({									\
+	char *_ret = argc ? argv[0] : NULL;				\
+	if (_ret)							\
+		args_shift(1);						\
+	_ret;								\
+})
 
 #endif /* _TOOLS_UTIL_H */

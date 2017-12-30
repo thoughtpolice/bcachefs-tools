@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdbool.h>
@@ -310,17 +311,206 @@ static unsigned get_dev_has_data(struct bch_sb *sb, unsigned dev)
 	return data_has;
 }
 
-void bch2_super_print(struct bch_sb *sb, int units)
+/* superblock printing: */
+
+static void bch2_sb_print_layout(struct bch_sb *sb, enum units units)
+{
+	struct bch_sb_layout *l = &sb->layout;
+	unsigned i;
+
+	printf("  type:				%u\n"
+	       "  superblock max size:		%s\n"
+	       "  nr superblocks:		%u\n"
+	       "  Offsets:			",
+	       l->layout_type,
+	       pr_units(1 << l->sb_max_size_bits, units),
+	       l->nr_superblocks);
+
+	for (i = 0; i < l->nr_superblocks; i++) {
+		if (i)
+			printf(", ");
+		printf("%llu", le64_to_cpu(l->sb_offset[i]));
+	}
+	putchar('\n');
+}
+
+static void bch2_sb_print_journal(struct bch_sb *sb, struct bch_sb_field *f,
+				  enum units units)
+{
+	struct bch_sb_field_journal *journal = field_to_type(f, journal);
+	unsigned i, nr = bch2_nr_journal_buckets(journal);
+
+	printf("  Buckets:			");
+	for (i = 0; i < nr; i++) {
+		if (i)
+			putchar(' ');
+		printf("%llu", le64_to_cpu(journal->buckets[i]));
+	}
+	putchar('\n');
+}
+
+static void bch2_sb_print_members(struct bch_sb *sb, struct bch_sb_field *f,
+				  enum units units)
+{
+	struct bch_sb_field_members *mi = field_to_type(f, members);
+	unsigned i;
+
+	for (i = 0; i < sb->nr_devices; i++) {
+		struct bch_member *m = mi->members + i;
+		time_t last_mount = le64_to_cpu(m->last_mount);
+		char member_uuid_str[40];
+		char data_allowed_str[100];
+		char data_has_str[100];
+
+		if (!bch2_member_exists(m))
+			continue;
+
+		uuid_unparse(m->uuid.b, member_uuid_str);
+		bch2_scnprint_flag_list(data_allowed_str,
+					sizeof(data_allowed_str),
+					bch2_data_types,
+					BCH_MEMBER_DATA_ALLOWED(m));
+		if (!data_allowed_str[0])
+			strcpy(data_allowed_str, "(none)");
+
+		bch2_scnprint_flag_list(data_has_str,
+					sizeof(data_has_str),
+					bch2_data_types,
+					get_dev_has_data(sb, i));
+		if (!data_has_str[0])
+			strcpy(data_has_str, "(none)");
+
+		printf("  Device %u:\n"
+		       "    UUID:			%s\n"
+		       "    Size:			%s\n"
+		       "    Bucket size:		%s\n"
+		       "    First bucket:		%u\n"
+		       "    Buckets:			%llu\n"
+		       "    Last mount:			%s\n"
+		       "    State:			%s\n"
+		       "    Tier:			%llu\n"
+		       "    Data allowed:		%s\n"
+
+		       "    Has data:			%s\n"
+
+		       "    Replacement policy:		%s\n"
+		       "    Discard:			%llu\n",
+		       i, member_uuid_str,
+		       pr_units(le16_to_cpu(m->bucket_size) *
+				le64_to_cpu(m->nbuckets), units),
+		       pr_units(le16_to_cpu(m->bucket_size), units),
+		       le16_to_cpu(m->first_bucket),
+		       le64_to_cpu(m->nbuckets),
+		       last_mount ? ctime(&last_mount) : "(never)",
+
+		       BCH_MEMBER_STATE(m) < BCH_MEMBER_STATE_NR
+		       ? bch2_dev_state[BCH_MEMBER_STATE(m)]
+		       : "unknown",
+
+		       BCH_MEMBER_TIER(m),
+		       data_allowed_str,
+		       data_has_str,
+
+		       BCH_MEMBER_REPLACEMENT(m) < CACHE_REPLACEMENT_NR
+		       ? bch2_cache_replacement_policies[BCH_MEMBER_REPLACEMENT(m)]
+		       : "unknown",
+
+		       BCH_MEMBER_DISCARD(m));
+	}
+}
+
+static void bch2_sb_print_crypt(struct bch_sb *sb, struct bch_sb_field *f,
+				enum units units)
+{
+	struct bch_sb_field_crypt *crypt = field_to_type(f, crypt);
+
+	printf("  KFD:			%llu\n"
+	       "  scrypt n:		%llu\n"
+	       "  scrypt r:		%llu\n"
+	       "  scrypt p:		%llu\n",
+	       BCH_CRYPT_KDF_TYPE(crypt),
+	       BCH_KDF_SCRYPT_N(crypt),
+	       BCH_KDF_SCRYPT_R(crypt),
+	       BCH_KDF_SCRYPT_P(crypt));
+}
+
+static void bch2_sb_print_replicas(struct bch_sb *sb, struct bch_sb_field *f,
+				   enum units units)
+{
+	struct bch_sb_field_replicas *replicas = field_to_type(f, replicas);
+	struct bch_replicas_entry *e;
+	unsigned i;
+
+	for_each_replicas_entry(replicas, e) {
+		printf_pad(32, "  %s:", bch2_data_types[e->data_type]);
+
+		putchar('[');
+		for (i = 0; i < e->nr; i++) {
+			if (i)
+				putchar(' ');
+			printf("%u", e->devs[i]);
+		}
+		printf("]\n");
+	}
+}
+
+typedef void (*sb_field_print_fn)(struct bch_sb *, struct bch_sb_field *, enum units);
+
+struct bch_sb_field_ops {
+	sb_field_print_fn	print;
+};
+
+static const struct bch_sb_field_ops bch2_sb_field_ops[] = {
+#define x(f, nr)					\
+	[BCH_SB_FIELD_##f] = {				\
+		.print	= bch2_sb_print_##f,		\
+	},
+	BCH_SB_FIELDS()
+#undef x
+};
+
+static inline void bch2_sb_field_print(struct bch_sb *sb,
+				       struct bch_sb_field *f,
+				       enum units units)
+{
+	unsigned type = le32_to_cpu(f->type);
+
+	if (type < BCH_SB_FIELD_NR)
+		bch2_sb_field_ops[type].print(sb, f, units);
+	else
+		printf("(unknown field %u)\n", type);
+}
+
+void bch2_sb_print(struct bch_sb *sb, bool print_layout,
+		   unsigned fields, enum units units)
 {
 	struct bch_sb_field_members *mi;
 	char user_uuid_str[40], internal_uuid_str[40];
+	char fields_have_str[200];
 	char label[BCH_SB_LABEL_SIZE + 1];
-	unsigned i;
+	struct bch_sb_field *f;
+	u64 fields_have = 0;
+	unsigned nr_devices = 0;
 
 	memset(label, 0, sizeof(label));
 	memcpy(label, sb->label, sizeof(sb->label));
 	uuid_unparse(sb->user_uuid.b, user_uuid_str);
 	uuid_unparse(sb->uuid.b, internal_uuid_str);
+
+	mi = bch2_sb_get_members(sb);
+	if (mi) {
+		struct bch_member *m;
+
+		for (m = mi->members;
+		     m < mi->members + sb->nr_devices;
+		     m++)
+			nr_devices += bch2_member_exists(m);
+	}
+
+	vstruct_for_each(sb, f)
+		fields_have |= 1 << le32_to_cpu(f->type);
+	bch2_scnprint_flag_list(fields_have_str, sizeof(fields_have_str),
+				bch2_sb_fields, fields_have);
 
 	printf("External UUID:			%s\n"
 	       "Internal UUID:			%s\n"
@@ -331,8 +521,8 @@ void bch2_super_print(struct bch_sb *sb, int units)
 	       "Error action:			%s\n"
 	       "Clean:				%llu\n"
 
-	       "Metadata replicas:		have %llu, want %llu\n"
-	       "Data replicas:			have %llu, want %llu\n"
+	       "Metadata replicas:		%llu\n"
+	       "Data replicas:			%llu\n"
 
 	       "Metadata checksum type:		%s (%llu)\n"
 	       "Data checksum type:		%s (%llu)\n"
@@ -343,7 +533,9 @@ void bch2_super_print(struct bch_sb *sb, int units)
 	       "GC reserve percentage:		%llu%%\n"
 	       "Root reserve percentage:	%llu%%\n"
 
-	       "Devices:			%u\n",
+	       "Devices:			%u live, %u total\n"
+	       "Sections:			%s\n"
+	       "Superblock size:		%llu\n",
 	       user_uuid_str,
 	       internal_uuid_str,
 	       label,
@@ -357,9 +549,7 @@ void bch2_super_print(struct bch_sb *sb, int units)
 
 	       BCH_SB_CLEAN(sb),
 
-	       0LLU, //BCH_SB_META_REPLICAS_HAVE(sb),
 	       BCH_SB_META_REPLICAS_WANT(sb),
-	       0LLU, //BCH_SB_DATA_REPLICAS_HAVE(sb),
 	       BCH_SB_DATA_REPLICAS_WANT(sb),
 
 	       BCH_SB_META_CSUM_TYPE(sb) < BCH_CSUM_OPT_NR
@@ -386,73 +576,33 @@ void bch2_super_print(struct bch_sb *sb, int units)
 	       BCH_SB_GC_RESERVE(sb),
 	       BCH_SB_ROOT_RESERVE(sb),
 
-	       sb->nr_devices);
+	       nr_devices, sb->nr_devices,
+	       fields_have_str,
+	       vstruct_bytes(sb));
 
-	mi = bch2_sb_get_members(sb);
-	if (!mi) {
-		printf("Member info section missing\n");
-		return;
+	if (print_layout) {
+		printf("\n"
+		       "Layout:\n");
+		bch2_sb_print_layout(sb, units);
 	}
 
-	for (i = 0; i < sb->nr_devices; i++) {
-		struct bch_member *m = mi->members + i;
-		time_t last_mount = le64_to_cpu(m->last_mount);
-		char member_uuid_str[40];
-		char data_allowed_str[100];
-		char data_has_str[100];
+	vstruct_for_each(sb, f) {
+		unsigned type = le32_to_cpu(f->type);
+		char name[60];
 
-		uuid_unparse(m->uuid.b, member_uuid_str);
-		bch2_scnprint_flag_list(data_allowed_str,
-					sizeof(data_allowed_str),
-					bch2_data_types,
-					BCH_MEMBER_DATA_ALLOWED(m));
-		if (!data_allowed_str[0])
-			strcpy(data_allowed_str, "(none)");
+		if (!(fields & (1 << type)))
+			continue;
 
-		bch2_scnprint_flag_list(data_has_str,
-					sizeof(data_has_str),
-					bch2_data_types,
-					get_dev_has_data(sb, i));
-		if (!data_has_str[0])
-			strcpy(data_has_str, "(none)");
+		if (type < BCH_SB_FIELD_NR) {
+			scnprintf(name, sizeof(name), "%s", bch2_sb_fields[type]);
+			name[0] = toupper(name[0]);
+		} else {
+			scnprintf(name, sizeof(name), "(unknown field %u)", type);
+		}
 
-		printf("\n"
-		       "Device %u:\n"
-		       "  UUID:				%s\n"
-		       "  Size:				%s\n"
-		       "  Bucket size:			%s\n"
-		       "  First bucket:			%u\n"
-		       "  Buckets:			%llu\n"
-		       "  Last mount:			%s\n"
-		       "  State:			%s\n"
-		       "  Tier:				%llu\n"
-		       "  Data allowed:			%s\n"
-
-		       "  Has data:			%s\n"
-
-		       "  Replacement policy:		%s\n"
-		       "  Discard:			%llu\n",
-		       i, member_uuid_str,
-		       pr_units(le16_to_cpu(m->bucket_size) *
-				le64_to_cpu(m->nbuckets), units),
-		       pr_units(le16_to_cpu(m->bucket_size), units),
-		       le16_to_cpu(m->first_bucket),
-		       le64_to_cpu(m->nbuckets),
-		       last_mount ? ctime(&last_mount) : "(never)",
-
-		       BCH_MEMBER_STATE(m) < BCH_MEMBER_STATE_NR
-		       ? bch2_dev_state[BCH_MEMBER_STATE(m)]
-		       : "unknown",
-
-		       BCH_MEMBER_TIER(m),
-		       data_allowed_str,
-		       data_has_str,
-
-		       BCH_MEMBER_REPLACEMENT(m) < CACHE_REPLACEMENT_NR
-		       ? bch2_cache_replacement_policies[BCH_MEMBER_REPLACEMENT(m)]
-		       : "unknown",
-
-		       BCH_MEMBER_DISCARD(m));
+		printf("\n%s (size %llu):\n", name, vstruct_bytes(f));
+		if (type < BCH_SB_FIELD_NR)
+			bch2_sb_field_print(sb, f, units);
 	}
 }
 

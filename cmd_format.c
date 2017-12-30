@@ -269,7 +269,7 @@ int cmd_format(int argc, char *argv[])
 		bch2_format(opts, devices.item, darray_size(devices));
 
 	if (!quiet)
-		bch2_super_print(sb, HUMAN_READABLE);
+		bch2_sb_print(sb, false, 1 << BCH_SB_FIELD_members, HUMAN_READABLE);
 	free(sb);
 
 	if (opts.passphrase) {
@@ -280,18 +280,61 @@ int cmd_format(int argc, char *argv[])
 	return 0;
 }
 
+static void show_super_usage(void)
+{
+	puts("bcachefs show-super \n"
+	     "Usage: bcachefs show-super [OPTION].. device\n"
+	     "\n"
+	     "Options:\n"
+	     "  -f, --fields=(fields)       list of sections to print\n"
+	     "  -l, --layout                print superblock layout\n"
+	     "  -h, --help                  display this help and exit\n"
+	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	exit(EXIT_SUCCESS);
+}
+
 int cmd_show_super(int argc, char *argv[])
 {
-	struct bch_sb_handle sb;
+	static const struct option longopts[] = {
+		{ "fields",			1, NULL, 'f' },
+		{ "layout",			0, NULL, 'l' },
+		{ "help",			0, NULL, 'h' },
+		{ NULL }
+	};
+	unsigned fields = 1 << BCH_SB_FIELD_members;
+	bool print_layout = false;
+	int opt;
+
+	while ((opt = getopt_long(argc, argv, "f:lh", longopts, NULL)) != -1)
+		switch (opt) {
+		case 'f':
+			fields = !strcmp(optarg, "all")
+				? ~0
+				: read_flag_list_or_die(optarg,
+					bch2_sb_fields, "superblock field");
+			break;
+		case 'l':
+			print_layout = true;
+			break;
+		case 'h':
+			show_super_usage();
+			break;
+		}
+	args_shift(optind);
+
+	char *dev = arg_pop();
+	if (!dev)
+		die("please supply a device");
+	if (argc)
+		die("too many arguments");
+
 	const char *err;
-
-	if (argc != 2)
-		die("please supply a single device");
-
-	err = bch2_read_super(argv[1], bch2_opts_empty(), &sb);
+	struct bch_sb_handle sb;
+	err = bch2_read_super(dev, bch2_opts_empty(), &sb);
 	if (err)
-		die("Error opening %s: %s", argv[1], err);
+		die("Error opening %s: %s", dev, err);
 
-	bch2_super_print(sb.sb, HUMAN_READABLE);
+	bch2_sb_print(sb.sb, print_layout, fields, HUMAN_READABLE);
+	bch2_free_super(&sb);
 	return 0;
 }

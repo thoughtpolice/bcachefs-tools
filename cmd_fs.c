@@ -10,21 +10,6 @@
 #include "cmds.h"
 #include "libbcachefs.h"
 
-static inline int printf_pad(unsigned pad, const char * fmt, ...)
-{
-       va_list args;
-       int ret;
-
-       va_start(args, fmt);
-       ret = vprintf(fmt, args);
-       va_end(args);
-
-       while (ret++ < pad)
-	       putchar(' ');
-
-       return ret;
-}
-
 static void print_fs_usage(const char *path, enum units units)
 {
 	unsigned i, j;

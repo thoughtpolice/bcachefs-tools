@@ -112,7 +112,22 @@ struct stat xfstat(int fd)
 	return stat;
 }
 
-/* Integer stuff: */
+/* Formatting: */
+
+int printf_pad(unsigned pad, const char * fmt, ...)
+{
+       va_list args;
+       int ret;
+
+       va_start(args, fmt);
+       ret = vprintf(fmt, args);
+       va_end(args);
+
+       while (ret++ < pad)
+	       putchar(' ');
+
+       return ret;
+}
 
 struct units_buf __pr_units(s64 _v, enum units units)
 {

@@ -237,13 +237,14 @@ int cmd_device_add(int argc, char *argv[])
 			device_add_usage();
 			exit(EXIT_SUCCESS);
 		}
+	args_shift(optind);
 
-	if (argc - optind != 2)
+	if (argc != 2)
 		die("Please supply a filesystem and a device to add");
 
-	struct bchfs_handle fs = bcache_fs_open(argv[optind]);
+	struct bchfs_handle fs = bcache_fs_open(arg_pop());
 
-	dev_opts.path = argv[optind + 1];
+	dev_opts.path = arg_pop();
 	dev_opts.fd = open_for_format(dev_opts.path, force);
 
 	format_opts.block_size	=
@@ -296,12 +297,20 @@ int cmd_device_remove(int argc, char *argv[])
 		case 'h':
 			device_remove_usage();
 		}
+	args_shift(optind);
 
-	if (argc - optind != 2)
-		die("Please supply a filesystem and at least one device to remove");
+	char *fs = arg_pop();
+	if (!fs)
+		die("Please supply a filesystem");
 
-	disk_ioctl(argv[optind], argv[optind + 1],
-		   BCH_IOCTL_DISK_REMOVE, flags);
+	char *dev = arg_pop();
+	if (!dev)
+		die("Please supply a device to remove");
+
+	if (argc)
+		die("too many arguments");
+
+	disk_ioctl(fs, dev, BCH_IOCTL_DISK_REMOVE, flags);
 	return 0;
 }
 
@@ -469,21 +478,23 @@ int cmd_device_resize(int argc, char *argv[])
 		case 'h':
 			device_resize_usage();
 		}
+	args_shift(optind);
 
-	if (argc < optind + 1)
+	char *dev = arg_pop();
+	if (!dev)
 		die("Please supply a device to resize");
 
-	char *dev = argv[optind];
 	int dev_fd = xopen(dev, O_RDONLY);
 
-	if (argc == optind + 1)
+	char *size_arg = arg_pop();
+	if (!size_arg)
 		size = get_size(dev, dev_fd);
-	else if (bch2_strtoull_h(argv[optind + 1], &size))
+	else if (bch2_strtoull_h(size_arg, &size))
 		die("invalid size");
 
 	size >>= 9;
 
-	if (argc > optind + 2)
+	if (argc)
 		die("Too many arguments");
 
 	struct stat dev_stat = xfstat(dev_fd);
@@ -521,7 +532,7 @@ int cmd_device_resize(int argc, char *argv[])
 		struct bch_opts opts = bch2_opts_empty();
 		const char *err = bch2_fs_open(&dev, 1, opts, &c);
 		if (err)
-			die("error opening %s: %s", argv[optind], err);
+			die("error opening %s: %s", dev, err);
 
 		struct bch_dev *ca, *resize = NULL;
 		unsigned i;
