@@ -393,7 +393,7 @@ static void bch2_fs_free(struct bch_fs *c)
 		destroy_workqueue(c->wq);
 
 	free_pages((unsigned long) c->disk_sb, c->disk_sb_order);
-	kfree(c);
+	kvpfree(c, sizeof(*c));
 	module_put(THIS_MODULE);
 }
 
@@ -469,7 +469,7 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	struct bch_fs *c;
 	unsigned i, iter_size;
 
-	c = kzalloc(sizeof(struct bch_fs), GFP_KERNEL);
+	c = kvpmalloc(sizeof(struct bch_fs), GFP_KERNEL|__GFP_ZERO);
 	if (!c)
 		return NULL;
 
@@ -1115,9 +1115,16 @@ static int __bch2_dev_online(struct bch_fs *c, struct bch_sb_handle *sb)
 	       !c->devs[sb->sb->dev_idx]);
 
 	ca = bch_dev_locked(c, sb->sb->dev_idx);
-	if (ca->disk_sb.bdev) {
-		bch_err(c, "already have device online in slot %u",
+
+	if (bch2_dev_is_online(ca)) {
+		bch_err(ca, "already have device online in slot %u",
 			sb->sb->dev_idx);
+		return -EINVAL;
+	}
+
+	if (get_capacity(sb->bdev->bd_disk) <
+	    ca->mi.bucket_size * ca->mi.nbuckets) {
+		bch_err(ca, "cannot online: device too small");
 		return -EINVAL;
 	}
 
