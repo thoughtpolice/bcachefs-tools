@@ -110,7 +110,7 @@ static int device_cmds(int argc, char *argv[])
 	if (!strcmp(cmd, "offline"))
 		return cmd_device_offline(argc, argv);
 	if (!strcmp(cmd, "evacuate"))
-		return cmd_device_offline(argc, argv);
+		return cmd_device_evacuate(argc, argv);
 	if (!strcmp(cmd, "set-state"))
 		return cmd_device_set_state(argc, argv);
 	if (!strcmp(cmd, "resize"))
