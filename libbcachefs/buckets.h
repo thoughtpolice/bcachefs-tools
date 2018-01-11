@@ -184,17 +184,13 @@ void bch2_fs_usage_apply(struct bch_fs *, struct bch_fs_usage *,
 
 u64 __bch2_fs_sectors_used(struct bch_fs *, struct bch_fs_usage);
 u64 bch2_fs_sectors_used(struct bch_fs *, struct bch_fs_usage);
+u64 bch2_fs_sectors_free(struct bch_fs *, struct bch_fs_usage);
 
 static inline bool is_available_bucket(struct bucket_mark mark)
 {
 	return (!mark.owned_by_allocator &&
 		!mark.dirty_sectors &&
 		!mark.nouse);
-}
-
-static inline bool is_startup_available_bucket(struct bucket_mark mark)
-{
-	return !mark.touched_this_mount && is_available_bucket(mark);
 }
 
 static inline bool bucket_needs_journal_commit(struct bucket_mark m,
@@ -208,8 +204,6 @@ void bch2_bucket_seq_cleanup(struct bch_fs *);
 
 bool bch2_invalidate_bucket(struct bch_fs *, struct bch_dev *,
 			    size_t, struct bucket_mark *);
-bool bch2_mark_alloc_bucket_startup(struct bch_fs *, struct bch_dev *,
-				    size_t);
 void bch2_mark_alloc_bucket(struct bch_fs *, struct bch_dev *,
 			    size_t, bool, struct gc_pos, unsigned);
 void bch2_mark_metadata_bucket(struct bch_fs *, struct bch_dev *,

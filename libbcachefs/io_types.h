@@ -67,10 +67,7 @@ struct bch_read_bio {
 struct bch_write_bio {
 	struct bch_fs		*c;
 	struct bch_dev		*ca;
-	union {
 	struct bch_write_bio	*parent;
-	struct closure		*cl;
-	};
 
 	struct bch_devs_list	failed;
 	u8			order;
@@ -82,7 +79,6 @@ struct bch_write_bio {
 				used_mempool:1;
 
 	unsigned		submit_time_us;
-	void			*data;
 
 	struct bio		bio;
 };
@@ -94,7 +90,7 @@ struct bch_write_op {
 
 	unsigned		written; /* sectors */
 	u16			flags;
-	s8			error;
+	s16			error; /* dio write path expects it to hold -ERESTARTSYS... */
 
 	unsigned		csum_type:4;
 	unsigned		compression_type:4;

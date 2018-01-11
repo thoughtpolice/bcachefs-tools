@@ -281,10 +281,8 @@ do {									\
 #include "clock_types.h"
 #include "journal_types.h"
 #include "keylist_types.h"
+#include "quota_types.h"
 #include "super_types.h"
-
-/* 256k, in sectors */
-#define BTREE_NODE_SIZE_MAX		512
 
 /*
  * Number of nodes we might have to allocate in a worst case btree split
@@ -380,7 +378,6 @@ struct bch_dev {
 	alloc_fifo		free_inc;
 	spinlock_t		freelist_lock;
 	unsigned		nr_invalidated;
-	bool			alloc_thread_started;
 
 	u8			open_buckets_partial[OPEN_BUCKETS_COUNT];
 	unsigned		open_buckets_partial_nr;
@@ -423,18 +420,28 @@ struct bch_dev {
  * won't automatically reattach).
  */
 enum {
+	/* startup: */
+	BCH_FS_BRAND_NEW_FS,
 	BCH_FS_ALLOC_READ_DONE,
+	BCH_FS_ALLOCATOR_STARTED,
 	BCH_FS_INITIAL_GC_DONE,
+	BCH_FS_FSCK_DONE,
+
+	/* shutdown: */
 	BCH_FS_EMERGENCY_RO,
 	BCH_FS_WRITE_DISABLE_COMPLETE,
 	BCH_FS_GC_STOPPING,
-	BCH_FS_GC_FAILURE,
-	BCH_FS_BDEV_MOUNTED,
+
+	/* errors: */
 	BCH_FS_ERROR,
+	BCH_FS_GC_FAILURE,
+
+	/* misc: */
+	BCH_FS_BDEV_MOUNTED,
 	BCH_FS_FSCK_FIXED_ERRORS,
-	BCH_FS_FSCK_DONE,
 	BCH_FS_FIXED_GENS,
 	BCH_FS_REBUILD_REPLICAS,
+	BCH_FS_HOLD_BTREE_WRITES,
 };
 
 struct btree_debug {
@@ -517,7 +524,7 @@ struct bch_fs {
 	struct mutex		sb_lock;
 
 	/* BTREE CACHE */
-	struct bio_set		btree_read_bio;
+	struct bio_set		btree_bio;
 
 	struct btree_root	btree_roots[BTREE_ID_NR];
 	bool			btree_roots_dirty;
@@ -664,6 +671,9 @@ struct bch_fs {
 	atomic_t		writeback_pages;
 	unsigned		writeback_pages_max;
 	atomic_long_t		nr_inodes;
+
+	/* QUOTAS */
+	struct bch_memquota_type quotas[QTYP_NR];
 
 	/* DEBUG JUNK */
 	struct dentry		*debug;

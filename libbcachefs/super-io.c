@@ -330,9 +330,6 @@ const char *bch2_sb_validate(struct bch_sb_handle *disk_sb)
 	if (!is_power_of_2(BCH_SB_BTREE_NODE_SIZE(sb)))
 		return "Btree node size not a power of two";
 
-	if (BCH_SB_BTREE_NODE_SIZE(sb) > BTREE_NODE_SIZE_MAX)
-		return "Btree node size too large";
-
 	if (BCH_SB_GC_RESERVE(sb) < 5)
 		return "gc reserve percentage too small";
 
@@ -382,27 +379,6 @@ const char *bch2_sb_validate(struct bch_sb_handle *disk_sb)
 }
 
 /* device open: */
-
-static const char *bch2_blkdev_open(const char *path, fmode_t mode,
-				   void *holder, struct block_device **ret)
-{
-	struct block_device *bdev;
-
-	*ret = NULL;
-	bdev = blkdev_get_by_path(path, mode, holder);
-	if (bdev == ERR_PTR(-EBUSY))
-		return "device busy";
-
-	if (IS_ERR(bdev))
-		return "failed to open device";
-
-	if (mode & FMODE_WRITE)
-		bdev_get_queue(bdev)->backing_dev_info->capabilities
-			|= BDI_CAP_STABLE_WRITES;
-
-	*ret = bdev;
-	return NULL;
-}
 
 static void bch2_sb_update(struct bch_fs *c)
 {
@@ -555,44 +531,55 @@ reread:
 	return NULL;
 }
 
-const char *bch2_read_super(const char *path,
-			    struct bch_opts opts,
-			    struct bch_sb_handle *ret)
+int bch2_read_super(const char *path, struct bch_opts *opts,
+		    struct bch_sb_handle *sb)
 {
-	u64 offset = opt_get(opts, sb);
+	u64 offset = opt_get(*opts, sb);
 	struct bch_sb_layout layout;
 	const char *err;
-	unsigned i;
+	__le64 *i;
+	int ret;
 
-	memset(ret, 0, sizeof(*ret));
-	ret->mode = FMODE_READ;
+	memset(sb, 0, sizeof(*sb));
+	sb->mode = FMODE_READ;
 
-	if (!opt_get(opts, noexcl))
-		ret->mode |= FMODE_EXCL;
+	if (!opt_get(*opts, noexcl))
+		sb->mode |= FMODE_EXCL;
 
-	if (!opt_get(opts, nochanges))
-		ret->mode |= FMODE_WRITE;
+	if (!opt_get(*opts, nochanges))
+		sb->mode |= FMODE_WRITE;
 
-	err = bch2_blkdev_open(path, ret->mode, ret, &ret->bdev);
-	if (err)
-		return err;
+	sb->bdev = blkdev_get_by_path(path, sb->mode, sb);
+	if (IS_ERR(sb->bdev) &&
+	    PTR_ERR(sb->bdev) == -EACCES &&
+	    opt_get(*opts, read_only)) {
+		sb->mode &= ~FMODE_WRITE;
+
+		sb->bdev = blkdev_get_by_path(path, sb->mode, sb);
+		if (!IS_ERR(sb->bdev))
+			opt_set(*opts, nochanges, true);
+	}
+
+	if (IS_ERR(sb->bdev))
+		return PTR_ERR(sb->bdev);
 
 	err = "cannot allocate memory";
-	if (__bch2_super_realloc(ret, 0))
+	ret = __bch2_super_realloc(sb, 0);
+	if (ret)
 		goto err;
 
+	ret = -EFAULT;
 	err = "dynamic fault";
 	if (bch2_fs_init_fault("read_super"))
 		goto err;
 
-	err = read_one_super(ret, offset);
+	ret = -EINVAL;
+	err = read_one_super(sb, offset);
 	if (!err)
 		goto got_super;
 
-	if (offset != BCH_SB_SECTOR) {
-		pr_err("error reading superblock: %s", err);
+	if (opt_defined(*opts, sb))
 		goto err;
-	}
 
 	pr_err("error reading default superblock: %s", err);
 
@@ -600,53 +587,57 @@ const char *bch2_read_super(const char *path,
 	 * Error reading primary superblock - read location of backup
 	 * superblocks:
 	 */
-	bio_reset(ret->bio);
-	ret->bio->bi_bdev = ret->bdev;
-	ret->bio->bi_iter.bi_sector = BCH_SB_LAYOUT_SECTOR;
-	ret->bio->bi_iter.bi_size = sizeof(struct bch_sb_layout);
-	bio_set_op_attrs(ret->bio, REQ_OP_READ, REQ_SYNC|REQ_META);
+	bio_reset(sb->bio);
+	sb->bio->bi_bdev = sb->bdev;
+	sb->bio->bi_iter.bi_sector = BCH_SB_LAYOUT_SECTOR;
+	sb->bio->bi_iter.bi_size = sizeof(struct bch_sb_layout);
+	bio_set_op_attrs(sb->bio, REQ_OP_READ, REQ_SYNC|REQ_META);
 	/*
 	 * use sb buffer to read layout, since sb buffer is page aligned but
 	 * layout won't be:
 	 */
-	bch2_bio_map(ret->bio, ret->sb);
+	bch2_bio_map(sb->bio, sb->sb);
 
 	err = "IO error";
-	if (submit_bio_wait(ret->bio))
+	if (submit_bio_wait(sb->bio))
 		goto err;
 
-	memcpy(&layout, ret->sb, sizeof(layout));
+	memcpy(&layout, sb->sb, sizeof(layout));
 	err = validate_sb_layout(&layout);
 	if (err)
 		goto err;
 
-	for (i = 0; i < layout.nr_superblocks; i++) {
-		u64 offset = le64_to_cpu(layout.sb_offset[i]);
+	for (i = layout.sb_offset;
+	     i < layout.sb_offset + layout.nr_superblocks; i++) {
+		offset = le64_to_cpu(*i);
 
-		if (offset == BCH_SB_SECTOR)
+		if (offset == opt_get(*opts, sb))
 			continue;
 
-		err = read_one_super(ret, offset);
+		err = read_one_super(sb, offset);
 		if (!err)
 			goto got_super;
 	}
-	goto err;
-got_super:
-	pr_debug("read sb version %llu, flags %llu, seq %llu, journal size %u",
-		 le64_to_cpu(ret->sb->version),
-		 le64_to_cpu(ret->sb->flags[0]),
-		 le64_to_cpu(ret->sb->seq),
-		 le32_to_cpu(ret->sb->u64s));
 
+	ret = -EINVAL;
+	goto err;
+
+got_super:
 	err = "Superblock block size smaller than device block size";
-	if (le16_to_cpu(ret->sb->block_size) << 9 <
-	    bdev_logical_block_size(ret->bdev))
+	ret = -EINVAL;
+	if (le16_to_cpu(sb->sb->block_size) << 9 <
+	    bdev_logical_block_size(sb->bdev))
 		goto err;
 
-	return NULL;
+	if (sb->mode & FMODE_WRITE)
+		bdev_get_queue(sb->bdev)->backing_dev_info->capabilities
+			|= BDI_CAP_STABLE_WRITES;
+
+	return 0;
 err:
-	bch2_free_super(ret);
-	return err;
+	bch2_free_super(sb);
+	pr_err("error reading superblock: %s", err);
+	return ret;
 }
 
 /* write superblock: */
@@ -1108,12 +1099,19 @@ err:
 	return ret;
 }
 
-static inline int __bch2_check_mark_super(struct bch_fs *c,
-				struct bch_replicas_cpu_entry search,
-				unsigned max_dev)
+int bch2_check_mark_super(struct bch_fs *c,
+			  enum bch_data_type data_type,
+			  struct bch_devs_list devs)
 {
+	struct bch_replicas_cpu_entry search;
 	struct bch_replicas_cpu *r, *gc_r;
+	unsigned max_dev;
 	bool marked;
+
+	if (!devs.nr)
+		return 0;
+
+	devlist_to_replicas(devs, data_type, &search, &max_dev);
 
 	rcu_read_lock();
 	r = rcu_dereference(c->replicas);
@@ -1124,32 +1122,6 @@ static inline int __bch2_check_mark_super(struct bch_fs *c,
 
 	return likely(marked) ? 0
 		: bch2_check_mark_super_slowpath(c, search, max_dev);
-}
-
-int bch2_check_mark_super(struct bch_fs *c, struct bkey_s_c_extent e,
-			  enum bch_data_type data_type)
-{
-	struct bch_replicas_cpu_entry search;
-	unsigned max_dev;
-
-	if (!bkey_to_replicas(e, data_type, &search, &max_dev))
-		return 0;
-
-	return __bch2_check_mark_super(c, search, max_dev);
-}
-
-int bch2_check_mark_super_devlist(struct bch_fs *c,
-				  struct bch_devs_list *devs,
-				  enum bch_data_type data_type)
-{
-	struct bch_replicas_cpu_entry search;
-	unsigned max_dev;
-
-	if (!devs->nr)
-		return 0;
-
-	devlist_to_replicas(*devs, data_type, &search, &max_dev);
-	return __bch2_check_mark_super(c, search, max_dev);
 }
 
 int bch2_replicas_gc_end(struct bch_fs *c, int err)
@@ -1435,11 +1407,18 @@ int bch2_sb_replicas_to_text(struct bch_sb_field_replicas *r, char *buf, size_t 
 
 /* Query replicas: */
 
-static bool __bch2_sb_has_replicas(struct bch_fs *c,
-				   struct bch_replicas_cpu_entry search,
-				   unsigned max_dev)
+bool bch2_sb_has_replicas(struct bch_fs *c,
+			  enum bch_data_type data_type,
+			  struct bch_devs_list devs)
 {
+	struct bch_replicas_cpu_entry search;
+	unsigned max_dev;
 	bool ret;
+
+	if (!devs.nr)
+		return true;
+
+	devlist_to_replicas(devs, data_type, &search, &max_dev);
 
 	rcu_read_lock();
 	ret = replicas_has_entry(rcu_dereference(c->replicas),
@@ -1447,31 +1426,6 @@ static bool __bch2_sb_has_replicas(struct bch_fs *c,
 	rcu_read_unlock();
 
 	return ret;
-}
-
-bool bch2_sb_has_replicas(struct bch_fs *c, struct bkey_s_c_extent e,
-			  enum bch_data_type data_type)
-{
-	struct bch_replicas_cpu_entry search;
-	unsigned max_dev;
-
-	if (!bkey_to_replicas(e, data_type, &search, &max_dev))
-		return true;
-
-	return __bch2_sb_has_replicas(c, search, max_dev);
-}
-
-bool bch2_sb_has_replicas_devlist(struct bch_fs *c, struct bch_devs_list *devs,
-				  enum bch_data_type data_type)
-{
-	struct bch_replicas_cpu_entry search;
-	unsigned max_dev;
-
-	if (!devs->nr)
-		return true;
-
-	devlist_to_replicas(*devs, data_type, &search, &max_dev);
-	return __bch2_sb_has_replicas(c, search, max_dev);
 }
 
 struct replicas_status __bch2_replicas_status(struct bch_fs *c,
@@ -1579,12 +1533,23 @@ unsigned bch2_dev_has_data(struct bch_fs *c, struct bch_dev *ca)
 		goto out;
 
 	for_each_cpu_replicas_entry(r, e)
-		if (replicas_test_dev(e, ca->dev_idx)) {
+		if (replicas_test_dev(e, ca->dev_idx))
 			ret |= 1 << e->data_type;
-			break;
-		}
 out:
 	rcu_read_unlock();
 
 	return ret;
+}
+
+/* Quotas: */
+
+static const char *bch2_sb_validate_quota(struct bch_sb *sb,
+					  struct bch_sb_field *f)
+{
+	struct bch_sb_field_quota *q = field_to_type(f, quota);
+
+	if (vstruct_bytes(&q->field) != sizeof(*q))
+		return "invalid field quota: wrong size";
+
+	return NULL;
 }

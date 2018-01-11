@@ -334,7 +334,8 @@ static void link_data(struct bch_fs *c, struct bch_inode_unpacked *dst,
 			die("error reserving space in new filesystem: %s",
 			    strerror(-ret));
 
-		bch2_check_mark_super(c, extent_i_to_s_c(e), false);
+		bch2_check_mark_super(c, BCH_DATA_USER,
+				      bch2_bkey_devs(extent_i_to_s_c(e).s_c));
 
 		ret = bch2_btree_insert(c, BTREE_ID_EXTENTS, &e->k_i,
 					&res, NULL, NULL, 0);
@@ -734,19 +735,18 @@ int cmd_migrate(int argc, char *argv[])
 	struct bch_opts opts = bch2_opts_empty();
 	struct bch_fs *c = NULL;
 	char *path[1] = { dev.path };
-	const char *err;
 
 	opt_set(opts, sb,	sb_offset);
 	opt_set(opts, nostart,	true);
 	opt_set(opts, noexcl,	true);
 
-	err = bch2_fs_open(path, 1, opts, &c);
-	if (err)
-		die("Error opening new filesystem: %s", err);
+	c = bch2_fs_open(path, 1, opts);
+	if (IS_ERR(c))
+		die("Error opening new filesystem: %s", strerror(-PTR_ERR(c)));
 
 	mark_unreserved_space(c, extents);
 
-	err = bch2_fs_start(c);
+	const char *err = bch2_fs_start(c);
 	if (err)
 		die("Error starting new filesystem: %s", err);
 
@@ -758,9 +758,9 @@ int cmd_migrate(int argc, char *argv[])
 	opt_set(opts, nostart,	false);
 	opt_set(opts, nochanges, true);
 
-	err = bch2_fs_open(path, 1, opts, &c);
-	if (err)
-		die("Error opening new filesystem: %s", err);
+	c = bch2_fs_open(path, 1, opts);
+	if (IS_ERR(c))
+		die("Error opening new filesystem: %s", strerror(-PTR_ERR(c)));
 
 	bch2_fs_stop(c);
 	printf("fsck complete\n");

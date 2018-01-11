@@ -9,16 +9,16 @@
 
 int cmd_unlock(int argc, char *argv[])
 {
+	struct bch_opts opts = bch2_opts_empty();
 	struct bch_sb_handle sb;
-	const char *err;
 	char *passphrase;
 
 	if (argc != 2)
 		die("Please supply a single device");
 
-	err = bch2_read_super(argv[1], bch2_opts_empty(), &sb);
-	if (err)
-		die("Error opening %s: %s", argv[1], err);
+	int ret = bch2_read_super(argv[1], &opts, &sb);
+	if (ret)
+		die("Error opening %s: %s", argv[1], strerror(-ret));
 
 	passphrase = read_passphrase("Enter passphrase: ");
 
@@ -32,16 +32,15 @@ int cmd_unlock(int argc, char *argv[])
 int cmd_set_passphrase(int argc, char *argv[])
 {
 	struct bch_opts opts = bch2_opts_empty();
-	struct bch_fs *c = NULL;
-	const char *err;
+	struct bch_fs *c;
 
 	if (argc < 2)
 		die("Please supply one or more devices");
 
 	opt_set(opts, nostart, true);
-	err = bch2_fs_open(argv + 1, argc - 1, opts, &c);
-	if (err)
-		die("Error opening %s: %s", argv[1], err);
+	c = bch2_fs_open(argv + 1, argc - 1, opts);
+	if (IS_ERR(c))
+		die("Error opening %s: %s", argv[1], strerror(-PTR_ERR(c)));
 
 	struct bch_sb_field_crypt *crypt = bch2_sb_get_crypt(c->disk_sb);
 	if (!crypt)
@@ -70,16 +69,15 @@ int cmd_set_passphrase(int argc, char *argv[])
 int cmd_remove_passphrase(int argc, char *argv[])
 {
 	struct bch_opts opts = bch2_opts_empty();
-	struct bch_fs *c = NULL;
-	const char *err;
+	struct bch_fs *c;
 
 	if (argc < 2)
 		die("Please supply one or more devices");
 
 	opt_set(opts, nostart, true);
-	err = bch2_fs_open(argv + 1, argc - 1, opts, &c);
-	if (err)
-		die("Error opening %s: %s", argv[1], err);
+	c = bch2_fs_open(argv + 1, argc - 1, opts);
+	if (IS_ERR(c))
+		die("Error opening %s: %s", argv[1], strerror(-PTR_ERR(c)));
 
 	struct bch_sb_field_crypt *crypt = bch2_sb_get_crypt(c->disk_sb);
 	if (!crypt)

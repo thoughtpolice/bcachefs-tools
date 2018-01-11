@@ -64,6 +64,7 @@ struct task_struct *kthread_create(int (*thread_fn)(void *data),
 	vsnprintf(p->comm, sizeof(p->comm), namefmt, args);
 	va_end(args);
 
+	p->flags	|= PF_KTHREAD;
 	p->thread_fn	= thread_fn;
 	p->thread_data	= thread_data;
 	p->state	= TASK_UNINTERRUPTIBLE;
@@ -73,6 +74,7 @@ struct task_struct *kthread_create(int (*thread_fn)(void *data),
 	init_completion(&p->exited);
 
 	pthread_create(&p->thread, NULL, kthread_start_fn, p);
+	pthread_setname_np(p->thread, p->comm);
 	return p;
 }
 

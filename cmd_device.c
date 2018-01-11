@@ -528,11 +528,9 @@ int cmd_device_resize(int argc, char *argv[])
 	} else {
 		printf("Doing offline resize of %s\n", dev);
 
-		struct bch_fs *c = NULL;
-		struct bch_opts opts = bch2_opts_empty();
-		const char *err = bch2_fs_open(&dev, 1, opts, &c);
-		if (err)
-			die("error opening %s: %s", dev, err);
+		struct bch_fs *c = bch2_fs_open(&dev, 1, bch2_opts_empty());
+		if (IS_ERR(c))
+			die("error opening %s: %s", dev, strerror(-PTR_ERR(c)));
 
 		struct bch_dev *ca, *resize = NULL;
 		unsigned i;

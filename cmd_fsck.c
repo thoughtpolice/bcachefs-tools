@@ -23,8 +23,6 @@ static void usage(void)
 int cmd_fsck(int argc, char *argv[])
 {
 	struct bch_opts opts = bch2_opts_empty();
-	struct bch_fs *c = NULL;
-	const char *err;
 	int opt;
 
 	opt_set(opts, degraded, true);
@@ -56,9 +54,9 @@ int cmd_fsck(int argc, char *argv[])
 	if (optind >= argc)
 		die("Please supply device(s) to check");
 
-	err = bch2_fs_open(argv + optind, argc - optind, opts, &c);
-	if (err)
-		die("error opening %s: %s", argv[optind], err);
+	struct bch_fs *c = bch2_fs_open(argv + optind, argc - optind, opts);
+	if (IS_ERR(c))
+		die("error opening %s: %s", argv[optind], strerror(-PTR_ERR(c)));
 
 	bch2_fs_stop(c);
 	return 0;

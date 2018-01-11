@@ -80,9 +80,7 @@ static void dump_one_device(struct bch_fs *c, struct bch_dev *ca, int fd)
 int cmd_dump(int argc, char *argv[])
 {
 	struct bch_opts opts = bch2_opts_empty();
-	struct bch_fs *c = NULL;
 	struct bch_dev *ca;
-	const char *err;
 	char *out = NULL;
 	unsigned i, nr_devices = 0;
 	bool force = false;
@@ -112,9 +110,9 @@ int cmd_dump(int argc, char *argv[])
 	if (!out)
 		die("Please supply output filename");
 
-	err = bch2_fs_open(argv + optind, argc - optind, opts, &c);
-	if (err)
-		die("error opening %s: %s", argv[optind], err);
+	struct bch_fs *c = bch2_fs_open(argv + optind, argc - optind, opts);
+	if (IS_ERR(c))
+		die("error opening %s: %s", argv[optind], strerror(-PTR_ERR(c)));
 
 	down_read(&c->gc_lock);
 
@@ -258,10 +256,8 @@ static const char * const list_modes[] = {
 int cmd_list(int argc, char *argv[])
 {
 	struct bch_opts opts = bch2_opts_empty();
-	struct bch_fs *c = NULL;
 	enum btree_id btree_id = BTREE_ID_EXTENTS;
 	struct bpos start = POS_MIN, end = POS_MAX;
-	const char *err;
 	u64 inum;
 	int mode = 0, opt;
 
@@ -307,9 +303,9 @@ int cmd_list(int argc, char *argv[])
 	if (optind >= argc)
 		die("Please supply device(s) to check");
 
-	err = bch2_fs_open(argv + optind, argc - optind, opts, &c);
-	if (err)
-		die("error opening %s: %s", argv[optind], err);
+	struct bch_fs *c = bch2_fs_open(argv + optind, argc - optind, opts);
+	if (IS_ERR(c))
+		die("error opening %s: %s", argv[optind], strerror(-PTR_ERR(c)));
 
 	switch (mode) {
 	case 0:

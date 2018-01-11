@@ -165,7 +165,7 @@ void bch2_journal_pin_add_if_older(struct journal *,
 				  struct journal_entry_pin *,
 				  struct journal_entry_pin *,
 				  journal_pin_flush_fn);
-void bch2_journal_flush_pins(struct journal *, u64);
+int bch2_journal_flush_pins(struct journal *, u64);
 int bch2_journal_flush_all_pins(struct journal *);
 
 struct closure;
@@ -390,7 +390,7 @@ static inline void bch2_journal_set_replay_done(struct journal *j)
 ssize_t bch2_journal_print_debug(struct journal *, char *);
 ssize_t bch2_journal_print_pins(struct journal *, char *);
 
-int bch2_dev_journal_alloc(struct bch_dev *);
+int bch2_dev_journal_alloc(struct bch_fs *, struct bch_dev *);
 
 void bch2_dev_journal_stop(struct journal *, struct bch_dev *);
 void bch2_fs_journal_stop(struct journal *);

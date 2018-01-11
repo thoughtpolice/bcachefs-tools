@@ -258,6 +258,11 @@ static u64 reserve_factor(u64 r)
 	return r + (round_up(r, (1 << RESERVE_FACTOR)) >> RESERVE_FACTOR);
 }
 
+static u64 avail_factor(u64 r)
+{
+	return (r << RESERVE_FACTOR) / (1 << RESERVE_FACTOR) + 1;
+}
+
 u64 __bch2_fs_sectors_used(struct bch_fs *c, struct bch_fs_usage stats)
 {
 	struct fs_usage_sum sum = __fs_usage_sum(stats);
@@ -268,6 +273,11 @@ u64 __bch2_fs_sectors_used(struct bch_fs *c, struct bch_fs_usage stats)
 u64 bch2_fs_sectors_used(struct bch_fs *c, struct bch_fs_usage stats)
 {
 	return min(c->capacity, __bch2_fs_sectors_used(c, stats));
+}
+
+u64 bch2_fs_sectors_free(struct bch_fs *c, struct bch_fs_usage stats)
+{
+	return avail_factor(c->capacity - bch2_fs_sectors_used(c, stats));
 }
 
 static inline int is_unavailable_bucket(struct bucket_mark m)
@@ -382,7 +392,6 @@ bool bch2_invalidate_bucket(struct bch_fs *c, struct bch_dev *ca,
 		}
 
 		new.owned_by_allocator	= 1;
-		new.touched_this_mount	= 1;
 		new.data_type		= 0;
 		new.cached_sectors	= 0;
 		new.dirty_sectors	= 0;
@@ -393,29 +402,6 @@ bool bch2_invalidate_bucket(struct bch_fs *c, struct bch_dev *ca,
 	if (!old->owned_by_allocator && old->cached_sectors)
 		trace_invalidate(ca, bucket_to_sector(ca, b),
 				 old->cached_sectors);
-	return true;
-}
-
-bool bch2_mark_alloc_bucket_startup(struct bch_fs *c, struct bch_dev *ca,
-				    size_t b)
-{
-	struct bucket *g;
-	struct bucket_mark new, old;
-
-	lg_local_lock(&c->usage_lock);
-	g = bucket(ca, b);
-
-	old = bucket_data_cmpxchg(c, ca, g, new, ({
-		if (!is_startup_available_bucket(new)) {
-			lg_local_unlock(&c->usage_lock);
-			return false;
-		}
-
-		new.owned_by_allocator	= 1;
-		new.touched_this_mount	= 1;
-	}));
-	lg_local_unlock(&c->usage_lock);
-
 	return true;
 }
 
@@ -436,7 +422,6 @@ void bch2_mark_alloc_bucket(struct bch_fs *c, struct bch_dev *ca,
 	}
 
 	old = bucket_data_cmpxchg(c, ca, g, new, ({
-		new.touched_this_mount	= 1;
 		new.owned_by_allocator	= owned_by_allocator;
 	}));
 	lg_local_unlock(&c->usage_lock);
@@ -481,7 +466,6 @@ void bch2_mark_metadata_bucket(struct bch_fs *c, struct bch_dev *ca,
 		saturated_add(ca, new.dirty_sectors, sectors,
 			      GC_MAX_SECTORS_USED);
 		new.data_type		= type;
-		new.touched_this_mount	= 1;
 	}));
 	lg_local_unlock(&c->usage_lock);
 
@@ -539,7 +523,6 @@ static void bch2_mark_pointer(struct bch_fs *c,
 	if (flags & BCH_BUCKET_MARK_GC_WILL_VISIT) {
 		if (journal_seq)
 			bucket_cmpxchg(g, new, ({
-				new.touched_this_mount	= 1;
 				new.journal_seq_valid	= 1;
 				new.journal_seq		= journal_seq;
 			}));
@@ -587,8 +570,6 @@ static void bch2_mark_pointer(struct bch_fs *c,
 		} else {
 			new.data_type = data_type;
 		}
-
-		new.touched_this_mount	= 1;
 
 		if (flags & BCH_BUCKET_MARK_NOATOMIC) {
 			g->_mark = new;
@@ -694,17 +675,12 @@ void bch2_mark_key(struct bch_fs *c, struct bkey_s_c k,
 
 static u64 __recalc_sectors_available(struct bch_fs *c)
 {
-	u64 avail;
 	int cpu;
 
 	for_each_possible_cpu(cpu)
 		per_cpu_ptr(c->usage_percpu, cpu)->available_cache = 0;
 
-	avail = c->capacity - bch2_fs_sectors_used(c, bch2_fs_usage_read(c));
-
-	avail <<= RESERVE_FACTOR;
-	avail /= (1 << RESERVE_FACTOR) + 1;
-	return avail;
+	return bch2_fs_sectors_free(c, bch2_fs_usage_read(c));
 }
 
 /* Used by gc when it's starting: */
@@ -839,7 +815,7 @@ static void buckets_free_rcu(struct rcu_head *rcu)
 
 int bch2_dev_buckets_resize(struct bch_fs *c, struct bch_dev *ca, u64 nbuckets)
 {
-	struct bucket_array *buckets = NULL, *old_buckets;
+	struct bucket_array *buckets = NULL, *old_buckets = NULL;
 	unsigned long *buckets_dirty = NULL;
 	u8 *oldest_gens = NULL;
 	alloc_fifo	free[RESERVE_NR];

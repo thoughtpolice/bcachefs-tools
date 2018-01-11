@@ -15,6 +15,7 @@
 #include "io.h"
 #include "journal.h"
 #include "keylist.h"
+#include "quota.h"
 #include "super.h"
 #include "xattr.h"
 
@@ -116,6 +117,7 @@ int __must_check __bch2_write_inode(struct bch_fs *c,
 		inode_u.bi_mode	= inode->v.i_mode;
 		inode_u.bi_uid	= i_uid_read(&inode->v);
 		inode_u.bi_gid	= i_gid_read(&inode->v);
+		inode_u.bi_project = inode->ei_qid.q[QTYP_PRJ];
 		inode_u.bi_nlink= i_nlink - nlink_bias(inode->v.i_mode);
 		inode_u.bi_dev	= inode->v.i_rdev;
 		inode_u.bi_atime= timespec_to_bch2_time(c, inode->v.i_atime);
@@ -131,8 +133,10 @@ int __must_check __bch2_write_inode(struct bch_fs *c,
 				BTREE_INSERT_ENTRY(&iter, &inode_p.inode.k_i));
 	} while (ret == -EINTR);
 
-	if (!ret)
+	if (!ret) {
 		inode->ei_inode = inode_u;
+		inode->ei_qid	= bch_qid(&inode_u);
+	}
 out:
 	bch2_btree_iter_unlock(&iter);
 
@@ -215,7 +219,7 @@ static struct bch_inode_info *bch2_vfs_inode_create(struct bch_fs *c,
 	ret = posix_acl_create(&dir->v, &inode->v.i_mode, &default_acl, &acl);
 	if (ret) {
 		make_bad_inode(&inode->v);
-		goto err;
+		goto err_make_bad;
 	}
 #endif
 
@@ -225,16 +229,20 @@ static struct bch_inode_info *bch2_vfs_inode_create(struct bch_fs *c,
 			inode->v.i_mode, rdev,
 			&dir->ei_inode);
 
+	inode_u.bi_project = dir->ei_qid.q[QTYP_PRJ];
+
+	ret = bch2_quota_acct(c, bch_qid(&inode_u), Q_INO, 1, BCH_QUOTA_PREALLOC);
+	if (ret) {
+		make_bad_inode(&inode->v);
+		goto err_make_bad;
+	}
+
 	ret = bch2_inode_create(c, &inode_u,
 				BLOCKDEV_INODE_MAX, 0,
 				&c->unused_inode_hint);
 	if (unlikely(ret)) {
-		/*
-		 * indicate to bch_evict_inode that the inode was never actually
-		 * created:
-		 */
-		make_bad_inode(&inode->v);
-		goto err;
+		bch2_quota_acct(c, bch_qid(&inode_u), Q_INO, -1, BCH_QUOTA_WARN);
+		goto err_make_bad;
 	}
 
 	bch2_vfs_inode_init(c, inode, &inode_u);
@@ -257,6 +265,12 @@ out:
 	posix_acl_release(default_acl);
 	posix_acl_release(acl);
 	return inode;
+err_make_bad:
+	/*
+	 * indicate to bch_evict_inode that the inode was never actually
+	 * created:
+	 */
+	make_bad_inode(&inode->v);
 err:
 	clear_nlink(&inode->v);
 	iput(&inode->v);
@@ -604,11 +618,53 @@ static int bch2_rename2(struct inode *old_vdir, struct dentry *old_dentry,
 	return bch2_rename(c, old_dir, old_dentry, new_dir, new_dentry);
 }
 
+static int bch2_setattr_nonsize(struct bch_inode_info *inode, struct iattr *iattr)
+{
+	struct bch_fs *c = inode->v.i_sb->s_fs_info;
+	struct bch_qid qid = inode->ei_qid;
+	unsigned qtypes = 0;
+	int ret;
+
+	mutex_lock(&inode->ei_update_lock);
+
+	if (c->opts.usrquota &&
+	    (iattr->ia_valid & ATTR_UID) &&
+	    !uid_eq(iattr->ia_uid, inode->v.i_uid)) {
+		qid.q[QTYP_USR] = from_kuid(&init_user_ns, iattr->ia_uid),
+		qtypes |= 1 << QTYP_USR;
+	}
+
+	if (c->opts.grpquota &&
+	    (iattr->ia_valid & ATTR_GID) &&
+	    !gid_eq(iattr->ia_gid, inode->v.i_gid)) {
+		qid.q[QTYP_GRP] = from_kgid(&init_user_ns, iattr->ia_gid);
+		qtypes |= 1 << QTYP_GRP;
+	}
+
+	if (qtypes) {
+		ret = bch2_quota_transfer(c, qtypes, qid, inode->ei_qid,
+					  inode->v.i_blocks);
+		if (ret)
+			goto out_unlock;
+	}
+
+	setattr_copy(&inode->v, iattr);
+
+	ret = bch2_write_inode(c, inode);
+out_unlock:
+	mutex_unlock(&inode->ei_update_lock);
+
+	if (!ret &&
+	    iattr->ia_valid & ATTR_MODE)
+		ret = posix_acl_chmod(&inode->v, inode->v.i_mode);
+
+	return ret;
+}
+
 static int bch2_setattr(struct dentry *dentry, struct iattr *iattr)
 {
 	struct bch_inode_info *inode = to_bch_ei(dentry->d_inode);
-	struct bch_fs *c = inode->v.i_sb->s_fs_info;
-	int ret = 0;
+	int ret;
 
 	lockdep_assert_held(&inode->v.i_rwsem);
 
@@ -616,22 +672,9 @@ static int bch2_setattr(struct dentry *dentry, struct iattr *iattr)
 	if (ret)
 		return ret;
 
-	if (iattr->ia_valid & ATTR_SIZE) {
-		ret = bch2_truncate(inode, iattr);
-	} else {
-		mutex_lock(&inode->ei_update_lock);
-		setattr_copy(&inode->v, iattr);
-		ret = bch2_write_inode(c, inode);
-		mutex_unlock(&inode->ei_update_lock);
-	}
-
-	if (unlikely(ret))
-		return ret;
-
-	if (iattr->ia_valid & ATTR_MODE)
-		ret = posix_acl_chmod(&inode->v, inode->v.i_mode);
-
-	return ret;
+	return iattr->ia_valid & ATTR_SIZE
+		? bch2_truncate(inode, iattr)
+		: bch2_setattr_nonsize(inode, iattr);
 }
 
 static int bch2_tmpfile(struct inode *vdir, struct dentry *dentry, umode_t mode)
@@ -910,6 +953,7 @@ static void bch2_vfs_inode_init(struct bch_fs *c,
 	inode->v.i_ctime	= bch2_time_to_timespec(c, bi->bi_ctime);
 
 	inode->ei_journal_seq	= 0;
+	inode->ei_qid		= bch_qid(bi);
 	inode->ei_str_hash	= bch2_hash_info_init(c, bi);
 	inode->ei_inode		= *bi;
 
@@ -995,6 +1039,10 @@ static void bch2_evict_inode(struct inode *vinode)
 	clear_inode(&inode->v);
 
 	if (!inode->v.i_nlink && !is_bad_inode(&inode->v)) {
+		bch2_quota_acct(c, inode->ei_qid, Q_SPC, -((s64) inode->v.i_blocks),
+				BCH_QUOTA_WARN);
+		bch2_quota_acct(c, inode->ei_qid, Q_INO, -1,
+				BCH_QUOTA_WARN);
 		bch2_inode_rm(c, inode->v.i_ino);
 		atomic_long_dec(&c->nr_inodes);
 	}
@@ -1009,8 +1057,7 @@ static int bch2_statfs(struct dentry *dentry, struct kstatfs *buf)
 	buf->f_type	= BCACHEFS_STATFS_MAGIC;
 	buf->f_bsize	= sb->s_blocksize;
 	buf->f_blocks	= c->capacity >> PAGE_SECTOR_SHIFT;
-	buf->f_bfree	= (c->capacity -
-			   bch2_fs_sectors_used(c, bch2_fs_usage_read(c))) >>
+	buf->f_bfree	= bch2_fs_sectors_free(c, bch2_fs_usage_read(c)) >>
 			   PAGE_SECTOR_SHIFT;
 	buf->f_bavail	= buf->f_bfree;
 	buf->f_files	= atomic_long_read(&c->nr_inodes);
@@ -1037,17 +1084,83 @@ static int bch2_sync_fs(struct super_block *sb, int wait)
 	return bch2_journal_flush(&c->journal);
 }
 
+static struct bch_fs *bch2_path_to_fs(const char *dev)
+{
+	struct bch_fs *c;
+	struct block_device *bdev = lookup_bdev(dev);
+
+	if (IS_ERR(bdev))
+		return ERR_CAST(bdev);
+
+	c = bch2_bdev_to_fs(bdev);
+	bdput(bdev);
+	return c ?: ERR_PTR(-ENOENT);
+}
+
+static struct bch_fs *__bch2_open_as_blockdevs(const char *dev_name, char * const *devs,
+					       unsigned nr_devs, struct bch_opts opts)
+{
+	struct bch_fs *c, *c1, *c2;
+	size_t i;
+
+	if (!nr_devs)
+		return ERR_PTR(-EINVAL);
+
+	c = bch2_fs_open(devs, nr_devs, opts);
+
+	if (IS_ERR(c) && PTR_ERR(c) == -EBUSY) {
+		/*
+		 * Already open?
+		 * Look up each block device, make sure they all belong to a
+		 * filesystem and they all belong to the _same_ filesystem
+		 */
+
+		c1 = bch2_path_to_fs(devs[0]);
+		if (!c1)
+			return c;
+
+		for (i = 1; i < nr_devs; i++) {
+			c2 = bch2_path_to_fs(devs[i]);
+			if (!IS_ERR(c2))
+				closure_put(&c2->cl);
+
+			if (c1 != c2) {
+				closure_put(&c1->cl);
+				return c;
+			}
+		}
+
+		c = c1;
+	}
+
+	if (IS_ERR(c))
+		return c;
+
+	mutex_lock(&c->state_lock);
+
+	if (!bch2_fs_running(c)) {
+		mutex_unlock(&c->state_lock);
+		closure_put(&c->cl);
+		pr_err("err mounting %s: incomplete filesystem", dev_name);
+		return ERR_PTR(-EINVAL);
+	}
+
+	mutex_unlock(&c->state_lock);
+
+	set_bit(BCH_FS_BDEV_MOUNTED, &c->flags);
+	return c;
+}
+
 static struct bch_fs *bch2_open_as_blockdevs(const char *_dev_name,
 					     struct bch_opts opts)
 {
-	size_t nr_devs = 0, i = 0;
-	char *dev_name, *s, **devs;
-	struct bch_fs *c = NULL;
-	const char *err = "cannot allocate memory";
+	char *dev_name = NULL, **devs = NULL, *s;
+	struct bch_fs *c = ERR_PTR(-ENOMEM);
+	size_t i, nr_devs = 0;
 
 	dev_name = kstrdup(_dev_name, GFP_KERNEL);
 	if (!dev_name)
-		return NULL;
+		goto err;
 
 	for (s = dev_name; s; s = strchr(s + 1, ':'))
 		nr_devs++;
@@ -1061,57 +1174,10 @@ static struct bch_fs *bch2_open_as_blockdevs(const char *_dev_name,
 	     (s = strchr(s, ':')) && (*s++ = '\0'))
 		devs[i++] = s;
 
-	err = bch2_fs_open(devs, nr_devs, opts, &c);
-	if (err) {
-		/*
-		 * Already open?
-		 * Look up each block device, make sure they all belong to a
-		 * filesystem and they all belong to the _same_ filesystem
-		 */
-
-		for (i = 0; i < nr_devs; i++) {
-			struct block_device *bdev = lookup_bdev(devs[i]);
-			struct bch_fs *c2;
-
-			if (IS_ERR(bdev))
-				goto err;
-
-			c2 = bch2_bdev_to_fs(bdev);
-			bdput(bdev);
-
-			if (!c)
-				c = c2;
-			else if (c2)
-				closure_put(&c2->cl);
-
-			if (!c)
-				goto err;
-			if (c != c2) {
-				closure_put(&c->cl);
-				goto err;
-			}
-		}
-
-		mutex_lock(&c->state_lock);
-
-		if (!bch2_fs_running(c)) {
-			mutex_unlock(&c->state_lock);
-			closure_put(&c->cl);
-			err = "incomplete filesystem";
-			c = NULL;
-			goto err;
-		}
-
-		mutex_unlock(&c->state_lock);
-	}
-
-	set_bit(BCH_FS_BDEV_MOUNTED, &c->flags);
+	c = __bch2_open_as_blockdevs(_dev_name, devs, nr_devs, opts);
 err:
 	kfree(devs);
 	kfree(dev_name);
-
-	if (!c)
-		pr_err("bch_fs_open err %s", err);
 	return c;
 }
 
@@ -1234,8 +1300,8 @@ static struct dentry *bch2_mount(struct file_system_type *fs_type,
 		return ERR_PTR(ret);
 
 	c = bch2_open_as_blockdevs(dev_name, opts);
-	if (!c)
-		return ERR_PTR(-ENOENT);
+	if (IS_ERR(c))
+		return ERR_CAST(c);
 
 	sb = sget(fs_type, bch2_test_super, bch2_set_super, flags|MS_NOSEC, c);
 	if (IS_ERR(sb)) {
@@ -1261,6 +1327,10 @@ static struct dentry *bch2_mount(struct file_system_type *fs_type,
 	sb->s_maxbytes		= MAX_LFS_FILESIZE;
 	sb->s_op		= &bch_super_operations;
 	sb->s_export_op		= &bch_export_ops;
+#ifdef CONFIG_BCACHEFS_QUOTA
+	sb->s_qcop		= &bch2_quotactl_operations;
+	sb->s_quota_types	= QTYPE_MASK_USR|QTYPE_MASK_GRP|QTYPE_MASK_PRJ;
+#endif
 	sb->s_xattr		= bch2_xattr_handlers;
 	sb->s_magic		= BCACHEFS_STATFS_MAGIC;
 	sb->s_time_gran		= c->sb.time_precision;

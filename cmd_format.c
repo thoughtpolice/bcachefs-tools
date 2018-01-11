@@ -328,11 +328,11 @@ int cmd_show_super(int argc, char *argv[])
 	if (argc)
 		die("too many arguments");
 
-	const char *err;
+	struct bch_opts opts = bch2_opts_empty();
 	struct bch_sb_handle sb;
-	err = bch2_read_super(dev, bch2_opts_empty(), &sb);
-	if (err)
-		die("Error opening %s: %s", dev, err);
+	int ret = bch2_read_super(dev, &opts, &sb);
+	if (ret)
+		die("Error opening %s: %s", dev, strerror(-ret));
 
 	bch2_sb_print(sb.sb, print_layout, fields, HUMAN_READABLE);
 	bch2_free_super(&sb);

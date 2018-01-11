@@ -148,22 +148,23 @@ int bch2_btree_mark_key_initial(struct bch_fs *c, enum bkey_type type,
 {
 	enum bch_data_type data_type = type == BKEY_TYPE_BTREE
 		? BCH_DATA_BTREE : BCH_DATA_USER;
+	struct bch_devs_list devs = bch2_bkey_devs(k);
 	int ret = 0;
+
+	if (test_bit(BCH_FS_REBUILD_REPLICAS, &c->flags) ||
+	    fsck_err_on(!bch2_sb_has_replicas(c, data_type, devs), c,
+			"superblock not marked as containing replicas (type %u)",
+			data_type)) {
+		ret = bch2_check_mark_super(c, data_type, devs);
+		if (ret)
+			return ret;
+	}
 
 	switch (k.k->type) {
 	case BCH_EXTENT:
 	case BCH_EXTENT_CACHED: {
 		struct bkey_s_c_extent e = bkey_s_c_to_extent(k);
 		const struct bch_extent_ptr *ptr;
-
-		if (test_bit(BCH_FS_REBUILD_REPLICAS, &c->flags) ||
-		    fsck_err_on(!bch2_sb_has_replicas(c, e, data_type), c,
-				"superblock not marked as containing replicas (type %u)",
-				data_type)) {
-			ret = bch2_check_mark_super(c, e, data_type);
-			if (ret)
-				return ret;
-		}
 
 		extent_for_each_ptr(e, ptr) {
 			struct bch_dev *ca = bch_dev_bkey_exists(c, ptr->dev);
@@ -284,7 +285,8 @@ static int bch2_gc_btree(struct bch_fs *c, enum btree_id btree_id)
 	mutex_lock(&c->btree_root_lock);
 
 	b = c->btree_roots[btree_id].b;
-	bch2_gc_mark_key(c, BKEY_TYPE_BTREE, bkey_i_to_s_c(&b->key), 0);
+	if (!btree_node_fake(b))
+		bch2_gc_mark_key(c, BKEY_TYPE_BTREE, bkey_i_to_s_c(&b->key), 0);
 	gc_pos_set(c, gc_pos_btree_root(b->btree_id));
 
 	mutex_unlock(&c->btree_root_lock);
@@ -991,8 +993,10 @@ static int bch2_initial_gc_btree(struct bch_fs *c, enum btree_id id)
 	if (!c->btree_roots[id].b)
 		return 0;
 
-	ret = bch2_btree_mark_key_initial(c, BKEY_TYPE_BTREE,
-			   bkey_i_to_s_c(&c->btree_roots[id].b->key));
+	b = c->btree_roots[id].b;
+	if (!btree_node_fake(b))
+		ret = bch2_btree_mark_key_initial(c, BKEY_TYPE_BTREE,
+						  bkey_i_to_s_c(&b->key));
 	if (ret)
 		return ret;
 

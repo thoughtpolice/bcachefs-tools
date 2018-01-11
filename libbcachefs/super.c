@@ -29,6 +29,7 @@
 #include "move.h"
 #include "migrate.h"
 #include "movinggc.h"
+#include "quota.h"
 #include "super.h"
 #include "super-io.h"
 #include "sysfs.h"
@@ -214,13 +215,14 @@ static void __bch2_fs_read_only(struct bch_fs *c)
 	 */
 	bch2_journal_flush_all_pins(&c->journal);
 
-	if (!bch2_journal_error(&c->journal))
-		bch2_btree_verify_flushed(c);
-
 	for_each_member_device(ca, c, i)
 		bch2_dev_allocator_stop(ca);
 
 	bch2_fs_journal_stop(&c->journal);
+
+	if (!bch2_journal_error(&c->journal) &&
+	    !test_bit(BCH_FS_ERROR, &c->flags))
+		bch2_btree_verify_flushed(c);
 
 	for_each_member_device(ca, c, i)
 		bch2_dev_allocator_remove(c, ca);
@@ -366,6 +368,7 @@ err:
 
 static void bch2_fs_free(struct bch_fs *c)
 {
+	bch2_fs_quota_exit(c);
 	bch2_fs_fsio_exit(c);
 	bch2_fs_encryption_exit(c);
 	bch2_fs_btree_cache_exit(c);
@@ -380,7 +383,7 @@ static void bch2_fs_free(struct bch_fs *c)
 	bioset_exit(&c->bio_write);
 	bioset_exit(&c->bio_read_split);
 	bioset_exit(&c->bio_read);
-	bioset_exit(&c->btree_read_bio);
+	bioset_exit(&c->btree_bio);
 	mempool_exit(&c->btree_interior_update_pool);
 	mempool_exit(&c->btree_reserve_pool);
 	mempool_exit(&c->fill_iter);
@@ -492,6 +495,7 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 
 	bch2_fs_allocator_init(c);
 	bch2_fs_tiering_init(c);
+	bch2_fs_quota_init(c);
 
 	INIT_LIST_HEAD(&c->list);
 
@@ -561,8 +565,9 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	    mempool_init_kmalloc_pool(&c->btree_interior_update_pool, 1,
 				      sizeof(struct btree_update)) ||
 	    mempool_init_kmalloc_pool(&c->fill_iter, 1, iter_size) ||
-	    bioset_init(&c->btree_read_bio, 1,
-			offsetof(struct btree_read_bio, bio),
+	    bioset_init(&c->btree_bio, 1,
+			max(offsetof(struct btree_read_bio, bio),
+			    offsetof(struct btree_write_bio, wbio.bio)),
 			BIOSET_NEED_BVECS) ||
 	    bioset_init(&c->bio_read, 1, offsetof(struct bch_read_bio, bio),
 			BIOSET_NEED_BVECS) ||
@@ -671,12 +676,9 @@ static const char *__bch2_fs_start(struct bch_fs *c)
 	struct bch_dev *ca;
 	LIST_HEAD(journal);
 	struct jset *j;
-	struct closure cl;
 	time64_t now;
 	unsigned i;
 	int ret = -EINVAL;
-
-	closure_init_stack(&cl);
 
 	mutex_lock(&c->state_lock);
 
@@ -705,13 +707,13 @@ static const char *__bch2_fs_start(struct bch_fs *c)
 			unsigned level;
 			struct bkey_i *k;
 
-			err = "missing btree root";
 			k = bch2_journal_find_btree_root(c, j, i, &level);
-			if (!k && i < BTREE_ID_ALLOC)
-				goto err;
-
 			if (!k)
 				continue;
+
+			err = "invalid btree root pointer";
+			if (IS_ERR(k))
+				goto err;
 
 			err = "error reading btree root";
 			if (bch2_btree_root_read(c, i, k, level)) {
@@ -721,6 +723,10 @@ static const char *__bch2_fs_start(struct bch_fs *c)
 				mustfix_fsck_err(c, "error reading btree root");
 			}
 		}
+
+		for (i = 0; i < BTREE_ID_NR; i++)
+			if (!c->btree_roots[i].b)
+				bch2_btree_root_alloc(c, i);
 
 		err = "error reading allocation information";
 		ret = bch2_alloc_read(c, &journal);
@@ -739,14 +745,6 @@ static const char *__bch2_fs_start(struct bch_fs *c)
 		if (c->opts.noreplay)
 			goto recovery_done;
 
-		err = "cannot allocate new btree root";
-		for (i = 0; i < BTREE_ID_NR; i++)
-			if (!c->btree_roots[i].b &&
-			    bch2_btree_root_alloc(c, i, &cl))
-				goto err;
-
-		closure_sync(&cl);
-
 		/*
 		 * bch2_journal_start() can't happen sooner, or btree_gc_finish()
 		 * will give spurious errors about oldest_gen > bucket_gen -
@@ -754,12 +752,9 @@ static const char *__bch2_fs_start(struct bch_fs *c)
 		 */
 		bch2_journal_start(c);
 
-		err = "error starting allocator thread";
-		for_each_rw_member(ca, c, i)
-			if (bch2_dev_allocator_start(ca)) {
-				percpu_ref_put(&ca->io_ref);
-				goto err;
-			}
+		err = "error starting allocator";
+		if (bch2_fs_allocator_start(c))
+			goto err;
 
 		bch_verbose(c, "starting journal replay:");
 		err = "journal replay failed";
@@ -777,6 +772,14 @@ static const char *__bch2_fs_start(struct bch_fs *c)
 		if (ret)
 			goto err;
 		bch_verbose(c, "fsck done");
+
+		if (c->opts.usrquota || c->opts.grpquota) {
+			bch_verbose(c, "reading quotas:");
+			ret = bch2_fs_quota_read(c);
+			if (ret)
+				goto err;
+			bch_verbose(c, "quotas done");
+		}
 	} else {
 		struct bch_inode_unpacked inode;
 		struct bkey_inode_buf packed_inode;
@@ -784,6 +787,7 @@ static const char *__bch2_fs_start(struct bch_fs *c)
 		bch_notice(c, "initializing new filesystem");
 
 		set_bit(BCH_FS_ALLOC_READ_DONE, &c->flags);
+		set_bit(BCH_FS_BRAND_NEW_FS, &c->flags);
 
 		ret = bch2_initial_gc(c, &journal);
 		if (ret)
@@ -791,15 +795,15 @@ static const char *__bch2_fs_start(struct bch_fs *c)
 
 		err = "unable to allocate journal buckets";
 		for_each_rw_member(ca, c, i)
-			if (bch2_dev_journal_alloc(ca)) {
+			if (bch2_dev_journal_alloc(c, ca)) {
 				percpu_ref_put(&ca->io_ref);
 				goto err;
 			}
 
-		err = "cannot allocate new btree root";
+		clear_bit(BCH_FS_BRAND_NEW_FS, &c->flags);
+
 		for (i = 0; i < BTREE_ID_NR; i++)
-			if (bch2_btree_root_alloc(c, i, &cl))
-				goto err;
+			bch2_btree_root_alloc(c, i);
 
 		/*
 		 * journal_res_get() will crash if called before this has
@@ -808,15 +812,9 @@ static const char *__bch2_fs_start(struct bch_fs *c)
 		bch2_journal_start(c);
 		bch2_journal_set_replay_done(&c->journal);
 
-		err = "error starting allocator thread";
-		for_each_rw_member(ca, c, i)
-			if (bch2_dev_allocator_start(ca)) {
-				percpu_ref_put(&ca->io_ref);
-				goto err;
-			}
-
-		/* Wait for new btree roots to be written: */
-		closure_sync(&cl);
+		err = "error starting allocator";
+		if (bch2_fs_allocator_start(c))
+			goto err;
 
 		bch2_inode_init(c, &inode, 0, 0,
 			       S_IFDIR|S_IRWXU|S_IRUGO|S_IXUGO, 0, NULL);
@@ -829,6 +827,12 @@ static const char *__bch2_fs_start(struct bch_fs *c)
 				     &packed_inode.inode.k_i,
 				     NULL, NULL, NULL, 0))
 			goto err;
+
+		if (c->opts.usrquota || c->opts.grpquota) {
+			ret = bch2_fs_quota_read(c);
+			if (ret)
+				goto err;
+		}
 
 		err = "error writing first journal entry";
 		if (bch2_journal_meta(&c->journal))
@@ -867,8 +871,6 @@ out:
 	return err;
 err:
 fsck_err:
-	closure_sync(&cl);
-
 	switch (ret) {
 	case BCH_FSCK_ERRORS_NOT_FIXED:
 		bch_err(c, "filesystem contains errors: please report this to the developers");
@@ -1107,6 +1109,8 @@ static int __bch2_dev_online(struct bch_fs *c, struct bch_sb_handle *sb)
 	struct bch_dev *ca;
 	int ret;
 
+	lockdep_assert_held(&c->state_lock);
+
 	if (le64_to_cpu(sb->sb->seq) >
 	    le64_to_cpu(c->disk_sb->seq))
 		bch2_sb_to_fs(c, sb->sb);
@@ -1153,7 +1157,9 @@ static int __bch2_dev_online(struct bch_fs *c, struct bch_sb_handle *sb)
 		bdevname(ca->disk_sb.bdev, c->name);
 	bdevname(ca->disk_sb.bdev, ca->name);
 
+	mutex_lock(&c->sb_lock);
 	bch2_mark_dev_superblock(c, ca, BCH_BUCKET_MARK_MAY_MAKE_UNAVAILABLE);
+	mutex_unlock(&c->sb_lock);
 
 	if (ca->mi.state == BCH_MEMBER_STATE_RW)
 		bch2_dev_allocator_add(c, ca);
@@ -1430,17 +1436,18 @@ err:
 /* Add new device to running filesystem: */
 int bch2_dev_add(struct bch_fs *c, const char *path)
 {
+	struct bch_opts opts = bch2_opts_empty();
 	struct bch_sb_handle sb;
 	const char *err;
 	struct bch_dev *ca = NULL;
 	struct bch_sb_field_members *mi, *dev_mi;
 	struct bch_member saved_mi;
 	unsigned dev_idx, nr_devices, u64s;
-	int ret = -EINVAL;
+	int ret;
 
-	err = bch2_read_super(path, bch2_opts_empty(), &sb);
-	if (err)
-		return -EINVAL;
+	ret = bch2_read_super(path, &opts, &sb);
+	if (ret)
+		return ret;
 
 	err = bch2_sb_validate(&sb);
 	if (err)
@@ -1479,12 +1486,12 @@ have_slot:
 		sizeof(struct bch_member) * nr_devices) / sizeof(u64);
 	err = "no space in superblock for member info";
 
-	mi = bch2_fs_sb_resize_members(c, u64s);
-	if (!mi)
-		goto err_unlock;
-
 	dev_mi = bch2_sb_resize_members(&sb, u64s);
 	if (!dev_mi)
+		goto err_unlock;
+
+	mi = bch2_fs_sb_resize_members(c, u64s);
+	if (!mi)
 		goto err_unlock;
 
 	memcpy(dev_mi, mi, u64s * sizeof(u64));
@@ -1499,29 +1506,29 @@ have_slot:
 	c->disk_sb->nr_devices	= nr_devices;
 	c->sb.nr_devices	= nr_devices;
 
+	bch2_write_super(c);
+	mutex_unlock(&c->sb_lock);
+
 	if (bch2_dev_alloc(c, dev_idx)) {
 		err = "cannot allocate memory";
 		ret = -ENOMEM;
-		goto err_unlock;
+		goto err;
 	}
 
 	if (__bch2_dev_online(c, &sb)) {
 		err = "bch2_dev_online() error";
 		ret = -ENOMEM;
-		goto err_unlock;
+		goto err;
 	}
-
-	bch2_write_super(c);
-	mutex_unlock(&c->sb_lock);
 
 	ca = bch_dev_locked(c, dev_idx);
 	if (ca->mi.state == BCH_MEMBER_STATE_RW) {
-		err = "journal alloc failed";
-		if (bch2_dev_journal_alloc(ca))
-			goto err;
-
 		err = __bch2_dev_read_write(c, ca);
 		if (err)
+			goto err;
+
+		err = "journal alloc failed";
+		if (bch2_dev_journal_alloc(c, ca))
 			goto err;
 	}
 
@@ -1540,16 +1547,20 @@ err:
 /* Hot add existing device to running filesystem: */
 int bch2_dev_online(struct bch_fs *c, const char *path)
 {
+	struct bch_opts opts = bch2_opts_empty();
 	struct bch_sb_handle sb = { NULL };
 	struct bch_dev *ca;
 	unsigned dev_idx;
 	const char *err;
+	int ret;
 
 	mutex_lock(&c->state_lock);
 
-	err = bch2_read_super(path, bch2_opts_empty(), &sb);
-	if (err)
-		goto err;
+	ret = bch2_read_super(path, &opts, &sb);
+	if (ret) {
+		mutex_unlock(&c->state_lock);
+		return ret;
+	}
 
 	dev_idx = sb.sb->dev_idx;
 
@@ -1557,13 +1568,10 @@ int bch2_dev_online(struct bch_fs *c, const char *path)
 	if (err)
 		goto err;
 
-	mutex_lock(&c->sb_lock);
 	if (__bch2_dev_online(c, &sb)) {
 		err = "__bch2_dev_online() error";
-		mutex_unlock(&c->sb_lock);
 		goto err;
 	}
-	mutex_unlock(&c->sb_lock);
 
 	ca = bch_dev_locked(c, dev_idx);
 	if (ca->mi.state == BCH_MEMBER_STATE_RW) {
@@ -1584,6 +1592,12 @@ err:
 int bch2_dev_offline(struct bch_fs *c, struct bch_dev *ca, int flags)
 {
 	mutex_lock(&c->state_lock);
+
+	if (!bch2_dev_is_online(ca)) {
+		bch_err(ca, "Already offline");
+		mutex_unlock(&c->state_lock);
+		return 0;
+	}
 
 	if (!bch2_dev_state_allowed(c, ca, BCH_MEMBER_STATE_FAILED, flags)) {
 		bch_err(ca, "Cannot offline required disk");
@@ -1617,9 +1631,19 @@ int bch2_dev_evacuate(struct bch_fs *c, struct bch_dev *ca)
 		goto err;
 	}
 
+	ret = bch2_journal_flush_device(&c->journal, ca->dev_idx);
+	if (ret) {
+		bch_err(ca, "Migrate failed: error %i flushing journal", ret);
+		goto err;
+	}
+
 	data = bch2_dev_has_data(c, ca);
 	if (data) {
-		bch_err(ca, "Migrate error: data still present (%x)", data);
+		char buf[100];
+
+		bch2_scnprint_flag_list(buf, sizeof(buf),
+					bch2_data_types, data);
+		bch_err(ca, "Migrate failed, still has data (%s)", buf);
 		ret = -EINVAL;
 		goto err;
 	}
@@ -1670,33 +1694,33 @@ err:
 
 /* Filesystem open: */
 
-const char *bch2_fs_open(char * const *devices, unsigned nr_devices,
-			 struct bch_opts opts, struct bch_fs **ret)
+struct bch_fs *bch2_fs_open(char * const *devices, unsigned nr_devices,
+			    struct bch_opts opts)
 {
-	const char *err;
+	struct bch_sb_handle *sb = NULL;
 	struct bch_fs *c = NULL;
-	struct bch_sb_handle *sb;
 	unsigned i, best_sb = 0;
+	const char *err;
+	int ret = -ENOMEM;
 
 	if (!nr_devices)
-		return "need at least one device";
+		return ERR_PTR(-EINVAL);
 
 	if (!try_module_get(THIS_MODULE))
-		return "module unloading";
+		return ERR_PTR(-ENODEV);
 
-	err = "cannot allocate memory";
 	sb = kcalloc(nr_devices, sizeof(*sb), GFP_KERNEL);
 	if (!sb)
 		goto err;
 
 	for (i = 0; i < nr_devices; i++) {
-		err = bch2_read_super(devices[i], opts, &sb[i]);
-		if (err)
+		ret = bch2_read_super(devices[i], &opts, &sb[i]);
+		if (ret)
 			goto err;
 
 		err = bch2_sb_validate(&sb[i]);
 		if (err)
-			goto err;
+			goto err_print;
 	}
 
 	for (i = 1; i < nr_devices; i++)
@@ -1707,56 +1731,53 @@ const char *bch2_fs_open(char * const *devices, unsigned nr_devices,
 	for (i = 0; i < nr_devices; i++) {
 		err = bch2_dev_in_fs(sb[best_sb].sb, sb[i].sb);
 		if (err)
-			goto err;
+			goto err_print;
 	}
 
-	err = "cannot allocate memory";
+	ret = -ENOMEM;
 	c = bch2_fs_alloc(sb[best_sb].sb, opts);
 	if (!c)
 		goto err;
 
 	err = "bch2_dev_online() error";
-	mutex_lock(&c->sb_lock);
+	mutex_lock(&c->state_lock);
 	for (i = 0; i < nr_devices; i++)
 		if (__bch2_dev_online(c, &sb[i])) {
-			mutex_unlock(&c->sb_lock);
-			goto err;
+			mutex_unlock(&c->state_lock);
+			goto err_print;
 		}
-	mutex_unlock(&c->sb_lock);
+	mutex_unlock(&c->state_lock);
 
 	err = "insufficient devices";
 	if (!bch2_fs_may_start(c))
-		goto err;
+		goto err_print;
 
 	if (!c->opts.nostart) {
 		err = __bch2_fs_start(c);
 		if (err)
-			goto err;
+			goto err_print;
 	}
 
 	err = bch2_fs_online(c);
 	if (err)
-		goto err;
+		goto err_print;
 
-	if (ret)
-		*ret = c;
-	else
-		closure_put(&c->cl);
-
-	err = NULL;
-out:
 	kfree(sb);
 	module_put(THIS_MODULE);
-	if (err)
-		c = NULL;
-	return err;
+	return c;
+err_print:
+	pr_err("bch_fs_open err opening %s: %s",
+	       devices[0], err);
+	ret = -EINVAL;
 err:
 	if (c)
 		bch2_fs_stop(c);
 
 	for (i = 0; i < nr_devices; i++)
 		bch2_free_super(&sb[i]);
-	goto out;
+	kfree(sb);
+	module_put(THIS_MODULE);
+	return ERR_PTR(ret);
 }
 
 static const char *__bch2_fs_open_incremental(struct bch_sb_handle *sb,
@@ -1827,9 +1848,8 @@ const char *bch2_fs_open_incremental(const char *path)
 	struct bch_opts opts = bch2_opts_empty();
 	const char *err;
 
-	err = bch2_read_super(path, opts, &sb);
-	if (err)
-		return err;
+	if (bch2_read_super(path, &opts, &sb))
+		return "error reading superblock";
 
 	err = __bch2_fs_open_incremental(&sb, opts);
 	bch2_free_super(&sb);
