@@ -266,7 +266,8 @@ static void write_data(struct bch_fs *c,
 	op.write_point	= writepoint_hashed(0);
 	op.pos		= POS(dst_inode->bi_inum, dst_offset >> 9);
 
-	int ret = bch2_disk_reservation_get(c, &op.res, len >> 9, 0);
+	int ret = bch2_disk_reservation_get(c, &op.res, len >> 9,
+					    c->opts.data_replicas, 0);
 	if (ret)
 		die("error reserving space in new filesystem: %s", strerror(-ret));
 
@@ -328,7 +329,7 @@ static void link_data(struct bch_fs *c, struct bch_inode_unpacked *dst,
 					.gen = bucket(ca, b)->mark.gen,
 				  });
 
-		ret = bch2_disk_reservation_get(c, &res, sectors,
+		ret = bch2_disk_reservation_get(c, &res, sectors, 1,
 						BCH_DISK_RESERVATION_NOFAIL);
 		if (ret)
 			die("error reserving space in new filesystem: %s",

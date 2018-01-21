@@ -1469,6 +1469,8 @@ void bch2_journal_start(struct bch_fs *c)
 	journal_pin_new_entry(j, 1);
 	bch2_journal_buf_init(j);
 
+	spin_unlock(&j->lock);
+
 	/*
 	 * Adding entries to the next journal entry before allocating space on
 	 * disk for the next journal entry - this is ok, because these entries
@@ -1487,8 +1489,6 @@ void bch2_journal_start(struct bch_fs *c)
 			bl->written = true;
 		}
 
-	spin_unlock(&j->lock);
-
 	queue_delayed_work(system_freezable_wq, &j->reclaim_work, 0);
 }
 
@@ -1505,7 +1505,6 @@ int bch2_journal_replay(struct bch_fs *c, struct list_head *list)
 			journal_seq_pin(j, le64_to_cpu(i->j.seq));
 
 		for_each_jset_key(k, _n, entry, &i->j) {
-			struct disk_reservation disk_res;
 
 			if (entry->btree_id == BTREE_ID_ALLOC) {
 				/*
@@ -1514,19 +1513,18 @@ int bch2_journal_replay(struct bch_fs *c, struct list_head *list)
 				 */
 				ret = bch2_alloc_replay_key(c, k->k.p);
 			} else {
-
 				/*
 				 * We might cause compressed extents to be
 				 * split, so we need to pass in a
 				 * disk_reservation:
 				 */
-				BUG_ON(bch2_disk_reservation_get(c, &disk_res, 0, 0));
+				struct disk_reservation disk_res =
+					bch2_disk_reservation_init(c, 0);
 
 				ret = bch2_btree_insert(c, entry->btree_id, k,
 							&disk_res, NULL, NULL,
 							BTREE_INSERT_NOFAIL|
 							BTREE_INSERT_JOURNAL_REPLAY);
-				bch2_disk_reservation_put(c, &disk_res);
 			}
 
 			if (ret) {
@@ -1580,7 +1578,7 @@ static int bch2_set_nr_journal_buckets(struct bch_fs *c, struct bch_dev *ca,
 	 */
 
 	if (bch2_disk_reservation_get(c, &disk_res,
-			bucket_to_sector(ca, nr - ja->nr), 0))
+			bucket_to_sector(ca, nr - ja->nr), 1, 0))
 		return -ENOSPC;
 
 	mutex_lock(&c->sb_lock);
