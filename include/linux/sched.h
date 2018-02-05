@@ -74,11 +74,8 @@ struct task_struct {
 	int			(*thread_fn)(void *);
 	void			*thread_data;
 
-	pthread_mutex_t		lock;
-	pthread_cond_t		wait;
-
 	atomic_t		usage;
-	volatile long		state;
+	int			state;
 
 	/* kthread: */
 	unsigned long		kthread_flags;

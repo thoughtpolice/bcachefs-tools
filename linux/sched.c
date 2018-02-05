@@ -1,4 +1,5 @@
 
+#include <linux/futex.h>
 #include <string.h>
 #include <sys/mman.h>
 
@@ -6,6 +7,7 @@
 #include <linux/printk.h>
 #include <linux/rcupdate.h>
 #include <linux/sched.h>
+#include <linux/slab.h>
 #include <linux/timer.h>
 
 __thread struct task_struct *current;
@@ -19,28 +21,23 @@ void __put_task_struct(struct task_struct *t)
 /* returns true if process was woken up, false if it was already running */
 int wake_up_process(struct task_struct *p)
 {
-	int ret;
+	int ret = p->state != TASK_RUNNING;
 
-	pthread_mutex_lock(&p->lock);
-	ret = p->state != TASK_RUNNING;
 	p->state = TASK_RUNNING;
-
-	pthread_cond_signal(&p->wait);
-	pthread_mutex_unlock(&p->lock);
-
+	futex(&p->state, FUTEX_WAKE|FUTEX_PRIVATE_FLAG,
+	      INT_MAX, NULL, NULL, 0);
 	return ret;
 }
 
 void schedule(void)
 {
+	int v;
+
 	rcu_quiescent_state();
 
-	pthread_mutex_lock(&current->lock);
-
-	while (current->state != TASK_RUNNING)
-		pthread_cond_wait(&current->wait, &current->lock);
-
-	pthread_mutex_unlock(&current->lock);
+	while ((v = current->state) != TASK_RUNNING)
+		futex(&current->state, FUTEX_WAIT|FUTEX_PRIVATE_FLAG,
+		      v, NULL, NULL, 0);
 }
 
 static void process_timeout(unsigned long __data)
@@ -169,8 +166,6 @@ static void sched_init(void)
 	memset(p, 0, sizeof(*p));
 
 	p->state	= TASK_RUNNING;
-	pthread_mutex_init(&p->lock, NULL);
-	pthread_cond_init(&p->wait, NULL);
 	atomic_set(&p->usage, 1);
 	init_completion(&p->exited);
 

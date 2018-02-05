@@ -68,8 +68,6 @@ struct task_struct *kthread_create(int (*thread_fn)(void *data),
 	p->thread_fn	= thread_fn;
 	p->thread_data	= thread_data;
 	p->state	= TASK_UNINTERRUPTIBLE;
-	pthread_mutex_init(&p->lock, NULL);
-	pthread_cond_init(&p->wait, NULL);
 	atomic_set(&p->usage, 1);
 	init_completion(&p->exited);
 
