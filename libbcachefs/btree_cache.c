@@ -57,10 +57,20 @@ static void btree_node_data_free(struct bch_fs *c, struct btree *b)
 	list_move(&b->list, &bc->freed);
 }
 
+static int bch2_btree_cache_cmp_fn(struct rhashtable_compare_arg *arg,
+				   const void *obj)
+{
+	const struct btree *b = obj;
+	const u64 *v = arg->key;
+
+	return PTR_HASH(&b->key) == *v ? 0 : 1;
+}
+
 static const struct rhashtable_params bch_btree_cache_params = {
 	.head_offset	= offsetof(struct btree, hash),
 	.key_offset	= offsetof(struct btree, key.v),
 	.key_len	= sizeof(struct bch_extent_ptr),
+	.obj_cmpfn	= bch2_btree_cache_cmp_fn,
 };
 
 static void btree_node_data_alloc(struct bch_fs *c, struct btree *b, gfp_t gfp)
@@ -336,6 +346,9 @@ void bch2_fs_btree_cache_exit(struct bch_fs *c)
 
 	while (!list_empty(&bc->live)) {
 		b = list_first_entry(&bc->live, struct btree, list);
+
+		BUG_ON(btree_node_read_in_flight(b) ||
+		       btree_node_write_in_flight(b));
 
 		if (btree_node_dirty(b))
 			bch2_btree_complete_write(c, b, btree_current_write(b));
@@ -736,7 +749,7 @@ struct btree *bch2_btree_node_get_sibling(struct bch_fs *c,
 	struct btree *ret;
 	unsigned level = b->level;
 
-	parent = iter->nodes[level + 1];
+	parent = btree_iter_node(iter, level + 1);
 	if (!parent)
 		return NULL;
 
@@ -745,7 +758,7 @@ struct btree *bch2_btree_node_get_sibling(struct bch_fs *c,
 		return ERR_PTR(-EINTR);
 	}
 
-	node_iter = iter->node_iters[parent->level];
+	node_iter = iter->l[parent->level].iter;
 
 	k = bch2_btree_node_iter_peek_all(&node_iter, parent);
 	BUG_ON(bkey_cmp_left_packed(parent, k, &b->key.k.p));
@@ -774,9 +787,13 @@ struct btree *bch2_btree_node_get_sibling(struct bch_fs *c,
 		ret = bch2_btree_node_get(c, iter, &tmp.k, level, SIX_LOCK_intent);
 	}
 
-	if (!IS_ERR(ret) && !bch2_btree_node_relock(iter, level)) {
-		six_unlock_intent(&ret->lock);
-		ret = ERR_PTR(-EINTR);
+	if (!bch2_btree_node_relock(iter, level)) {
+		btree_iter_set_dirty(iter, BTREE_ITER_NEED_RELOCK);
+
+		if (!IS_ERR(ret)) {
+			six_unlock_intent(&ret->lock);
+			ret = ERR_PTR(-EINTR);
+		}
 	}
 
 	return ret;

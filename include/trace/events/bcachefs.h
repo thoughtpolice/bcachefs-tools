@@ -87,7 +87,7 @@ DECLARE_EVENT_CLASS(bio,
 	),
 
 	TP_fast_assign(
-		__entry->dev		= bio->bi_bdev ? bio->bi_bdev->bd_dev : 0;
+		__entry->dev		= bio->bi_disk ? bio_dev(bio) : 0;
 		__entry->sector		= bio->bi_iter.bi_sector;
 		__entry->nr_sector	= bio->bi_iter.bi_size >> 9;
 		blk_fill_rwbs(__entry->rwbs, bio->bi_opf, bio->bi_iter.bi_size);

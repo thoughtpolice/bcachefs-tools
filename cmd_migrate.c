@@ -119,7 +119,8 @@ static void update_inode(struct bch_fs *c,
 	int ret;
 
 	bch2_inode_pack(&packed, inode);
-	ret = bch2_btree_update(c, BTREE_ID_INODES, &packed.inode.k_i, NULL);
+	ret = bch2_btree_insert(c, BTREE_ID_INODES, &packed.inode.k_i,
+				NULL, NULL, NULL, 0);
 	if (ret)
 		die("error creating file: %s", strerror(-ret));
 }

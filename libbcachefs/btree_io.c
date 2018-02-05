@@ -266,19 +266,16 @@ static unsigned should_compact_bset(struct btree *b, struct bset_tree *t,
 				    bool compacting,
 				    enum compact_mode mode)
 {
-	unsigned live_u64s = b->nr.bset_u64s[t - b->set];
 	unsigned bset_u64s = le16_to_cpu(bset(b, t)->u64s);
-
-	if (live_u64s == bset_u64s)
-		return 0;
+	unsigned dead_u64s = bset_u64s - b->nr.bset_u64s[t - b->set];
 
 	if (mode == COMPACT_LAZY) {
-		if (live_u64s * 4 < bset_u64s * 3 ||
+		if (should_compact_bset_lazy(b, t) ||
 		    (compacting && bset_unwritten(b, bset(b, t))))
-			return bset_u64s - live_u64s;
+			return dead_u64s;
 	} else {
 		if (bset_written(b, bset(b, t)))
-			return bset_u64s - live_u64s;
+			return dead_u64s;
 	}
 
 	return 0;
@@ -426,7 +423,7 @@ static bool bch2_drop_whiteouts(struct btree *b)
 		struct bset *i = bset(b, t);
 		struct bkey_packed *k, *n, *out, *start, *end;
 
-		if (!should_compact_bset(b, t, true, true))
+		if (!should_compact_bset(b, t, true, COMPACT_WRITTEN))
 			continue;
 
 		start	= btree_bkey_first(b, t);
@@ -830,13 +827,13 @@ void bch2_btree_build_aux_trees(struct btree *b)
  * Returns true if we sorted (i.e. invalidated iterators
  */
 void bch2_btree_init_next(struct bch_fs *c, struct btree *b,
-			 struct btree_iter *iter)
+			  struct btree_iter *iter)
 {
 	struct btree_node_entry *bne;
 	bool did_sort;
 
 	EBUG_ON(!(b->lock.state.seq & 1));
-	EBUG_ON(iter && iter->nodes[b->level] != b);
+	EBUG_ON(iter && iter->l[b->level].b != b);
 
 	did_sort = btree_node_compact(c, b, iter);
 
@@ -1297,8 +1294,8 @@ static void btree_node_read_work(struct work_struct *work)
 	do {
 		bch_info(c, "retrying read");
 		bio_reset(bio);
+		bio_set_dev(bio, rb->pick.ca->disk_sb.bdev);
 		bio->bi_opf		= REQ_OP_READ|REQ_SYNC|REQ_META;
-		bio->bi_bdev		= rb->pick.ca->disk_sb.bdev;
 		bio->bi_iter.bi_sector	= rb->pick.ptr.offset;
 		bio->bi_iter.bi_size	= btree_bytes(c);
 		submit_bio_wait(bio);
@@ -1333,7 +1330,7 @@ static void btree_node_read_endio(struct bio *bio)
 	bch2_latency_acct(rb->pick.ca, rb->start_time >> 10, READ);
 
 	INIT_WORK(&rb->work, btree_node_read_work);
-	schedule_work(&rb->work);
+	queue_work(system_unbound_wq, &rb->work);
 }
 
 void bch2_btree_node_read(struct bch_fs *c, struct btree *b,
@@ -1357,8 +1354,8 @@ void bch2_btree_node_read(struct bch_fs *c, struct btree *b,
 	rb->c			= c;
 	rb->start_time		= local_clock();
 	rb->pick		= pick;
+	bio_set_dev(bio, pick.ca->disk_sb.bdev);
 	bio->bi_opf		= REQ_OP_READ|REQ_SYNC|REQ_META;
-	bio->bi_bdev		= pick.ca->disk_sb.bdev;
 	bio->bi_iter.bi_sector	= pick.ptr.offset;
 	bio->bi_iter.bi_size	= btree_bytes(c);
 	bch2_bio_map(bio, b->data);
@@ -1470,15 +1467,13 @@ retry:
 		goto err;
 
 	/* has node been freed? */
-	if (iter.nodes[b->level] != b) {
+	if (iter.l[b->level].b != b) {
 		/* node has been freed: */
-		if (!btree_node_dying(b))
-			panic("foo4\n");
+		BUG_ON(!btree_node_dying(b));
 		goto out;
 	}
 
-	if (!btree_node_hashed(b))
-		panic("foo5\n");
+	BUG_ON(!btree_node_hashed(b));
 
 	bkey_copy(&tmp.k, &b->key);
 
@@ -1583,7 +1578,7 @@ static void btree_node_write_endio(struct bio *bio)
 			container_of(orig, struct btree_write_bio, wbio);
 
 		INIT_WORK(&wb->work, btree_node_write_work);
-		schedule_work(&wb->work);
+		queue_work(system_unbound_wq, &wb->work);
 	}
 }
 
@@ -1664,8 +1659,14 @@ void __bch2_btree_node_write(struct bch_fs *c, struct btree *b,
 	BUG_ON(le64_to_cpu(b->data->magic) != bset_magic(c));
 	BUG_ON(memcmp(&b->data->format, &b->format, sizeof(b->format)));
 
-	if (lock_type_held == SIX_LOCK_intent) {
-		six_lock_write(&b->lock);
+	/*
+	 * We can't block on six_lock_write() here; another thread might be
+	 * trying to get a journal reservation with read locks held, and getting
+	 * a journal reservation might be blocked on flushing the journal and
+	 * doing btree writes:
+	 */
+	if (lock_type_held == SIX_LOCK_intent &&
+	    six_trylock_write(&b->lock)) {
 		__bch2_compact_whiteouts(c, b, COMPACT_WRITTEN);
 		six_unlock_write(&b->lock);
 	} else {
@@ -1900,13 +1901,12 @@ void bch2_btree_node_write(struct bch_fs *c, struct btree *b,
 	BUG_ON(lock_type_held == SIX_LOCK_write);
 
 	if (lock_type_held == SIX_LOCK_intent ||
-	    six_trylock_convert(&b->lock, SIX_LOCK_read,
-				SIX_LOCK_intent)) {
+	    six_lock_tryupgrade(&b->lock)) {
 		__bch2_btree_node_write(c, b, SIX_LOCK_intent);
 
 		/* don't cycle lock unnecessarily: */
-		if (btree_node_just_written(b)) {
-			six_lock_write(&b->lock);
+		if (btree_node_just_written(b) &&
+		    six_trylock_write(&b->lock)) {
 			bch2_btree_post_write_cleanup(c, b);
 			six_unlock_write(&b->lock);
 		}
@@ -1918,6 +1918,34 @@ void bch2_btree_node_write(struct bch_fs *c, struct btree *b,
 	}
 }
 
+static void __bch2_btree_flush_all(struct bch_fs *c, unsigned flag)
+{
+	struct bucket_table *tbl;
+	struct rhash_head *pos;
+	struct btree *b;
+	unsigned i;
+restart:
+	rcu_read_lock();
+	for_each_cached_btree(b, c, tbl, i, pos)
+		if (test_bit(flag, &b->flags)) {
+			rcu_read_unlock();
+			wait_on_bit_io(&b->flags, flag, TASK_UNINTERRUPTIBLE);
+			goto restart;
+
+		}
+	rcu_read_unlock();
+}
+
+void bch2_btree_flush_all_reads(struct bch_fs *c)
+{
+	__bch2_btree_flush_all(c, BTREE_NODE_read_in_flight);
+}
+
+void bch2_btree_flush_all_writes(struct bch_fs *c)
+{
+	__bch2_btree_flush_all(c, BTREE_NODE_write_in_flight);
+}
+
 void bch2_btree_verify_flushed(struct bch_fs *c)
 {
 	struct bucket_table *tbl;
@@ -1926,7 +1954,46 @@ void bch2_btree_verify_flushed(struct bch_fs *c)
 	unsigned i;
 
 	rcu_read_lock();
-	for_each_cached_btree(b, c, tbl, i, pos)
-		BUG_ON(btree_node_dirty(b));
+	for_each_cached_btree(b, c, tbl, i, pos) {
+		unsigned long flags = READ_ONCE(b->flags);
+
+		BUG_ON((flags & (1 << BTREE_NODE_dirty)) ||
+		       (flags & (1 << BTREE_NODE_write_in_flight)));
+	}
 	rcu_read_unlock();
+}
+
+ssize_t bch2_dirty_btree_nodes_print(struct bch_fs *c, char *buf)
+{
+	char *out = buf, *end = buf + PAGE_SIZE;
+	struct bucket_table *tbl;
+	struct rhash_head *pos;
+	struct btree *b;
+	unsigned i;
+
+	rcu_read_lock();
+	for_each_cached_btree(b, c, tbl, i, pos) {
+		unsigned long flags = READ_ONCE(b->flags);
+		unsigned idx = (flags & (1 << BTREE_NODE_write_idx)) != 0;
+
+		if (//!(flags & (1 << BTREE_NODE_dirty)) &&
+		    !b->writes[0].wait.list.first &&
+		    !b->writes[1].wait.list.first &&
+		    !(b->will_make_reachable & 1))
+			continue;
+
+		out += scnprintf(out, end - out, "%p d %u l %u w %u b %u r %u:%lu c %u p %u\n",
+				 b,
+				 (flags & (1 << BTREE_NODE_dirty)) != 0,
+				 b->level,
+				 b->written,
+				 !list_empty_careful(&b->write_blocked),
+				 b->will_make_reachable != 0,
+				 b->will_make_reachable & 1,
+				 b->writes[ idx].wait.list.first != NULL,
+				 b->writes[!idx].wait.list.first != NULL);
+	}
+	rcu_read_unlock();
+
+	return out - buf;
 }

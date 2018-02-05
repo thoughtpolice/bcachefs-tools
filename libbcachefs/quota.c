@@ -245,7 +245,7 @@ int bch2_quota_acct(struct bch_fs *c, struct bch_qid qid,
 	memset(&msgs, 0, sizeof(msgs));
 
 	for_each_set_qtype(c, i, q, qtypes)
-		mutex_lock(&q->lock);
+		mutex_lock_nested(&q->lock, i);
 
 	for_each_set_qtype(c, i, q, qtypes) {
 		mq[i] = genradix_ptr_alloc(&q->table, qid.q[i], GFP_NOFS);
@@ -296,7 +296,7 @@ int bch2_quota_transfer(struct bch_fs *c, unsigned qtypes,
 	memset(&msgs, 0, sizeof(msgs));
 
 	for_each_set_qtype(c, i, q, qtypes)
-		mutex_lock(&q->lock);
+		mutex_lock_nested(&q->lock, i);
 
 	for_each_set_qtype(c, i, q, qtypes) {
 		src_q[i] = genradix_ptr_alloc(&q->table, src.q[i], GFP_NOFS);
@@ -735,8 +735,8 @@ static int bch2_set_quota(struct super_block *sb, struct kqid qid,
 	new_quota.k.p = POS(qid.type, from_kqid(&init_user_ns, qid));
 
 	bch2_btree_iter_init(&iter, c, BTREE_ID_QUOTAS, new_quota.k.p,
-			     BTREE_ITER_WITH_HOLES|BTREE_ITER_INTENT);
-	k = bch2_btree_iter_peek_with_holes(&iter);
+			     BTREE_ITER_SLOTS|BTREE_ITER_INTENT);
+	k = bch2_btree_iter_peek_slot(&iter);
 
 	ret = btree_iter_err(k);
 	if (unlikely(ret))

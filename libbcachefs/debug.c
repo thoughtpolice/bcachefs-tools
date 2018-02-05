@@ -59,7 +59,7 @@ void __bch2_btree_verify(struct bch_fs *c, struct btree *b)
 		return;
 
 	bio = bio_alloc_bioset(GFP_NOIO, btree_pages(c), &c->btree_bio);
-	bio->bi_bdev		= pick.ca->disk_sb.bdev;
+	bio_set_dev(bio, pick.ca->disk_sb.bdev);
 	bio->bi_opf		= REQ_OP_READ|REQ_META;
 	bio->bi_iter.bi_sector	= pick.ptr.offset;
 	bio->bi_iter.bi_size	= btree_bytes(c);
@@ -212,19 +212,16 @@ static ssize_t bch2_read_btree(struct file *file, char __user *buf,
 	if (!i->size)
 		return i->ret;
 
-	bch2_btree_iter_init(&iter, i->c, i->id, i->from, BTREE_ITER_PREFETCH);
+	for_each_btree_key(&iter, i->c, i->id, i->from,
+			   BTREE_ITER_PREFETCH, k) {
+		i->from = iter.pos;
 
-	while ((k = bch2_btree_iter_peek(&iter)).k &&
-	       !(err = btree_iter_err(k))) {
 		bch2_bkey_val_to_text(i->c, bkey_type(0, i->id),
 				     i->buf, sizeof(i->buf), k);
 		i->bytes = strlen(i->buf);
 		BUG_ON(i->bytes >= PAGE_SIZE);
 		i->buf[i->bytes] = '\n';
 		i->bytes++;
-
-		bch2_btree_iter_advance_pos(&iter);
-		i->from = iter.pos;
 
 		err = flush_buf(i);
 		if (err)
@@ -233,7 +230,7 @@ static ssize_t bch2_read_btree(struct file *file, char __user *buf,
 		if (!i->size)
 			break;
 	}
-	bch2_btree_iter_unlock(&iter);
+	err = bch2_btree_iter_unlock(&iter) ?: err;
 
 	return err < 0 ? err : i->ret;
 }
@@ -318,26 +315,27 @@ static ssize_t bch2_read_bfloat_failed(struct file *file, char __user *buf,
 
 	while ((k = bch2_btree_iter_peek(&iter)).k &&
 	       !(err = btree_iter_err(k))) {
-		struct btree *b = iter.nodes[0];
-		struct btree_node_iter *node_iter = &iter.node_iters[0];
-		struct bkey_packed *_k = bch2_btree_node_iter_peek(node_iter, b);
+		struct btree_iter_level *l = &iter.l[0];
+		struct bkey_packed *_k =
+			bch2_btree_node_iter_peek(&l->iter, l->b);
 
-		if (iter.nodes[0] != prev_node) {
-			i->bytes = bch2_print_btree_node(i->c, b, i->buf,
+		if (l->b != prev_node) {
+			i->bytes = bch2_print_btree_node(i->c, l->b, i->buf,
 							sizeof(i->buf));
 			err = flush_buf(i);
 			if (err)
 				break;
 		}
-		prev_node = iter.nodes[0];
+		prev_node = l->b;
 
-		i->bytes = bch2_bkey_print_bfloat(b, _k, i->buf, sizeof(i->buf));
+		i->bytes = bch2_bkey_print_bfloat(l->b, _k, i->buf,
+						  sizeof(i->buf));
 
 		err = flush_buf(i);
 		if (err)
 			break;
 
-		bch2_btree_iter_advance_pos(&iter);
+		bch2_btree_iter_next(&iter);
 		i->from = iter.pos;
 
 		err = flush_buf(i);

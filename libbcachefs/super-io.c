@@ -490,7 +490,7 @@ static const char *read_one_super(struct bch_sb_handle *sb, u64 offset)
 	unsigned order;
 reread:
 	bio_reset(sb->bio);
-	sb->bio->bi_bdev = sb->bdev;
+	bio_set_dev(sb->bio, sb->bdev);
 	sb->bio->bi_iter.bi_sector = offset;
 	sb->bio->bi_iter.bi_size = PAGE_SIZE << sb->page_order;
 	bio_set_op_attrs(sb->bio, REQ_OP_READ, REQ_SYNC|REQ_META);
@@ -588,7 +588,7 @@ int bch2_read_super(const char *path, struct bch_opts *opts,
 	 * superblocks:
 	 */
 	bio_reset(sb->bio);
-	sb->bio->bi_bdev = sb->bdev;
+	bio_set_dev(sb->bio, sb->bdev);
 	sb->bio->bi_iter.bi_sector = BCH_SB_LAYOUT_SECTOR;
 	sb->bio->bi_iter.bi_size = sizeof(struct bch_sb_layout);
 	bio_set_op_attrs(sb->bio, REQ_OP_READ, REQ_SYNC|REQ_META);
@@ -667,7 +667,7 @@ static void write_one_super(struct bch_fs *c, struct bch_dev *ca, unsigned idx)
 				null_nonce(), sb);
 
 	bio_reset(bio);
-	bio->bi_bdev		= ca->disk_sb.bdev;
+	bio_set_dev(bio, ca->disk_sb.bdev);
 	bio->bi_iter.bi_sector	= le64_to_cpu(sb->offset);
 	bio->bi_iter.bi_size	=
 		roundup(vstruct_bytes(sb),

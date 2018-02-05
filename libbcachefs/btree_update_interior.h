@@ -2,6 +2,7 @@
 #define _BCACHEFS_BTREE_UPDATE_INTERIOR_H
 
 #include "btree_cache.h"
+#include "btree_locking.h"
 #include "btree_update.h"
 
 struct btree_reserve {
@@ -61,9 +62,12 @@ struct btree_update {
 		BTREE_INTERIOR_UPDATING_ROOT,
 		BTREE_INTERIOR_UPDATING_AS,
 	} mode;
+
+	unsigned			must_rewrite:1;
+	unsigned			nodes_written:1;
+
 	enum btree_id			btree_id;
 
-	unsigned			flags;
 	struct btree_reserve		*reserve;
 
 	/*
@@ -120,8 +124,6 @@ struct btree_update {
 	u64				inline_keys[BKEY_BTREE_PTR_U64s_MAX * 3];
 };
 
-#define BTREE_INTERIOR_UPDATE_MUST_REWRITE	(1 << 0)
-
 #define for_each_pending_btree_node_free(c, as, p)			\
 	list_for_each_entry(as, &c->btree_interior_update_list, list)	\
 		for (p = as->pending; p < as->pending + as->nr_pending; p++)
@@ -146,8 +148,34 @@ void bch2_btree_interior_update_will_free_node(struct btree_update *,
 void bch2_btree_insert_node(struct btree_update *, struct btree *,
 			    struct btree_iter *, struct keylist *);
 int bch2_btree_split_leaf(struct bch_fs *, struct btree_iter *, unsigned);
-int bch2_foreground_maybe_merge(struct bch_fs *, struct btree_iter *,
-				enum btree_node_sibling);
+
+int __bch2_foreground_maybe_merge(struct bch_fs *, struct btree_iter *,
+				  unsigned, enum btree_node_sibling);
+
+static inline int bch2_foreground_maybe_merge_sibling(struct bch_fs *c,
+					struct btree_iter *iter,
+					unsigned level,
+					enum btree_node_sibling sib)
+{
+	struct btree *b;
+
+	if (!bch2_btree_node_relock(iter, level))
+		return 0;
+
+	b = iter->l[level].b;
+	if (b->sib_u64s[sib] > c->btree_foreground_merge_threshold)
+		return 0;
+
+	return __bch2_foreground_maybe_merge(c, iter, level, sib);
+}
+
+static inline void bch2_foreground_maybe_merge(struct bch_fs *c,
+					       struct btree_iter *iter,
+					       unsigned level)
+{
+	bch2_foreground_maybe_merge_sibling(c, iter, level, btree_prev_sib);
+	bch2_foreground_maybe_merge_sibling(c, iter, level, btree_next_sib);
+}
 
 void bch2_btree_set_root_for_read(struct bch_fs *, struct btree *);
 void bch2_btree_root_alloc(struct bch_fs *, enum btree_id);
@@ -220,16 +248,17 @@ static inline struct btree_node_entry *want_new_bset(struct bch_fs *c,
 	struct bset *i = btree_bset_last(b);
 	unsigned offset = max_t(unsigned, b->written << 9,
 				bset_byte_offset(b, vstruct_end(i)));
-	ssize_t n = (ssize_t) btree_bytes(c) - (ssize_t)
+	ssize_t remaining_space = (ssize_t) btree_bytes(c) - (ssize_t)
 		(offset + sizeof(struct btree_node_entry) +
 		 b->whiteout_u64s * sizeof(u64) +
 		 b->uncompacted_whiteout_u64s * sizeof(u64));
 
 	EBUG_ON(offset > btree_bytes(c));
 
-	if ((unlikely(bset_written(b, i)) && n > 0) ||
+	if ((unlikely(bset_written(b, i)) &&
+	     remaining_space > block_bytes(c)) ||
 	    (unlikely(vstruct_bytes(i) > btree_write_set_buffer(b)) &&
-	     n > btree_write_set_buffer(b)))
+	     remaining_space > btree_write_set_buffer(b)))
 		return (void *) b->data + offset;
 
 	return NULL;
@@ -311,5 +340,7 @@ static inline bool journal_res_insert_fits(struct btree_insert *trans,
 
 	return u64s <= trans->journal_res.u64s;
 }
+
+ssize_t bch2_btree_updates_print(struct bch_fs *, char *);
 
 #endif /* _BCACHEFS_BTREE_UPDATE_INTERIOR_H */

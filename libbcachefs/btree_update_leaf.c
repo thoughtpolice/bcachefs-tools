@@ -39,9 +39,8 @@ bool bch2_btree_bset_insert_key(struct btree_iter *iter,
 		t = bch2_bkey_to_bset(b, k);
 
 		if (bset_unwritten(b, bset(b, t)) &&
-		    bkey_val_u64s(&insert->k) == bkeyp_val_u64s(f, k)) {
-			BUG_ON(bkey_whiteout(k) != bkey_whiteout(&insert->k));
-
+		    bkey_val_u64s(&insert->k) == bkeyp_val_u64s(f, k) &&
+		    !bkey_whiteout(&insert->k)) {
 			k->type = insert->k.type;
 			memcpy_u64s(bkeyp_val(f, k), &insert->v,
 				    bkey_val_u64s(&insert->k));
@@ -131,28 +130,21 @@ void bch2_btree_journal_key(struct btree_insert *trans,
 {
 	struct bch_fs *c = trans->c;
 	struct journal *j = &c->journal;
-	struct btree *b = iter->nodes[0];
+	struct btree *b = iter->l[0].b;
 	struct btree_write *w = btree_current_write(b);
 
 	EBUG_ON(iter->level || b->level);
 	EBUG_ON(trans->journal_res.ref !=
 		!(trans->flags & BTREE_INSERT_JOURNAL_REPLAY));
 
-	if (!journal_pin_active(&w->journal))
-		bch2_journal_pin_add(j, &trans->journal_res,
-				     &w->journal,
-				     btree_node_write_idx(b) == 0
-				     ? btree_node_flush0
-				     : btree_node_flush1);
-
-	if (trans->journal_res.ref) {
+	if (likely(trans->journal_res.ref)) {
 		u64 seq = trans->journal_res.seq;
 		bool needs_whiteout = insert->k.needs_whiteout;
 
 		/* ick */
 		insert->k.needs_whiteout = false;
 		bch2_journal_add_keys(j, &trans->journal_res,
-				      b->btree_id, insert);
+				      iter->btree_id, insert);
 		insert->k.needs_whiteout = needs_whiteout;
 
 		bch2_journal_set_has_inode(j, &trans->journal_res,
@@ -163,7 +155,14 @@ void bch2_btree_journal_key(struct btree_insert *trans,
 		btree_bset_last(b)->journal_seq = cpu_to_le64(seq);
 	}
 
-	if (!btree_node_dirty(b))
+	if (unlikely(!journal_pin_active(&w->journal)))
+		bch2_journal_pin_add(j, &trans->journal_res,
+				     &w->journal,
+				     btree_node_write_idx(b) == 0
+				     ? btree_node_flush0
+				     : btree_node_flush1);
+
+	if (unlikely(!btree_node_dirty(b)))
 		set_btree_node_dirty(b);
 }
 
@@ -172,13 +171,13 @@ bch2_insert_fixup_key(struct btree_insert *trans,
 		     struct btree_insert_entry *insert)
 {
 	struct btree_iter *iter = insert->iter;
+	struct btree_iter_level *l = &iter->l[0];
 
-	BUG_ON(iter->level);
-	BUG_ON(insert->k->k.u64s >
-	       bch_btree_keys_u64s_remaining(trans->c, iter->nodes[0]));
+	EBUG_ON(iter->level);
+	EBUG_ON(insert->k->k.u64s >
+		bch_btree_keys_u64s_remaining(trans->c, l->b));
 
-	if (bch2_btree_bset_insert_key(iter, iter->nodes[0],
-				       &iter->node_iters[0],
+	if (bch2_btree_bset_insert_key(iter, l->b, &l->iter,
 				       insert->k))
 		bch2_btree_journal_key(trans, iter, insert->k);
 
@@ -186,38 +185,22 @@ bch2_insert_fixup_key(struct btree_insert *trans,
 	return BTREE_INSERT_OK;
 }
 
-static int inline foreground_maybe_merge(struct bch_fs *c,
-					 struct btree_iter *iter,
-					 enum btree_node_sibling sib)
-{
-	struct btree *b;
-
-	if (!btree_node_locked(iter, iter->level))
-		return 0;
-
-	b = iter->nodes[iter->level];
-	if (b->sib_u64s[sib] > BTREE_FOREGROUND_MERGE_THRESHOLD(c))
-		return 0;
-
-	return bch2_foreground_maybe_merge(c, iter, sib);
-}
-
 /**
  * btree_insert_key - insert a key one key into a leaf node
  */
 static enum btree_insert_ret
-btree_insert_key(struct btree_insert *trans,
-		 struct btree_insert_entry *insert)
+btree_insert_key_leaf(struct btree_insert *trans,
+		      struct btree_insert_entry *insert)
 {
 	struct bch_fs *c = trans->c;
 	struct btree_iter *iter = insert->iter;
-	struct btree *b = iter->nodes[0];
+	struct btree *b = iter->l[0].b;
 	enum btree_insert_ret ret;
 	int old_u64s = le16_to_cpu(btree_bset_last(b)->u64s);
 	int old_live_u64s = b->nr.live_u64s;
 	int live_u64s_added, u64s_added;
 
-	iter->flags &= ~BTREE_ITER_UPTODATE;
+	btree_iter_set_dirty(iter, BTREE_ITER_NEED_PEEK);
 
 	ret = !btree_node_is_extents(b)
 		? bch2_insert_fixup_key(trans, insert)
@@ -247,7 +230,7 @@ static bool same_leaf_as_prev(struct btree_insert *trans,
 	 * point to the same leaf node they'll always be adjacent now:
 	 */
 	return i != trans->entries &&
-		i[0].iter->nodes[0] == i[-1].iter->nodes[0];
+		i[0].iter->l[0].b == i[-1].iter->l[0].b;
 }
 
 #define trans_for_each_entry(trans, i)					\
@@ -276,7 +259,8 @@ static void multi_lock_write(struct bch_fs *c, struct btree_insert *trans)
 
 	trans_for_each_entry(trans, i)
 		if (!same_leaf_as_prev(trans, i))
-			bch2_btree_node_lock_for_insert(c, i->iter->nodes[0], i->iter);
+			bch2_btree_node_lock_for_insert(c, i->iter->l[0].b,
+							i->iter);
 }
 
 static void multi_unlock_write(struct btree_insert *trans)
@@ -285,15 +269,18 @@ static void multi_unlock_write(struct btree_insert *trans)
 
 	trans_for_each_entry(trans, i)
 		if (!same_leaf_as_prev(trans, i))
-			bch2_btree_node_unlock_write(i->iter->nodes[0], i->iter);
+			bch2_btree_node_unlock_write(i->iter->l[0].b, i->iter);
 }
 
-static int btree_trans_entry_cmp(const void *_l, const void *_r)
+static inline void btree_trans_sort(struct btree_insert *trans)
 {
-	const struct btree_insert_entry *l = _l;
-	const struct btree_insert_entry *r = _r;
+	int i, end = trans->nr;
 
-	return btree_iter_cmp(l->iter, r->iter);
+	while (--end > 0)
+		for (i = 0; i < end; i++)
+			if (btree_iter_cmp(trans->entries[i].iter,
+					   trans->entries[i + 1].iter) > 0)
+				swap(trans->entries[i], trans->entries[i + 1]);
 }
 
 /* Normal update interface: */
@@ -326,16 +313,22 @@ int __bch2_btree_insert_at(struct btree_insert *trans)
 					 bkey_i_to_s_c(i->k)));
 	}
 
-	sort(trans->entries, trans->nr, sizeof(trans->entries[0]),
-	     btree_trans_entry_cmp, NULL);
+	btree_trans_sort(trans);
 
 	if (unlikely(!percpu_ref_tryget(&c->writes)))
 		return -EROFS;
 retry_locks:
 	ret = -EINTR;
-	trans_for_each_entry(trans, i)
+	trans_for_each_entry(trans, i) {
 		if (!bch2_btree_iter_set_locks_want(i->iter, 1))
 			goto err;
+
+		if (i->iter->uptodate == BTREE_ITER_NEED_TRAVERSE) {
+			ret = bch2_btree_iter_traverse(i->iter);
+			if (ret)
+				goto err;
+		}
+	}
 retry:
 	trans->did_work = false;
 	u64s = 0;
@@ -375,7 +368,7 @@ retry:
 		if (!i->done) {
 			u64s += i->k->k.u64s + i->extra_res;
 			if (!bch2_btree_node_insert_fits(c,
-					i->iter->nodes[0], u64s)) {
+					i->iter->l[0].b, u64s)) {
 				split = i->iter;
 				goto unlock;
 			}
@@ -390,7 +383,7 @@ retry:
 		if (i->done)
 			continue;
 
-		switch (btree_insert_key(trans, i)) {
+		switch (btree_insert_key_leaf(trans, i)) {
 		case BTREE_INSERT_OK:
 			i->done = true;
 			break;
@@ -427,19 +420,19 @@ unlock:
 	if (ret)
 		goto err;
 
-	/*
-	 * hack: iterators are inconsistent when they hit end of leaf, until
-	 * traversed again
-	 */
 	trans_for_each_entry(trans, i)
 		if (i->iter->flags & BTREE_ITER_AT_END_OF_LEAF)
 			goto out;
 
-	trans_for_each_entry(trans, i)
-		if (!same_leaf_as_prev(trans, i)) {
-			foreground_maybe_merge(c, i->iter, btree_prev_sib);
-			foreground_maybe_merge(c, i->iter, btree_next_sib);
-		}
+	trans_for_each_entry(trans, i) {
+		/*
+		 * iterators are inconsistent when they hit end of leaf, until
+		 * traversed again
+		 */
+		if (i->iter->uptodate < BTREE_ITER_NEED_TRAVERSE &&
+		    !same_leaf_as_prev(trans, i))
+			bch2_foreground_maybe_merge(c, i->iter, 0);
+	}
 out:
 	/* make sure we didn't lose an error: */
 	if (!ret && IS_ENABLED(CONFIG_BCACHEFS_DEBUG))
@@ -513,12 +506,7 @@ int bch2_btree_insert_list_at(struct btree_iter *iter,
 	bch2_verify_keylist_sorted(keys);
 
 	while (!bch2_keylist_empty(keys)) {
-		/* need to traverse between each insert */
-		int ret = bch2_btree_iter_traverse(iter);
-		if (ret)
-			return ret;
-
-		ret = bch2_btree_insert_at(iter->c, disk_res, hook,
+		int ret = bch2_btree_insert_at(iter->c, disk_res, hook,
 				journal_seq, flags,
 				BTREE_INSERT_ENTRY(iter, bch2_keylist_front(keys)));
 		if (ret)
@@ -544,51 +532,14 @@ int bch2_btree_insert(struct bch_fs *c, enum btree_id id,
 		     u64 *journal_seq, int flags)
 {
 	struct btree_iter iter;
-	int ret, ret2;
+	int ret;
 
 	bch2_btree_iter_init(&iter, c, id, bkey_start_pos(&k->k),
 			     BTREE_ITER_INTENT);
-
-	ret = bch2_btree_iter_traverse(&iter);
-	if (unlikely(ret))
-		goto out;
-
 	ret = bch2_btree_insert_at(c, disk_res, hook, journal_seq, flags,
 				  BTREE_INSERT_ENTRY(&iter, k));
-out:	ret2 = bch2_btree_iter_unlock(&iter);
-
-	return ret ?: ret2;
-}
-
-/**
- * bch_btree_update - like bch2_btree_insert(), but asserts that we're
- * overwriting an existing key
- */
-int bch2_btree_update(struct bch_fs *c, enum btree_id id,
-		     struct bkey_i *k, u64 *journal_seq)
-{
-	struct btree_iter iter;
-	struct bkey_s_c u;
-	int ret;
-
-	EBUG_ON(id == BTREE_ID_EXTENTS);
-
-	bch2_btree_iter_init(&iter, c, id, k->k.p,
-			     BTREE_ITER_INTENT);
-
-	u = bch2_btree_iter_peek_with_holes(&iter);
-	ret = btree_iter_err(u);
-	if (ret)
-		return ret;
-
-	if (bkey_deleted(u.k)) {
-		bch2_btree_iter_unlock(&iter);
-		return -ENOENT;
-	}
-
-	ret = bch2_btree_insert_at(c, NULL, NULL, journal_seq, 0,
-				  BTREE_INSERT_ENTRY(&iter, k));
 	bch2_btree_iter_unlock(&iter);
+
 	return ret;
 }
 

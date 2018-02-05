@@ -29,20 +29,17 @@ static inline void get_random_bytes(void *buf, int nbytes)
 	BUG_ON(getrandom(buf, nbytes, 0) != nbytes);
 }
 
-static inline int get_random_int(void)
-{
-	int v;
-
-	get_random_bytes(&v, sizeof(v));
-	return v;
+#define get_random_type(type)				\
+static inline type get_random_##type(void)		\
+{							\
+	type v;						\
+							\
+	get_random_bytes(&v, sizeof(v));		\
+	return v;					\
 }
 
-static inline long get_random_long(void)
-{
-	long v;
-
-	get_random_bytes(&v, sizeof(v));
-	return v;
-}
+get_random_type(int);
+get_random_type(long);
+get_random_type(u64);
 
 #endif /* _LINUX_RANDOM_H */

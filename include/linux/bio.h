@@ -186,38 +186,6 @@ static inline void bio_clear_flag(struct bio *bio, unsigned int bit)
 	bio->bi_flags &= ~(1U << bit);
 }
 
-static inline void bio_get_first_bvec(struct bio *bio, struct bio_vec *bv)
-{
-	*bv = bio_iovec(bio);
-}
-
-static inline void bio_get_last_bvec(struct bio *bio, struct bio_vec *bv)
-{
-	struct bvec_iter iter = bio->bi_iter;
-	int idx;
-
-	if (unlikely(!bio_multiple_segments(bio))) {
-		*bv = bio_iovec(bio);
-		return;
-	}
-
-	bio_advance_iter(bio, &iter, iter.bi_size);
-
-	if (!iter.bi_bvec_done)
-		idx = iter.bi_idx - 1;
-	else	/* in the middle of bvec */
-		idx = iter.bi_idx;
-
-	*bv = bio->bi_io_vec[idx];
-
-	/*
-	 * iter.bi_bvec_done records actual length of the last bvec
-	 * if this bio ends in the middle of one io vector
-	 */
-	if (iter.bi_bvec_done)
-		bv->bv_len = iter.bi_bvec_done;
-}
-
 extern struct bio *bio_split(struct bio *bio, int sectors,
 			     gfp_t gfp, struct bio_set *bs);
 
@@ -297,6 +265,16 @@ static inline void zero_fill_bio(struct bio *bio)
 {
 	zero_fill_bio_iter(bio, bio->bi_iter);
 }
+
+#define bio_set_dev(bio, bdev)			\
+do {						\
+	(bio)->bi_bdev = (bdev);		\
+} while (0)
+
+#define bio_copy_dev(dst, src)			\
+do {						\
+	(dst)->bi_bdev = (src)->bi_bdev;	\
+} while (0)
 
 static inline char *bvec_kmap_irq(struct bio_vec *bvec, unsigned long *flags)
 {

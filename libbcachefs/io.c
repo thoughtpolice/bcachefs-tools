@@ -179,7 +179,7 @@ void bch2_submit_wbio_replicas(struct bch_write_bio *wbio, struct bch_fs *c,
 				     bio_sectors(&n->bio));
 
 			n->have_io_ref		= true;
-			n->bio.bi_bdev		= ca->disk_sb.bdev;
+			bio_set_dev(&n->bio, ca->disk_sb.bdev);
 			submit_bio(&n->bio);
 		} else {
 			n->have_io_ref		= false;
@@ -1410,7 +1410,7 @@ noclone:
 	rbio->promote		= promote ? promote_alloc(rbio) : NULL;
 	INIT_WORK(&rbio->work, NULL);
 
-	rbio->bio.bi_bdev	= pick->ca->disk_sb.bdev;
+	bio_set_dev(&rbio->bio, pick->ca->disk_sb.bdev);
 	rbio->bio.bi_opf	= orig->bio.bi_opf;
 	rbio->bio.bi_iter.bi_sector = pick->ptr.offset;
 	rbio->bio.bi_end_io	= bch2_read_endio;
@@ -1452,9 +1452,9 @@ static void bch2_read_nodecode_retry(struct bch_fs *c, struct bch_read_bio *rbio
 
 	bch2_btree_iter_init(&iter, c, BTREE_ID_EXTENTS,
 			     POS(inode, bvec_iter.bi_sector),
-			     BTREE_ITER_WITH_HOLES);
+			     BTREE_ITER_SLOTS);
 retry:
-	k = bch2_btree_iter_peek_with_holes(&iter);
+	k = bch2_btree_iter_peek_slot(&iter);
 	if (btree_iter_err(k)) {
 		bch2_btree_iter_unlock(&iter);
 		goto err;
@@ -1525,7 +1525,7 @@ void __bch2_read(struct bch_fs *c, struct bch_read_bio *rbio,
 retry:
 	for_each_btree_key(&iter, c, BTREE_ID_EXTENTS,
 			   POS(inode, bvec_iter.bi_sector),
-			   BTREE_ITER_WITH_HOLES, k) {
+			   BTREE_ITER_SLOTS, k) {
 		BKEY_PADDED(k) tmp;
 		struct extent_pick_ptr pick;
 		struct bvec_iter fragment;

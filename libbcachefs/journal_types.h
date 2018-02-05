@@ -140,6 +140,7 @@ struct journal {
 
 	/* Used when waiting because the journal was full */
 	wait_queue_head_t	wait;
+	struct closure_waitlist	async_wait;
 
 	struct closure		io;
 	struct delayed_work	write_work;
@@ -166,7 +167,10 @@ struct journal {
 	 * needed. When all journal entries in the oldest journal bucket are no
 	 * longer needed, the bucket can be discarded and reused.
 	 */
-	DECLARE_FIFO(struct journal_entry_pin_list, pin);
+	struct {
+		u64 front, back, size, mask;
+		struct journal_entry_pin_list *data;
+	}			pin;
 	struct journal_entry_pin_list *replay_pin_list;
 
 	struct mutex		blacklist_lock;

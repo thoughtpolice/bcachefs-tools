@@ -155,8 +155,10 @@ static inline bool journal_pin_active(struct journal_entry_pin *pin)
 static inline struct journal_entry_pin_list *
 journal_seq_pin(struct journal *j, u64 seq)
 {
-	return &j->pin.data[(size_t) seq & j->pin.mask];
+	return &j->pin.data[seq & j->pin.mask];
 }
+
+u64 bch2_journal_pin_seq(struct journal *, struct journal_entry_pin *);
 
 void bch2_journal_pin_add(struct journal *, struct journal_res *,
 			  struct journal_entry_pin *, journal_pin_flush_fn);
@@ -195,8 +197,11 @@ static inline void bch2_journal_set_has_inode(struct journal *j,
 					      u64 inum)
 {
 	struct journal_buf *buf = &j->buf[res->idx];
+	unsigned long bit = hash_64(inum, ilog2(sizeof(buf->has_inode) * 8));
 
-	set_bit(hash_64(inum, ilog2(sizeof(buf->has_inode) * 8)), buf->has_inode);
+	/* avoid atomic op if possible */
+	if (unlikely(!test_bit(bit, buf->has_inode)))
+		set_bit(bit, buf->has_inode);
 }
 
 /*
@@ -234,7 +239,7 @@ static inline void bch2_journal_add_entry(struct journal *j, struct journal_res 
 	unsigned actual = jset_u64s(u64s);
 
 	EBUG_ON(!res->ref);
-	BUG_ON(actual > res->u64s);
+	EBUG_ON(actual > res->u64s);
 
 	bch2_journal_add_entry_at(buf, res->offset, type,
 				  id, level, data, u64s);
@@ -352,6 +357,9 @@ out:
 	return 0;
 }
 
+u64 bch2_journal_last_unwritten_seq(struct journal *);
+int bch2_journal_open_seq_async(struct journal *, u64, struct closure *);
+
 void bch2_journal_wait_on_seq(struct journal *, u64, struct closure *);
 void bch2_journal_flush_seq_async(struct journal *, u64, struct closure *);
 void bch2_journal_flush_async(struct journal *, struct closure *);
@@ -369,6 +377,8 @@ static inline int bch2_journal_error(struct journal *j)
 	return j->reservations.cur_entry_offset == JOURNAL_ENTRY_ERROR_VAL
 		? -EIO : 0;
 }
+
+struct bch_dev;
 
 static inline bool journal_flushes_device(struct bch_dev *ca)
 {
