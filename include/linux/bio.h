@@ -257,6 +257,8 @@ static inline void bio_flush_dcache_pages(struct bio *bi)
 extern void bio_copy_data_iter(struct bio *dst, struct bvec_iter *dst_iter,
 			       struct bio *src, struct bvec_iter *src_iter);
 extern void bio_copy_data(struct bio *dst, struct bio *src);
+
+void bio_free_pages(struct bio *bio);
 extern int bio_alloc_pages(struct bio *bio, gfp_t gfp);
 
 void zero_fill_bio_iter(struct bio *bio, struct bvec_iter iter);

@@ -426,6 +426,7 @@ static void bch2_fs_free(struct bch_fs *c)
 	mempool_exit(&c->fill_iter);
 	percpu_ref_exit(&c->writes);
 	kfree(rcu_dereference_protected(c->replicas, 1));
+	kfree(rcu_dereference_protected(c->disk_groups, 1));
 
 	if (c->copygc_wq)
 		destroy_workqueue(c->copygc_wq);
@@ -1169,6 +1170,12 @@ static int __bch2_dev_online(struct bch_fs *c, struct bch_sb_handle *sb)
 
 	BUG_ON(!percpu_ref_is_zero(&ca->io_ref));
 
+	if (get_capacity(sb->bdev->bd_disk) <
+	    ca->mi.bucket_size * ca->mi.nbuckets) {
+		bch_err(c, "device too small");
+		return -EINVAL;
+	}
+
 	ret = bch2_dev_journal_init(ca, sb->sb);
 	if (ret)
 		return ret;
@@ -1495,10 +1502,7 @@ int bch2_dev_add(struct bch_fs *c, const char *path)
 	mutex_lock(&c->state_lock);
 	mutex_lock(&c->sb_lock);
 
-	/*
-	 * Preserve the old cache member information (esp. tier)
-	 * before we start bashing the disk stuff.
-	 */
+	/* Grab member info for new disk: */
 	dev_mi = bch2_sb_get_members(sb.sb);
 	saved_mi = dev_mi->members[sb.sb->dev_idx];
 	saved_mi.last_mount = cpu_to_le64(ktime_get_seconds());
@@ -1644,47 +1648,6 @@ int bch2_dev_offline(struct bch_fs *c, struct bch_dev *ca, int flags)
 
 	mutex_unlock(&c->state_lock);
 	return 0;
-}
-
-int bch2_dev_evacuate(struct bch_fs *c, struct bch_dev *ca)
-{
-	unsigned data;
-	int ret = 0;
-
-	mutex_lock(&c->state_lock);
-
-	if (ca->mi.state == BCH_MEMBER_STATE_RW &&
-	    bch2_dev_is_online(ca)) {
-		bch_err(ca, "Cannot migrate data off RW device");
-		ret = -EINVAL;
-		goto err;
-	}
-
-	ret = bch2_dev_data_migrate(c, ca, 0);
-	if (ret) {
-		bch_err(ca, "Error migrating data: %i", ret);
-		goto err;
-	}
-
-	ret = bch2_journal_flush_device(&c->journal, ca->dev_idx);
-	if (ret) {
-		bch_err(ca, "Migrate failed: error %i flushing journal", ret);
-		goto err;
-	}
-
-	data = bch2_dev_has_data(c, ca);
-	if (data) {
-		char buf[100];
-
-		bch2_scnprint_flag_list(buf, sizeof(buf),
-					bch2_data_types, data);
-		bch_err(ca, "Migrate failed, still has data (%s)", buf);
-		ret = -EINVAL;
-		goto err;
-	}
-err:
-	mutex_unlock(&c->state_lock);
-	return ret;
 }
 
 int bch2_dev_resize(struct bch_fs *c, struct bch_dev *ca, u64 nbuckets)

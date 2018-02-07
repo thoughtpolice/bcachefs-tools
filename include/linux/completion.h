@@ -37,4 +37,6 @@ static inline void reinit_completion(struct completion *x)
 void complete(struct completion *);
 void wait_for_completion(struct completion *);
 
+#define wait_for_completion_interruptible(x) (wait_for_completion(x), 0)
+
 #endif

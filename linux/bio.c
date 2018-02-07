@@ -163,6 +163,15 @@ struct bio *bio_split(struct bio *bio, int sectors,
 	return split;
 }
 
+void bio_free_pages(struct bio *bio)
+{
+	struct bio_vec *bvec;
+	int i;
+
+	bio_for_each_segment_all(bvec, bio, i)
+		__free_page(bvec->bv_page);
+}
+
 int bio_alloc_pages(struct bio *bio, gfp_t gfp_mask)
 {
 	int i;

@@ -29,6 +29,11 @@ static inline void get_random_bytes(void *buf, int nbytes)
 	BUG_ON(getrandom(buf, nbytes, 0) != nbytes);
 }
 
+static inline void prandom_bytes(void *buf, int nbytes)
+{
+	return get_random_bytes(buf, nbytes);
+}
+
 #define get_random_type(type)				\
 static inline type get_random_##type(void)		\
 {							\

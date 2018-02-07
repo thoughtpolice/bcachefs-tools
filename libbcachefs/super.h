@@ -30,7 +30,7 @@ static inline bool bch2_dev_is_online(struct bch_dev *ca)
 	return ca->disk_sb.bdev != NULL;
 }
 
-static inline unsigned dev_mask_nr(struct bch_devs_mask *devs)
+static inline unsigned dev_mask_nr(const struct bch_devs_mask *devs)
 {
 	return bitmap_weight(devs->d, BCH_SB_MEMBERS_MAX);
 }
@@ -68,7 +68,7 @@ static inline void bch2_dev_list_add_dev(struct bch_devs_list *devs,
 }
 
 static inline struct bch_dev *__bch2_next_dev(struct bch_fs *c, unsigned *iter,
-					      struct bch_devs_mask *mask)
+					      const struct bch_devs_mask *mask)
 {
 	struct bch_dev *ca = NULL;
 
@@ -188,7 +188,6 @@ int bch2_dev_remove(struct bch_fs *, struct bch_dev *, int);
 int bch2_dev_add(struct bch_fs *, const char *);
 int bch2_dev_online(struct bch_fs *, const char *);
 int bch2_dev_offline(struct bch_fs *, struct bch_dev *, int);
-int bch2_dev_evacuate(struct bch_fs *, struct bch_dev *);
 int bch2_dev_resize(struct bch_fs *, struct bch_dev *, u64);
 
 bool bch2_fs_emergency_read_only(struct bch_fs *);
