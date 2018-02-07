@@ -58,7 +58,7 @@ static char *dev_t_to_path(dev_t dev)
 	return mprintf("/dev/%s", p);
 }
 
-static bool path_is_fs_root(char *path)
+static bool path_is_fs_root(const char *path)
 {
 	char *line = NULL, *p, *mount;
 	size_t n = 0;
@@ -245,12 +245,17 @@ static void copy_xattrs(struct bch_fs *c, struct bch_inode_unpacked *dst,
 	}
 }
 
+static char buf[1 << 20] __aligned(PAGE_SIZE);
+static const size_t buf_pages = sizeof(buf) / PAGE_SIZE;
+
 static void write_data(struct bch_fs *c,
 		       struct bch_inode_unpacked *dst_inode,
 		       u64 dst_offset, void *buf, size_t len)
 {
-	struct bch_write_op op;
-	struct bio_vec bv;
+	struct {
+		struct bch_write_op op;
+		struct bio_vec bv[buf_pages];
+	} o;
 	struct closure cl;
 
 	BUG_ON(dst_offset	& (block_bytes(c) - 1));
@@ -258,27 +263,25 @@ static void write_data(struct bch_fs *c,
 
 	closure_init_stack(&cl);
 
-	bio_init(&op.wbio.bio, &bv, 1);
-	op.wbio.bio.bi_iter.bi_size = len;
-	bch2_bio_map(&op.wbio.bio, buf);
+	bio_init(&o.op.wbio.bio, o.bv, buf_pages);
+	o.op.wbio.bio.bi_iter.bi_size = len;
+	bch2_bio_map(&o.op.wbio.bio, buf);
 
-	bch2_write_op_init(&op, c);
+	bch2_write_op_init(&o.op, c);
+	o.op.write_point	= writepoint_hashed(0);
+	o.op.nr_replicas	= 1;
+	o.op.pos		= POS(dst_inode->bi_inum, dst_offset >> 9);
 
-	op.write_point	= writepoint_hashed(0);
-	op.pos		= POS(dst_inode->bi_inum, dst_offset >> 9);
-
-	int ret = bch2_disk_reservation_get(c, &op.res, len >> 9,
+	int ret = bch2_disk_reservation_get(c, &o.op.res, len >> 9,
 					    c->opts.data_replicas, 0);
 	if (ret)
 		die("error reserving space in new filesystem: %s", strerror(-ret));
 
-	closure_call(&op.cl, bch2_write, NULL, &cl);
+	closure_call(&o.op.cl, bch2_write, NULL, &cl);
 	closure_sync(&cl);
 
 	dst_inode->bi_sectors += len >> 9;
 }
-
-static char buf[1 << 20] __aligned(PAGE_SIZE);
 
 static void copy_data(struct bch_fs *c,
 		      struct bch_inode_unpacked *dst_inode,
@@ -286,9 +289,12 @@ static void copy_data(struct bch_fs *c,
 {
 	while (start < end) {
 		unsigned len = min_t(u64, end - start, sizeof(buf));
+		unsigned pad = round_up(len, block_bytes(c)) - len;
 
 		xpread(src_fd, buf, len, start);
-		write_data(c, dst_inode, start, buf, len);
+		memset(buf + len, 0, pad);
+
+		write_data(c, dst_inode, start, buf, len + pad);
 		start += len;
 	}
 }
@@ -311,7 +317,7 @@ static void link_data(struct bch_fs *c, struct bch_inode_unpacked *dst,
 	while (length) {
 		struct bkey_i_extent *e;
 		BKEY_PADDED(k) k;
-		u64 b = sector_to_bucket(ca, physical >> 9);
+		u64 b = sector_to_bucket(ca, physical);
 		struct disk_reservation res;
 		unsigned sectors;
 		int ret;
@@ -329,6 +335,8 @@ static void link_data(struct bch_fs *c, struct bch_inode_unpacked *dst,
 					.dev = 0,
 					.gen = bucket(ca, b)->mark.gen,
 				  });
+
+		set_bit(b, ca->buckets_dirty);
 
 		ret = bch2_disk_reservation_get(c, &res, sectors, 1,
 						BCH_DISK_RESERVATION_NOFAIL);
@@ -364,18 +372,19 @@ static void copy_link(struct bch_fs *c, struct bch_inode_unpacked *dst,
 }
 
 static void copy_file(struct bch_fs *c, struct bch_inode_unpacked *dst,
-		      int src, char *src_path, ranges *extents)
+		      int src_fd, u64 src_size,
+		      char *src_path, ranges *extents)
 {
 	struct fiemap_iter iter;
 	struct fiemap_extent e;
 
-	fiemap_for_each(src, iter, e)
+	fiemap_for_each(src_fd, iter, e)
 		if (e.fe_flags & FIEMAP_EXTENT_UNKNOWN) {
-			fsync(src);
+			fsync(src_fd);
 			break;
 		}
 
-	fiemap_for_each(src, iter, e) {
+	fiemap_for_each(src_fd, iter, e) {
 		if ((e.fe_logical	& (block_bytes(c) - 1)) ||
 		    (e.fe_length	& (block_bytes(c) - 1)))
 			die("Unaligned extent in %s - can't handle", src_path);
@@ -384,20 +393,20 @@ static void copy_file(struct bch_fs *c, struct bch_inode_unpacked *dst,
 				  FIEMAP_EXTENT_ENCODED|
 				  FIEMAP_EXTENT_NOT_ALIGNED|
 				  FIEMAP_EXTENT_DATA_INLINE)) {
-			copy_data(c, dst,
-				  src,
-				  round_down(e.fe_logical, block_bytes(c)),
-				  round_up(e.fe_logical + e.fe_length,
-					   block_bytes(c)));
+			copy_data(c, dst, src_fd, e.fe_logical,
+				  min(src_size - e.fe_logical,
+				      e.fe_length));
 			continue;
 		}
 
+		/*
+		 * if the data is below 1 MB, copy it so it doesn't conflict
+		 * with bcachefs's potentially larger superblock:
+		 */
 		if (e.fe_physical < 1 << 20) {
-			copy_data(c, dst,
-				  src,
-				  round_down(e.fe_logical, block_bytes(c)),
-				  round_up(e.fe_logical + e.fe_length,
-					   block_bytes(c)));
+			copy_data(c, dst, src_fd, e.fe_logical,
+				  min(src_size - e.fe_logical,
+				      e.fe_length));
 			continue;
 		}
 
@@ -476,7 +485,8 @@ static void copy_dir(struct copy_fs_state *s,
 			inode.bi_size = stat.st_size;
 
 			fd = xopen(d->d_name, O_RDONLY|O_NOATIME);
-			copy_file(c, &inode, fd, child_path, &s->extents);
+			copy_file(c, &inode, fd, stat.st_size,
+				  child_path, &s->extents);
 			close(fd);
 			break;
 		case DT_LNK:
@@ -603,6 +613,8 @@ static void copy_fs(struct bch_fs *c, int src_fd, const char *src_path,
 
 	darray_free(s.extents);
 	genradix_free(&s.hardlinks);
+
+	bch2_alloc_write(c);
 }
 
 static void find_superblock_space(ranges extents, struct dev_opts *dev)
@@ -645,37 +657,10 @@ static const struct option migrate_opts[] = {
 	{ NULL }
 };
 
-int cmd_migrate(int argc, char *argv[])
+static int migrate_fs(const char *fs_path,
+		      struct format_opts format_opts,
+		      bool force)
 {
-	struct format_opts format_opts = format_opts_default();
-	char *fs_path = NULL;
-	unsigned block_size;
-	bool no_passphrase = false, force = false;
-	int opt;
-
-	while ((opt = getopt_long(argc, argv, "f:Fh",
-				  migrate_opts, NULL)) != -1)
-		switch (opt) {
-		case 'f':
-			fs_path = optarg;
-			break;
-		case 'e':
-			format_opts.encrypted = true;
-			break;
-		case 'p':
-			no_passphrase = true;
-			break;
-		case 'F':
-			force = true;
-			break;
-		case 'h':
-			migrate_usage();
-			exit(EXIT_SUCCESS);
-		}
-
-	if (!fs_path)
-		die("Please specify a filesytem to migrate");
-
 	if (!path_is_fs_root(fs_path))
 		die("%s is not a filysestem root", fs_path);
 
@@ -690,25 +675,23 @@ int cmd_migrate(int argc, char *argv[])
 	dev.path = dev_t_to_path(stat.st_dev);
 	dev.fd = xopen(dev.path, O_RDWR);
 
-	block_size = min_t(unsigned, stat.st_blksize,
-			   get_blocksize(dev.path, dev.fd) << 9);
-
+	unsigned block_size = get_blocksize(dev.path, dev.fd) << 9;
 	BUG_ON(!is_power_of_2(block_size) || block_size < 512);
 	format_opts.block_size = block_size >> 9;
 
-	u64 bcachefs_inum;
 	char *file_path = mprintf("%s/bcachefs", fs_path);
+	printf("Creating new filesystem on %s in space reserved at %s\n",
+	       dev.path, file_path);
 
 	bch2_pick_bucket_size(format_opts, &dev);
 
+	u64 bcachefs_inum;
 	ranges extents = reserve_new_fs_space(file_path,
-				block_size, get_size(dev.path, dev.fd) / 5,
+				format_opts.block_size << 9,
+				get_size(dev.path, dev.fd) / 5,
 				&bcachefs_inum, stat.st_dev, force);
 
 	find_superblock_space(extents, &dev);
-
-	if (format_opts.encrypted && !no_passphrase)
-		format_opts.passphrase = read_passphrase_twice("Enter passphrase: ");
 
 	struct bch_sb *sb = bch2_format(format_opts, &dev, 1);
 	u64 sb_offset = le64_to_cpu(sb->layout.sb_offset[0]);
@@ -717,22 +700,6 @@ int cmd_migrate(int argc, char *argv[])
 		bch2_add_key(sb, format_opts.passphrase);
 
 	free(sb);
-
-	printf("Creating new filesystem on %s in space reserved at %s\n"
-	       "To mount, run\n"
-	       "  mount -t bcachefs -o sb=%llu %s dir\n"
-	       "\n"
-	       "After verifying that the new filesystem is correct, to create a\n"
-	       "superblock at the default offset and finish the migration run\n"
-	       "  bcachefs migrate_superblock -d %s -o %llu\n"
-	       "\n"
-	       "The new filesystem will have a file at /old_migrated_filestem\n"
-	       "referencing all disk space that might be used by the existing\n"
-	       "filesystem. That file can be deleted once the old filesystem is\n"
-	       "no longer needed (and should be deleted prior to running\n"
-	       "bcachefs migrate_superblock)\n",
-	       dev.path, file_path, sb_offset, dev.path,
-	       dev.path, sb_offset);
 
 	struct bch_opts opts = bch2_opts_empty();
 	struct bch_fs *c = NULL;
@@ -766,7 +733,57 @@ int cmd_migrate(int argc, char *argv[])
 
 	bch2_fs_stop(c);
 	printf("fsck complete\n");
+
+	printf("To mount the new filesystem, run\n"
+	       "  mount -t bcachefs -o sb=%llu %s dir\n"
+	       "\n"
+	       "After verifying that the new filesystem is correct, to create a\n"
+	       "superblock at the default offset and finish the migration run\n"
+	       "  bcachefs migrate_superblock -d %s -o %llu\n"
+	       "\n"
+	       "The new filesystem will have a file at /old_migrated_filestem\n"
+	       "referencing all disk space that might be used by the existing\n"
+	       "filesystem. That file can be deleted once the old filesystem is\n"
+	       "no longer needed (and should be deleted prior to running\n"
+	       "bcachefs migrate_superblock)\n",
+	       sb_offset, dev.path, dev.path, sb_offset);
 	return 0;
+}
+
+int cmd_migrate(int argc, char *argv[])
+{
+	struct format_opts format_opts = format_opts_default();
+	char *fs_path = NULL;
+	bool no_passphrase = false, force = false;
+	int opt;
+
+	while ((opt = getopt_long(argc, argv, "f:Fh",
+				  migrate_opts, NULL)) != -1)
+		switch (opt) {
+		case 'f':
+			fs_path = optarg;
+			break;
+		case 'e':
+			format_opts.encrypted = true;
+			break;
+		case 'p':
+			no_passphrase = true;
+			break;
+		case 'F':
+			force = true;
+			break;
+		case 'h':
+			migrate_usage();
+			exit(EXIT_SUCCESS);
+		}
+
+	if (!fs_path)
+		die("Please specify a filesytem to migrate");
+
+	if (format_opts.encrypted && !no_passphrase)
+		format_opts.passphrase = read_passphrase_twice("Enter passphrase: ");
+
+	return migrate_fs(fs_path, format_opts, force);
 }
 
 static void migrate_superblock_usage(void)

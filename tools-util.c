@@ -82,10 +82,16 @@ void *xrealloc(void *p, size_t size)
 
 void xpread(int fd, void *buf, size_t count, off_t offset)
 {
-	ssize_t r = pread(fd, buf, count, offset);
+	while (count) {
+		ssize_t r = pread(fd, buf, count, offset);
 
-	if (r != count)
-		die("read error (ret %zi)", r);
+		if (r < 0)
+			die("read error: %m");
+		if (!r)
+			die("pread error: unexpected eof");
+		count	-= r;
+		offset	+= r;
+	}
 }
 
 void xpwrite(int fd, const void *buf, size_t count, off_t offset)
