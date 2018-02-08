@@ -80,7 +80,7 @@ static void print_fs_usage(const char *path, enum units units)
 int cmd_fs_usage(int argc, char *argv[])
 {
 	enum units units = BYTES;
-	unsigned i;
+	char *fs;
 	int opt;
 
 	while ((opt = getopt(argc, argv, "h")) != -1)
@@ -89,12 +89,13 @@ int cmd_fs_usage(int argc, char *argv[])
 			units = HUMAN_READABLE;
 			break;
 		}
+	args_shift(optind);
 
-	if (argc - optind < 1) {
+	if (!argc) {
 		print_fs_usage(".", units);
 	} else {
-		for (i = optind; i < argc; i++)
-			print_fs_usage(argv[i], units);
+		while ((fs = arg_pop()))
+			print_fs_usage(fs, units);
 	}
 
 	return 0;

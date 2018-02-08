@@ -50,13 +50,14 @@ int cmd_fsck(int argc, char *argv[])
 			usage();
 			exit(EXIT_SUCCESS);
 		}
+	args_shift(optind);
 
-	if (optind >= argc)
+	if (!argc)
 		die("Please supply device(s) to check");
 
-	struct bch_fs *c = bch2_fs_open(argv + optind, argc - optind, opts);
+	struct bch_fs *c = bch2_fs_open(argv, argc, opts);
 	if (IS_ERR(c))
-		die("error opening %s: %s", argv[optind], strerror(-PTR_ERR(c)));
+		die("error opening %s: %s", argv[0], strerror(-PTR_ERR(c)));
 
 	bch2_fs_stop(c);
 	return 0;

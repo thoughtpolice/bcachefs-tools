@@ -89,6 +89,7 @@ struct bchfs_handle {
 
 void bcache_fs_close(struct bchfs_handle);
 struct bchfs_handle bcache_fs_open(const char *);
+struct bchfs_handle bchu_fs_open_by_dev(const char *, unsigned *);
 
 static inline void bchu_disk_add(struct bchfs_handle fs, char *dev)
 {
@@ -97,18 +98,43 @@ static inline void bchu_disk_add(struct bchfs_handle fs, char *dev)
 	xioctl(fs.ioctl_fd, BCH_IOCTL_DISK_ADD, &i);
 }
 
-static inline void bchu_disk_set_state(struct bchfs_handle fs, const char *dev,
+static inline void bchu_disk_remove(struct bchfs_handle fs, unsigned dev_idx,
+				    unsigned flags)
+{
+	struct bch_ioctl_disk i = {
+		.flags	= flags|BCH_BY_INDEX,
+		.dev	= dev_idx,
+	};
+
+	xioctl(fs.ioctl_fd, BCH_IOCTL_DISK_REMOVE, &i);
+}
+
+static inline void bchu_disk_online(struct bchfs_handle fs, char *dev)
+{
+	struct bch_ioctl_disk i = { .dev = (__u64) dev, };
+
+	xioctl(fs.ioctl_fd, BCH_IOCTL_DISK_ONLINE, &i);
+}
+
+static inline void bchu_disk_offline(struct bchfs_handle fs, unsigned dev_idx,
+				     unsigned flags)
+{
+	struct bch_ioctl_disk i = {
+		.flags	= flags|BCH_BY_INDEX,
+		.dev	= dev_idx,
+	};
+
+	xioctl(fs.ioctl_fd, BCH_IOCTL_DISK_OFFLINE, &i);
+}
+
+static inline void bchu_disk_set_state(struct bchfs_handle fs, unsigned dev,
 				       unsigned new_state, unsigned flags)
 {
 	struct bch_ioctl_disk_set_state i = {
-		.flags		= flags,
+		.flags		= flags|BCH_BY_INDEX,
 		.new_state	= new_state,
+		.dev		= dev,
 	};
-
-	if (!kstrtoull(dev, 10, &i.dev))
-		i.flags |= BCH_BY_INDEX;
-	else
-		i.dev = (u64) dev;
 
 	xioctl(fs.ioctl_fd, BCH_IOCTL_DISK_SET_STATE, &i);
 }
@@ -175,5 +201,7 @@ static inline void bchu_disk_resize(struct bchfs_handle fs,
 
 	xioctl(fs.ioctl_fd, BCH_IOCTL_DISK_RESIZE, &i);
 }
+
+int bchu_data(struct bchfs_handle, struct bch_ioctl_data);
 
 #endif /* _LIBBCACHE_H */

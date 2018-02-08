@@ -53,6 +53,9 @@ static void usage(void)
 	     "  device set-state     Mark a device as failed\n"
 	     "  device resize        Resize filesystem on a device\n"
 	     "\n"
+	     "Commands for managing filesystem data:\n"
+	     "  data rereplicate     Rereplicate degraded data\n"
+	     "\n"
 	     "Encryption:\n"
 	     "  unlock               Unlock an encrypted filesystem prior to running/mounting\n"
 	     "  set-passphrase       Change passphrase on an existing (unmounted) filesystem\n"
@@ -120,6 +123,17 @@ static int device_cmds(int argc, char *argv[])
 	return 0;
 }
 
+static int data_cmds(int argc, char *argv[])
+{
+	char *cmd = pop_cmd(&argc, argv);
+
+	if (!strcmp(cmd, "rereplicate"))
+		return cmd_data_rereplicate(argc, argv);
+
+	usage();
+	return 0;
+}
+
 int main(int argc, char *argv[])
 {
 	full_cmd = argv[0];
@@ -150,6 +164,9 @@ int main(int argc, char *argv[])
 
 	if (!strcmp(cmd, "device"))
 		return device_cmds(argc, argv);
+
+	if (!strcmp(cmd, "data"))
+		return data_cmds(argc, argv);
 
 	if (!strcmp(cmd, "unlock"))
 		return cmd_unlock(argc, argv);

@@ -103,16 +103,17 @@ int cmd_dump(int argc, char *argv[])
 			dump_usage();
 			exit(EXIT_SUCCESS);
 		}
-
-	if (optind >= argc)
-		die("Please supply device(s) to check");
+	args_shift(optind);
 
 	if (!out)
 		die("Please supply output filename");
 
-	struct bch_fs *c = bch2_fs_open(argv + optind, argc - optind, opts);
+	if (!argc)
+		die("Please supply device(s) to check");
+
+	struct bch_fs *c = bch2_fs_open(argv, argc, opts);
 	if (IS_ERR(c))
-		die("error opening %s: %s", argv[optind], strerror(-PTR_ERR(c)));
+		die("error opening %s: %s", argv[0], strerror(-PTR_ERR(c)));
 
 	down_read(&c->gc_lock);
 
@@ -299,13 +300,14 @@ int cmd_list(int argc, char *argv[])
 			list_keys_usage();
 			exit(EXIT_SUCCESS);
 		}
+	args_shift(optind);
 
-	if (optind >= argc)
-		die("Please supply device(s) to check");
+	if (!argc)
+		die("Please supply device(s)");
 
-	struct bch_fs *c = bch2_fs_open(argv + optind, argc - optind, opts);
+	struct bch_fs *c = bch2_fs_open(argv, argc, opts);
 	if (IS_ERR(c))
-		die("error opening %s: %s", argv[optind], strerror(-PTR_ERR(c)));
+		die("error opening %s: %s", argv[0], strerror(-PTR_ERR(c)));
 
 	switch (mode) {
 	case 0:

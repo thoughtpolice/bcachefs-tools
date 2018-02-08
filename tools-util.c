@@ -118,6 +118,14 @@ struct stat xfstat(int fd)
 	return stat;
 }
 
+struct stat xstat(const char *path)
+{
+	struct stat statbuf;
+	if (stat(path, &statbuf))
+		die("stat error: %m");
+	return statbuf;
+}
+
 /* Formatting: */
 
 int printf_pad(unsigned pad, const char * fmt, ...)

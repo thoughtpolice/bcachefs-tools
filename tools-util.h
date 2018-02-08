@@ -28,6 +28,7 @@ void xpread(int, void *, size_t, off_t);
 void xpwrite(int, const void *, size_t, off_t);
 struct stat xfstatat(int, const char *, int);
 struct stat xfstat(int);
+struct stat xstat(const char *);
 
 #define xopenat(_dirfd, _path, ...)					\
 ({									\
@@ -155,8 +156,9 @@ char *dev_to_mount(char *);
 
 #define args_shift(_nr)							\
 do {									\
-	argc -= (_nr);							\
-	argv += (_nr);							\
+	unsigned _n = min((_nr), argc);					\
+	argc -= _n;							\
+	argv += _n;							\
 } while (0)
 
 #define arg_pop()							\

@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
@@ -17,6 +18,7 @@
 #include "libbcachefs/checksum.h"
 #include "crypto.h"
 #include "libbcachefs.h"
+#include "libbcachefs/btree_cache.h"
 #include "libbcachefs/opts.h"
 #include "libbcachefs/super-io.h"
 
@@ -640,7 +642,7 @@ struct bchfs_handle bcache_fs_open(const char *path)
 
 	if (!uuid_parse(path, ret.uuid.b)) {
 		/* It's a UUID, look it up in sysfs: */
-		char *sysfs = mprintf("%s%s", SYSFS_BASE, path);
+		char *sysfs = mprintf(SYSFS_BASE "%s", path);
 		ret.sysfs_fd = xopen(sysfs, O_RDONLY);
 
 		char *minor = read_file_str(ret.sysfs_fd, "minor");
@@ -662,10 +664,94 @@ struct bchfs_handle bcache_fs_open(const char *path)
 		char uuid_str[40];
 		uuid_unparse(uuid.uuid.b, uuid_str);
 
-		char *sysfs = mprintf("%s%s", SYSFS_BASE, uuid_str);
+		char *sysfs = mprintf(SYSFS_BASE "%s", uuid_str);
 		ret.sysfs_fd = xopen(sysfs, O_RDONLY);
 		free(sysfs);
 	}
 
 	return ret;
+}
+
+/*
+ * Given a path to a block device, open the filesystem it belongs to; also
+ * return the device's idx:
+ */
+struct bchfs_handle bchu_fs_open_by_dev(const char *path, unsigned *idx)
+{
+	char buf[1024], *uuid_str;
+
+	struct stat stat = xstat(path);
+
+	if (!S_ISBLK(stat.st_mode))
+		die("%s is not a block device", path);
+
+	char *sysfs = mprintf("/sys/dev/block/%u:%u/bcachefs",
+			      major(stat.st_dev),
+			      minor(stat.st_dev));
+	ssize_t len = readlink(sysfs, buf, sizeof(buf));
+	free(sysfs);
+
+	if (len > 0) {
+		char *p = strrchr(buf, '/');
+		if (!p || sscanf(p + 1, "dev-%u", idx) != 1)
+			die("error parsing sysfs");
+
+		*p = '\0';
+		p = strrchr(buf, '/');
+		uuid_str = p + 1;
+	} else {
+		struct bch_opts opts = bch2_opts_empty();
+
+		opt_set(opts, noexcl,	true);
+		opt_set(opts, nochanges, true);
+
+		struct bch_sb_handle sb;
+		int ret = bch2_read_super(path, &opts, &sb);
+		if (ret)
+			die("Error opening %s: %s", path, strerror(-ret));
+
+		*idx = sb.sb->dev_idx;
+		uuid_str = buf;
+		uuid_unparse(sb.sb->user_uuid.b, uuid_str);
+
+		bch2_free_super(&sb);
+	}
+
+	return bcache_fs_open(uuid_str);
+}
+
+int bchu_data(struct bchfs_handle fs, struct bch_ioctl_data cmd)
+{
+	int progress_fd = xioctl(fs.ioctl_fd, BCH_IOCTL_DATA, &cmd);
+
+	while (1) {
+		struct bch_ioctl_data_progress p;
+
+		if (read(progress_fd, &p, sizeof(p)) != sizeof(p))
+			die("error reading from progress fd");
+
+		if (p.data_type == U8_MAX)
+			break;
+
+		printf("\33[2K\r");
+
+		printf("%llu%% complete: current position %s",
+		       p.sectors_done * 100 / p.sectors_total,
+		       bch2_data_types[p.data_type]);
+
+		switch (p.data_type) {
+		case BCH_DATA_BTREE:
+		case BCH_DATA_USER:
+			printf(" %s:%llu:%llu",
+			       bch2_btree_ids[p.btree_id],
+			       p.pos.inode,
+			       p.pos.offset);
+		}
+
+		sleep(1);
+	}
+	printf("\nDone\n");
+
+	close(progress_fd);
+	return 0;
 }
