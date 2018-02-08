@@ -739,13 +739,13 @@ static int migrate_fs(const char *fs_path,
 	       "\n"
 	       "After verifying that the new filesystem is correct, to create a\n"
 	       "superblock at the default offset and finish the migration run\n"
-	       "  bcachefs migrate_superblock -d %s -o %llu\n"
+	       "  bcachefs migrate-superblock -d %s -o %llu\n"
 	       "\n"
 	       "The new filesystem will have a file at /old_migrated_filestem\n"
 	       "referencing all disk space that might be used by the existing\n"
 	       "filesystem. That file can be deleted once the old filesystem is\n"
 	       "no longer needed (and should be deleted prior to running\n"
-	       "bcachefs migrate_superblock)\n",
+	       "bcachefs migrate-superblock)\n",
 	       sb_offset, dev.path, dev.path, sb_offset);
 	return 0;
 }
