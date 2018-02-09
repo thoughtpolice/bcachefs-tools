@@ -191,8 +191,8 @@ extern struct timespec64 ns_to_timespec64(const s64 nsec);
  */
 static __always_inline void timespec64_add_ns(struct timespec64 *a, u64 ns)
 {
-	a->tv_sec += __iter_div_u64_rem(a->tv_nsec + ns, NSEC_PER_SEC, &ns);
-	a->tv_nsec = ns;
+	a->tv_sec += (a->tv_nsec + ns) / NSEC_PER_SEC;
+	a->tv_nsec += (a->tv_nsec + ns) % NSEC_PER_SEC;
 }
 
 #endif
