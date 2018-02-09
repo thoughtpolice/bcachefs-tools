@@ -1,153 +1,314 @@
-.TH bcachefs 8
-.SH NAME
-bcachefs \- manage bcachefs filesystems/devices
-
-.SH  SYNOPSIS
-.B bcachefs
-[\fIoptions\fR]
-.B COMMAND
-[\fIoptions\fR]
-
-.SH COMMANDS
-.TP
-.BR format
-.RS
-Format one or a list of devices with bcachefs data structures. You need to do this before you create a volume.
-.RE
-
-.BR register
-.RS
-Register a list of devices.
-.RE
-
-.BR list-cachesets
-.RS
-List cachesets on this system. This just searches /sys/fs/bcachefs.
-.RE
-
-.BR query-devs
-.RS
-Gives info about the superblock for a list of devices.
-.RE
-
-.BR status
-.RS
-Finds the status of the most up to date superblock in each tier. Pass in a list of devices.
-.RE
-
-.BR stats
-.RS
-List bcache specific statistics. Use --list to find out exactly what these are. To list stats for a cacheset, just give the cacheset uuid. To target a cache within the cacheset, use the -c option. To get time interval stats, use the hour, day, etc, options.
-.RE
-
-.BR probe
-.RS
-Return UUID if device identified as bcache-formatted.
-.PP
-Only necessary until support for the bcache superblock is included
-in blkid; in the meantime, provides just enough functionality for a udev script
-to create the /dev/disk/by-uuid symlink.
-.RE
-
-.BR help
-.RS
-List the bcache commands
-.RE
-
-.SH OPTIONS
-.SH Options for bcache
-.TP
-.BR \--help
-
-
-.SH Options for format
-.SH Global options:
-.TP
-.BR \-w,\ --block=
+.Dd February 9, 2018
+.Dt BCACHEFS 8
+.Os
+.Sh NAME
+.Nm bcachefs
+.Nd manage bcachefs filesystems/devices
+.Sh SYNOPSIS
+.Nm
+.Ar command
+.Op Ar options
+.Op Ar arguments
+.Sh DESCRIPTION
+The
+.Nm
+utility supports the following subcommands,
+which are documented in detail below:
+.Ss Superblock commands
+.Bl -tag -width 18n -compact
+.It Ic format
+Format one or a list of devices with bcachefs data structures.
+.It Ic show-super
+Dump superblock information to stdout.
+.El
+.Ss Repair commands
+.Bl -tag -width 18n -compact
+.It Ic fsck
+Check an existing filesystem for errors.
+.El
+.Ss Startup/shutdown, assembly of multi device filesystems
+.Bl -tag -width 18n -compact
+.It Ic assemble
+Assemble an existing multi device filesystem
+.It Ic incremental
+Incrementally assemble an existing multi device filesystem
+.It Ic run
+Start a partially assembled filesystem.
+.It Ic stop
+Stop a running filesystem.
+.El
+.Ss Commands for managing a running filesystem
+.Bl -tag -width 18n -compact
+.It Ic fs usage
+Show disk usage
+.El
+.Ss Commands for managing devices within a running filesystem
+.Bl -tag -width 18n -compact
+.It Ic device add
+Add a new device to an existing filesystem
+.It Ic device remove
+Remove a device from an existing filesystem
+.It Ic device online
+Re-add an existing member to a filesystem
+.It Ic device offline
+Take a device offline, without removing it
+.It Ic device evacuate
+Migrate data off of a specific device
+.It Ic device set-state
+Mark a device as failed
+.It Ic device resize
+Resize filesystem on a device
+.El
+.Ss Commands for managing filesystem data
+.Bl -tag -width 18n -compact
+.It Ic data rereplicate
+Rereplicate degraded data
+.El
+.Ss Commands for encryption
+.Bl -tag -width 18n -compact
+.It Ic unlock
+Unlock an encrypted filesystem prior to running/mounting
+.It Ic set-passphrase
+Change passphrase on an existing (unmounted) filesystem
+.It Ic remove-passphrase
+Remove passphrase on an existing (unmounted) filesystem
+.El
+.Ss Commands for migration
+.Bl -tag -width 18n -compact
+.It Ic migrate
+Migrate an existing filesystem to bcachefs, in place
+.It Ic migrate-superblock
+Add default superblock, after bcachefs migrate
+.El
+.Ss Commands for debugging
+.Bl -tag -width 18n -compact
+.It Ic dump
+Dump filesystem metadata to a qcow2 image
+.It Ic list
+List filesystem metadata in textual form
+.El
+.Sh Superblock commands
+.Bl -tag -width Ds
+.It Nm Ic format Oo Ar options Oc Ar devices\ ...
+Format one or a list of devices with bcachefs data structures.
+You need to do this before you create a volume.
+.Pp
+Device specific options must come before corresponding devices, e.g.
+.Dl bcachefs format --tier 0 /dev/sdb --tier 1 /dev/sdc
+.Bl -tag -width Ds
+.It Fl b , Fl -block Ns = Ns Ar size
 block size, in bytes (e.g. 4k)
-.TP
-.BR \-w,\ --btree_node_size=
-btree node size in bytes - default 256k
-.TP
-.BR \--metadata_checksum_type=TYPE
-.TP
-.BR \--data_checksum_type=TYPE
-where TYPE is one of none, crc32c (default), or crc64
-.TP
-.BR \--compression_type=TYPE
-where TYPE is one of none (default), lz4 or gzip
-.TP
-.BR \--encrypted
-Enable encryption; passphrase will be prompted for
-.TP
-.BR \--error_action=TYPE
-where TYPE is one of continue, readonly (default) or panic
-.TP
-.BR \-l\ --label=LABEL
-Create the filesystem with the specified label
-.TP
-.BR \--uuid=UUID
-Create the filesystem with the specified UUID
-.TP
-.BR \--force
-Force the filesystem to be created, even if the device already contains a
-filesystem
-
-.SH Options that apply to subsequent devices:
-.TP
-.BR \--fs_size=SIZE
-Create the filesystem using SIZE bytes on the subsequent device
-.TP
-.BR \-b\ --bucket-size=SIZE
-Specifies the bucket size - must be greater than the btree node size
-.TP
-.BR \-t,\ --tier=INDEX
-Specifies the tier of subsequent devices, where INDEX is a small integer and a
-smaller index indicates a faster tier - tier 0 being the fastest. Currently only
-two tiers are supported.
-.TP
-.BR \--discard
+.It Fl -btree_node Ns = Ns Ar size
+Btree node size, default 256k
+.It Fl -metadata_checksum_type Ns = Ns ( Cm none | crc32c | crc64 )
+Set metadata checksum type (default:
+.Cm crc32c ) .
+.It Fl -data_checksum_type Ns = Ns ( Cm none | crc32c | crc64 )
+Set data checksum type (default:
+.Cm crc32c ) .
+.It Fl -compression_type Ns = Ns ( Cm none | lz4 | gzip )
+Set compression type (default:
+.Cm none ) .
+.It Fl -data_replicas Ns = Ns Ar number
+Number of data replicas
+.It Fl -metadata_replicas Ns = Ns Ar number
+Number of metadata replicas
+.It Fl -replicas Ns = Ns Ar number
+Sets both data and metadata replicas
+.It Fl -encrypted
+Enable whole filesystem encryption (chacha20/poly1305);
+passphrase will be prompted for.
+.It Fl -no_passphrase
+Don't encrypt master encryption key
+.It Fl -error_action Ns = Ns ( Cm continue | readonly | panic )
+Action to take on filesystem error (default:
+.Cm readonly )
+.It Fl L , Fl -label Ns = Ns Ar label
+Create the filesystem with the specified
+.Ar label
+.It Fl -uuid Ns = Ns Ar uuid
+Create the filesystem with the specified
+.Ar uuid
+.It Fl f , Fl -force
+Force the filesystem to be created,
+even if the device already contains a filesystem.
+.El
+.Pp
+Device specific options:
+.Bl -tag -width Ds
+.It Fl -fs_size Ns = Ns Ar size
+Create the filesystem using
+.Ar size
+bytes on the subsequent device.
+.It Fl -bucket Ns = Ns Ar size
+Specifies the bucket size;
+must be greater than the btree node size
+.It Fl -discard
 Enable discards on subsequent devices
-
-.SH Options for register
-
-.SH Options for list-cachesets
-.TP
-.BR \-d,\ --dir=
-Provide a directory other than /sys/fs/bcache
-
-.SH Options for query-devs
-.TP
-.BR \-f,\ --force-csum
-Enables bcache to going even if the superblock crc is invalid
-
-.SH Options for status
-
-.SH Options for stats
-.TP
-.BR \-a,\ --all
-List all stats and their values for the given device.
-.TP
-.BR \-l,\ --list
-List the names of the different stats for the given device.
-.TP
-.BR \-u,\ --set=
-UUID for the cacheset
-.TP
-.BR \-d,\ --dev=
-UUID for a device within the cacheset. Must pass in the cacheset UUID in order to search for a dev.
-.TP
-.BR \-c,\ --cache=
-Cache number, starts from 0
-.TP
-.BR \--five-min-stats
-stats accumulated in the last 5 minutes
-.TP
-.BR \--hour-stats
-stats accumulated in the last hour
-.TP
-.BR \--day-stats
-stats accumulated in the last day
-.TP
-.BR \--total-stats
-stats accumulated in total
+.It Fl t , Fl -tier Ar index
+Specifies the tier of subsequent devices, where
+.Ar index
+is a small integer and a smaller index indicates a faster tier; tier 0
+being the fastest.
+Currently only two tiers are supported.
+.It Fl q , Fl -quiet
+Only print errors
+.El
+.It Nm Ic show-super Oo Ar options Oc Ar device
+Dump superblock information to stdout.
+.Bl -tag -width Ds
+.It Fl f , Fl -fields Ns = Ns Ar fields
+List of sections to print
+.It Fl l , Fl -layout
+Print superblock layout
+.El
+.El
+.Sh Repair commands
+.Bl -tag -width Ds
+.It Nm Ic fsck Oo Ar options Oc Ar devices\ ...
+Check an existing filesystem for errors.
+.Bl -tag -width Ds
+.It Fl p
+Automatic repair (no questions)
+.It Fl n
+Don't repair, only check for errors
+.It Fl y
+Assume "yes" to all questions
+.It Fl f
+Force checking even if filesystem is marked clean
+.It Fl v
+Be verbose
+.El
+.El
+.Sh Startup/shutdown, assembly of multi device filesystems
+.Bl -tag -width Ds
+.It Nm Ic assemble Ar devices\ ...
+Assemble an existing multi device filesystem.
+.It Nm Ic incremental Ar device
+Incrementally assemble an existing multi device filesystem.
+.It Nm Ic run
+Start a partially assembled filesystem.
+.It Nm Ic stop Ar filesystem
+Stop a running filesystem.
+.El
+.Sh Commands for managing a running filesystem
+.Bl -tag -width Ds
+.It Nm Ic fs Ic usage Oo Ar options Oc Op Ar filesystem
+Show disk usage.
+.Bl -tag -width Ds
+.It Fl h
+Print human readable sizes.
+.El
+.El
+.Sh Commands for managing devices within a running filesystem
+.Bl -tag -width Ds
+.It Nm Ic device Ic add Oo Ar options Oc Ar device
+Add a device to an existing filesystem.
+.Bl -tag -width Ds
+.It Fl -fs_size Ns = Ns Ar size
+Size of filesystem on device
+.It Fl -bucket Ns = Ns Ar size
+Set bucket size
+.It Fl -discard
+Enable discards
+.It Fl t , Fl -tier Ns = Ns Ar number
+Higher tier (e.g. 1) indicates slower devices
+.It Fl f , Fl -force
+Use device even if it appears to already be formatted
+.El
+.It Nm Ic device Ic remove Oo Ar options Oc Ar device
+Remove a device from a filesystem
+.Bl -tag -width Ds
+.It Fl f , Fl -force
+Force removal, even if some data couldn't be migrated
+.It Fl -force-metadata
+Force removal, even if some metadata couldn't be migrated
+.El
+.It Nm Ic device Ic online Ar device
+Re-add a device to a running filesystem
+.It Nm Ic device Ic offline Ar device
+Take a device offline, without removing it
+.Bl -tag -width Ds
+.It Fl f , Fl -force
+Force, if data redundancy will be degraded
+.El
+.It Nm Ic device Ic evacuate Ar device
+Move data off of a given device
+.It Nm Ic device Ic set-state Oo Ar options Oc Ar device Ar new-state
+.Bl -tag -width Ds
+.It Fl f , Fl -force
+Force, if data redundancy will be degraded
+.El
+.It Nm Ic device Ic resize Ar device Op Ar size
+Resize filesystem on a device
+.El
+.Sh Commands for managing filesystem data
+.Bl -tag -width Ds
+.It Nm Ic device Ic rereplicate Ar filesystem
+Walks existing data in a filesystem,
+writing additional copies of any degraded data.
+.El
+.Sh Commands for encryption
+.Bl -tag -width Ds
+.It Nm Ic unlock Ar device
+Unlock an encrypted filesystem prior to running/mounting.
+.It Nm Ic set-passphrase Ar devices\ ...
+Change passphrase on an existing (unmounted) filesystem.
+.It Nm Ic remove-passphrase Ar devices\ ...
+Remove passphrase on an existing (unmounted) filesystem.
+.El
+.Sh Commands for migration
+.Bl -tag -width Ds
+.It Nm Ic migrate Oo Ar options Oc Ar device
+Migrate an existing filesystem to bcachefs
+.Bl -tag -width Ds
+.It Fl f Ar fs
+Root of filesystem to migrate
+.It Fl -encrypted
+Enable whole filesystem encryption (chacha20/poly1305)
+.It Fl -no_passphrase
+Don't encrypt master encryption key
+.It Fl F
+Force, even if metadata file already exists
+.El
+.It Nm Ic migrate-superblock Oo Ar options Oc Ar device
+Create default superblock after migrating
+.Bl -tag -width Ds
+.It Fl d Ar device
+Device to create superblock for
+.It Fl o Ar offset
+Offset of existing superblock
+.El
+.El
+.Sh Commands for debugging
+These commands work on offline, unmounted filesystems.
+.Bl -tag -width Ds
+.It Nm Ic dump Oo Ar options Oc Ar device
+Dump filesystem metadata
+.Bl -tag -width Ds
+.It Fl o Ar output
+Required flag: Output qcow2 image(s)
+.It Fl f
+Force; overwrite when needed
+.El
+.It Nm Ic list Oo Ar options Oc Ar devices\ ...
+List filesystem metadata to stdout
+.Bl -tag -width Ds
+.It Fl b ( Cm extents | inodes | dirents | xattrs )
+Btree to list from
+.It Fl s Ar inode Ns Cm \&: Ns Ar offset
+Start position to list from
+.It Fl e Ar inode Ns Cm \&: Ns Ar offset
+End position
+.It Fl i Ar inode
+List keys for a given inode number
+.It Fl m ( Cm keys | formats )
+.It Fl f
+Force fsck
+.It Fl v
+Verbose mode
+List mode
+.El
+.El
+.Sh EXIT STATUS
+.Ex -std
