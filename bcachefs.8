@@ -120,9 +120,9 @@ Enable whole filesystem encryption (chacha20/poly1305);
 passphrase will be prompted for.
 .It Fl -no_passphrase
 Don't encrypt master encryption key
-.It Fl -error_action Ns = Ns ( Cm continue | readonly | panic )
+.It Fl -error_action Ns = Ns ( Cm continue | remount-ro | panic )
 Action to take on filesystem error (default:
-.Cm readonly )
+.Cm remount-ro )
 .It Fl L , Fl -label Ns = Ns Ar label
 Create the filesystem with the specified
 .Ar label

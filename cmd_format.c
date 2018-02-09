@@ -42,7 +42,7 @@ x(0,	data_replicas,		"#",			NULL)			\
 x(0,	metadata_replicas,	"#",			NULL)			\
 x(0,	encrypted,		NULL,			"Enable whole filesystem encryption (chacha20/poly1305)")\
 x(0,	no_passphrase,		NULL,			"Don't encrypt master encryption key")\
-x('e',	error_action,		"(continue|readonly|panic)", NULL)		\
+x('e',	error_action,		"(continue|remount-ro|panic)", NULL)		\
 x('L',	label,			"label",		NULL)			\
 x('U',	uuid,			"uuid",			NULL)			\
 x('f',	force,			NULL,			NULL)			\
@@ -81,7 +81,7 @@ static void usage(void)
 	     "      --replicas=#            Sets both data and metadata replicas\n"
 	     "      --encrypted             Enable whole filesystem encryption (chacha20/poly1305)\n"
 	     "      --no_passphrase         Don't encrypt master encryption key\n"
-	     "      --error_action=(continue|readonly|panic)\n"
+	     "      --error_action=(continue|remount-ro|panic)\n"
 	     "                              Action to take on filesystem error\n"
 	     "  -L, --label=label\n"
 	     "  -U, --uuid=uuid\n"
