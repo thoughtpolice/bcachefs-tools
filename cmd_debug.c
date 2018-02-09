@@ -235,8 +235,8 @@ static struct bpos parse_pos(char *buf)
 
 static void list_keys_usage(void)
 {
-	puts("bcachefs list_keys - list filesystem metadata to stdout\n"
-	     "Usage: bcachefs list_keys [OPTION]... <devices>\n"
+	puts("bcachefs list - list filesystem metadata to stdout\n"
+	     "Usage: bcachefs list [OPTION]... <devices>\n"
 	     "\n"
 	     "Options:\n"
 	     "  -b (extents|inodes|dirents|xattrs)    Btree to list from\n"
