@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 
-SDIR="$(dirname "$(readlink -f "$0")")"
-exec "$SDIR/bcachefs" fsck "$@"
+SDIR="$(readlink -f "$0")"
+exec "${SDIR%/*}/bcachefs" fsck "$@"
