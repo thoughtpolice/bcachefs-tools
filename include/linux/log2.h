@@ -12,7 +12,13 @@
 #ifndef _TOOLS_LINUX_LOG2_H
 #define _TOOLS_LINUX_LOG2_H
 
+#include <limits.h>
+#ifndef PAGE_SHIFT
+#define PAGE_SHIFT ilog2(PAGE_SIZE)
+#endif
+
 #include <linux/bitops.h>
+#include <linux/compiler.h>
 
 /*
  * deal with unrepresentable constant logarithms
