@@ -530,6 +530,8 @@ static u32 crc32c_sse42(u32 crc, const void *buf, size_t size)
 	return crc;
 }
 
+#endif
+
 static void *resolve_crc32c(void)
 {
 	__builtin_cpu_init();
@@ -632,5 +634,3 @@ found:
 	free(line);
 	return ret;
 }
-
-#endif
