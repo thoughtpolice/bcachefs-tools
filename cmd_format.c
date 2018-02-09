@@ -84,7 +84,7 @@ static void usage(void)
 	     "      --error_action=(continue|readonly|panic)\n"
 	     "                              Action to take on filesystem error\n"
 	     "  -L, --label=label\n"
-	     "      --uuid=uuid\n"
+	     "  -U, --uuid=uuid\n"
 	     "  -f, --force\n"
 	     "\n"
 	     "Device specific options:\n"
