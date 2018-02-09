@@ -244,6 +244,8 @@ static void list_keys_usage(void)
 	     "  -e inode:offset                       End position\n"
 	     "  -i inode                              List keys for a given inode number\n"
 	     "  -m (keys|formats)                     List mode\n"
+	     "  -f                                    Check (fsck) the filesystem first\n"
+	     "  -v                                    Verbose mode\n"
 	     "  -h                                    Display this help and exit\n"
 	     "Report bugs to <linux-bcache@vger.kernel.org>");
 }
