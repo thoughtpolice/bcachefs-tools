@@ -9,7 +9,4 @@
 #define S_IWUGO		(S_IWUSR|S_IWGRP|S_IWOTH)
 #define S_IXUGO		(S_IXUSR|S_IXGRP|S_IXOTH)
 
-#define UTIME_NOW	((1l << 30) - 1l)
-#define UTIME_OMIT	((1l << 30) - 2l)
-
 #endif

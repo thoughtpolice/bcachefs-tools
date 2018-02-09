@@ -184,7 +184,7 @@ unsigned long __rounddown_pow_of_two(unsigned long n)
 	__rounddown_pow_of_two(n)		\
  )
 
-static inline __attribute_const__
+static inline __attribute__((const))
 int __get_order(unsigned long size)
 {
 	int order;

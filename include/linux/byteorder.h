@@ -1,6 +1,7 @@
 #ifndef __LINUX_BYTEORDER_H
 #define __LINUX_BYTEORDER_H
 
+#include <linux/compiler.h>
 #include <asm/byteorder.h>
 
 #define swab16 __swab16

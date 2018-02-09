@@ -43,6 +43,7 @@
  * https://131002.net/siphash/
  */
 
+#include <linux/compiler.h>
 #include <asm/byteorder.h>
 #include <asm/unaligned.h>
 #include <linux/bitops.h>

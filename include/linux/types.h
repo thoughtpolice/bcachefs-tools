@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <fcntl.h>
 #include <sys/types.h>
 
 #define __SANE_USERSPACE_TYPES__	/* For PPC64, to get LL64 types */

@@ -6,6 +6,7 @@
  */
 
 #include <asm/types.h>
+#include <linux/compiler.h>
 #include <asm/byteorder.h>
 #include <linux/uuid.h>
 
