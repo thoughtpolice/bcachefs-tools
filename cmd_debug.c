@@ -24,6 +24,7 @@ static void dump_usage(void)
 	     "\n"
 	     "Options:\n"
 	     "  -o output     Output qcow2 image(s)\n"
+	     "  -f            Force; overwrite when needed\n"
 	     "  -h            Display this help and exit\n"
 	     "Report bugs to <linux-bcache@vger.kernel.org>");
 }
