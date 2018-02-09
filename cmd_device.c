@@ -43,6 +43,7 @@ int cmd_device_add(int argc, char *argv[])
 		{ "discard",		no_argument,		NULL, 'D' },
 		{ "tier",		required_argument,	NULL, 't' },
 		{ "force",		no_argument,		NULL, 'f' },
+		{ "help",		no_argument,		NULL, 'h' },
 		{ NULL }
 	};
 	struct format_opts format_opts	= format_opts_default();
