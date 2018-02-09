@@ -788,8 +788,8 @@ int cmd_migrate(int argc, char *argv[])
 
 static void migrate_superblock_usage(void)
 {
-	puts("bcachefs migrate_superblock - create default superblock after migrating\n"
-	     "Usage: bcachefs migrate_superblock [OPTION]...\n"
+	puts("bcachefs migrate-superblock - create default superblock after migrating\n"
+	     "Usage: bcachefs migrate-superblock [OPTION]...\n"
 	     "\n"
 	     "Options:\n"
 	     "  -d device     Device to create superblock for\n"
