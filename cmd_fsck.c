@@ -11,7 +11,7 @@ static void usage(void)
 	     "Usage: bcachefs fsck [OPTION]... <devices>\n"
 	     "\n"
 	     "Options:\n"
-	     "  -p     Automatic repair (no questions\n"
+	     "  -p     Automatic repair (no questions)\n"
 	     "  -n     Don't repair, only check for errors\n"
 	     "  -y     Assume \"yes\" to all questions\n"
 	     "  -f     Force checking even if filesystem is marked clean\n"
