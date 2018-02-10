@@ -28,8 +28,9 @@ int cmd_fsck(int argc, char *argv[])
 	opt_set(opts, degraded, true);
 	opt_set(opts, fix_errors, FSCK_OPT_ASK);
 
-	while ((opt = getopt(argc, argv, "pynfvh")) != -1)
+	while ((opt = getopt(argc, argv, "apynfvh")) != -1)
 		switch (opt) {
+		case 'a': /* outdated alias for -p */
 		case 'p':
 			opt_set(opts, fix_errors, FSCK_OPT_YES);
 			break;
