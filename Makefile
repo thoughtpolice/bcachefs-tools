@@ -71,12 +71,9 @@ clean:
 
 .PHONY: deb
 deb: all
-	debuild --unsigned-source	\
-		--unsigned-changes	\
-		--no-pre-clean		\
-		--build=binary		\
-		--diff-ignore		\
-		--tar-ignore
+# --unsigned-source --unsigned-changes --no-pre-clean --build=binary
+# --diff-ignore --tar-ignore
+	debuild -us -uc -nc -b -i -I
 
 .PHONE: update-bcachefs-sources
 update-bcachefs-sources:
