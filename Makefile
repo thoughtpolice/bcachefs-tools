@@ -37,8 +37,10 @@ LDLIBS+=`pkg-config --libs	${PKGCONFIG_LIBS}` 		\
 
 ifeq ($(PREFIX),/usr)
 	ROOT_SBINDIR=/sbin
+	INITRAMFS_DIR=$(PREFIX)/share/initramfs-tools
 else
 	ROOT_SBINDIR=$(PREFIX)/sbin
+	INITRAMFS_DIR=/etc/initramfs-tools
 endif
 
 .PHONY: all
@@ -58,6 +60,9 @@ install: bcachefs
 	$(INSTALL) -m0755 bcachefs	$(DESTDIR)$(ROOT_SBINDIR)
 	$(INSTALL) -m0755 fsck.bcachefs	$(DESTDIR)$(ROOT_SBINDIR)
 	$(INSTALL) -m0755 mkfs.bcachefs	$(DESTDIR)$(ROOT_SBINDIR)
+	$(INSTALL) -m0755 -D initramfs/hook $(DESTDIR)$(INITRAMFS_DIR)/hooks/bcachefs
+	echo "copy_exec $(ROOT_SBINDIR)/bcachefs /sbin/bcachefs" >> $(DESTDIR)$(INITRAMFS_DIR)/hooks/bcachefs
+	$(INSTALL) -m0755 -D initramfs/script $(DESTDIR)$(INITRAMFS_DIR)/scripts/local-premount/bcachefs
 	$(INSTALL) -m0644 bcachefs.8	$(DESTDIR)$(PREFIX)/share/man/man8/
 
 .PHONY: clean

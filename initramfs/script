@@ -1,0 +1,25 @@
+#!/bin/sh
+
+PREREQ=""
+
+prereqs()
+{
+    echo "$PREREQ"
+}
+
+case $1 in
+# get pre-requisites
+prereqs)
+    prereqs
+    exit 0
+    ;;
+esac
+
+# Check if it needs unlocking:
+if bcachefs unlock -c $ROOT >/dev/null 2>&1; then
+    echo "Unlocking $ROOT:"
+
+    while true; do
+	bcachefs unlock $ROOT && break
+    done
+fi
