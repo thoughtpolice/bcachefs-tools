@@ -13,8 +13,11 @@ CFLAGS+=-std=gnu89 -O2 -g -MMD -Wall				\
 	-DNO_BCACHEFS_CHARDEV					\
 	-DNO_BCACHEFS_FS					\
 	-DNO_BCACHEFS_SYSFS					\
+	-DVERSION_STRING='"$(VERSION)"'				\
 	$(EXTRA_CFLAGS)
 LDFLAGS+=$(CFLAGS)
+
+VERSION?=$(shell git describe --long --dirty 2>/dev/null || echo 0.1-nogit)
 
 CC_VERSION=$(shell $(CC) -v 2>&1|grep -E '(gcc|clang) version')
 
@@ -55,6 +58,16 @@ DEPS=$(SRCS:.c=.d)
 
 OBJS=$(SRCS:.c=.o)
 bcachefs: $(OBJS)
+
+# If the version string differs from the last build, update the last version
+ifneq ($(VERSION),$(shell cat .version 2>/dev/null))
+.PHONY: .version
+endif
+.version:
+	echo '$(VERSION)' > $@
+
+# Rebuild the 'version' command any time the version string changes
+cmd_version.o : .version
 
 .PHONY: install
 install: bcachefs

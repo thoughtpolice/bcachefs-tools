@@ -70,7 +70,10 @@ static void usage(void)
 	     "Debug:\n"
 	     "These commands work on offline, unmounted filesystems\n"
 	     "  dump                 Dump filesystem metadata to a qcow2 image\n"
-	     "  list                 List filesystem metadata in textual form\n");
+	     "  list                 List filesystem metadata in textual form\n"
+	     "\n"
+	     "Miscellaneous:\n"
+	     "  version              Display the version of the invoked bcachefs tool\n");
 }
 
 static char *full_cmd;
@@ -144,6 +147,8 @@ int main(int argc, char *argv[])
 
 	char *cmd = pop_cmd(&argc, argv);
 
+	if (!strcmp(cmd, "version"))
+		return cmd_version(argc, argv);
 	if (!strcmp(cmd, "format"))
 		return cmd_format(argc, argv);
 	if (!strcmp(cmd, "show-super"))

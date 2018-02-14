@@ -1,5 +1,5 @@
-.Dd February 9, 2018
-.Dt BCACHEFS 8
+.Dd May 26, 2018
+.Dt BCACHEFS 8 SMM
 .Os
 .Sh NAME
 .Nm bcachefs
@@ -86,6 +86,11 @@ Add default superblock, after bcachefs migrate
 Dump filesystem metadata to a qcow2 image
 .It Ic list
 List filesystem metadata in textual form
+.El
+.Ss Miscellaneous commands
+.Bl -tag -width 18n -compact
+.It Ic version
+Display the version of the invoked bcachefs tool
 .El
 .Sh Superblock commands
 .Bl -tag -width Ds
@@ -309,6 +314,11 @@ Force fsck
 Verbose mode
 List mode
 .El
+.El
+.Sh Miscellaneous commands
+.Bl -tag -width Ds
+.It Nm Ic version
+Display the version of the invoked bcachefs tool
 .El
 .Sh EXIT STATUS
 .Ex -std
