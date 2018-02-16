@@ -13,118 +13,6 @@
 #include "move.h"
 #include "super-io.h"
 
-static bool migrate_pred(void *arg, struct bkey_s_c_extent e)
-{
-	struct bch_dev *ca = arg;
-
-	return bch2_extent_has_device(e, ca->dev_idx);
-}
-
-#define MAX_DATA_OFF_ITER	10
-
-static int bch2_dev_usrdata_migrate(struct bch_fs *c, struct bch_dev *ca,
-				    int flags)
-{
-	struct btree_iter iter;
-	struct bkey_s_c k;
-	struct bch_move_stats stats;
-	unsigned pass = 0;
-	int ret = 0;
-
-	if (!(bch2_dev_has_data(c, ca) & (1 << BCH_DATA_USER)))
-		return 0;
-
-	/*
-	 * XXX: we should be able to do this in one pass, but bch2_move_data()
-	 * can spuriously fail to move an extent due to racing with other move
-	 * operations
-	 */
-	do {
-		memset(&stats, 0, sizeof(stats));
-
-		ret = bch2_move_data(c, NULL,
-				     SECTORS_IN_FLIGHT_PER_DEVICE,
-				     NULL,
-				     writepoint_hashed((unsigned long) current),
-				     0,
-				     ca->dev_idx,
-				     POS_MIN, POS_MAX,
-				     migrate_pred, ca,
-				     &stats);
-		if (ret) {
-			bch_err(c, "error migrating data: %i", ret);
-			return ret;
-		}
-	} while (atomic64_read(&stats.keys_moved) && pass++ < MAX_DATA_OFF_ITER);
-
-	if (atomic64_read(&stats.keys_moved)) {
-		bch_err(c, "unable to migrate all data in %d iterations",
-			MAX_DATA_OFF_ITER);
-		return -1;
-	}
-
-	mutex_lock(&c->replicas_gc_lock);
-	bch2_replicas_gc_start(c, 1 << BCH_DATA_USER);
-
-	for_each_btree_key(&iter, c, BTREE_ID_EXTENTS, POS_MIN, BTREE_ITER_PREFETCH, k) {
-		ret = bch2_check_mark_super(c, BCH_DATA_USER, bch2_bkey_devs(k));
-		if (ret) {
-			bch_err(c, "error migrating data %i from check_mark_super()", ret);
-			break;
-		}
-	}
-
-	bch2_replicas_gc_end(c, ret);
-	mutex_unlock(&c->replicas_gc_lock);
-	return ret;
-}
-
-static int bch2_dev_metadata_migrate(struct bch_fs *c, struct bch_dev *ca,
-				     int flags)
-{
-	struct btree_iter iter;
-	struct btree *b;
-	int ret = 0;
-	unsigned id;
-
-	if (!(bch2_dev_has_data(c, ca) & (1 << BCH_DATA_BTREE)))
-		return 0;
-
-	mutex_lock(&c->replicas_gc_lock);
-	bch2_replicas_gc_start(c, 1 << BCH_DATA_BTREE);
-
-	for (id = 0; id < BTREE_ID_NR; id++) {
-		for_each_btree_node(&iter, c, id, POS_MIN, BTREE_ITER_PREFETCH, b) {
-			struct bkey_s_c_extent e = bkey_i_to_s_c_extent(&b->key);
-
-			if (!bch2_extent_has_device(e, ca->dev_idx))
-				continue;
-
-			ret = bch2_btree_node_rewrite(c, &iter, b->data->keys.seq, 0);
-			if (ret) {
-				bch2_btree_iter_unlock(&iter);
-				goto err;
-			}
-		}
-		ret = bch2_btree_iter_unlock(&iter);
-		if (ret)
-			goto err;
-	}
-err:
-	bch2_replicas_gc_end(c, ret);
-	mutex_unlock(&c->replicas_gc_lock);
-	return ret;
-}
-
-int bch2_dev_data_migrate(struct bch_fs *c, struct bch_dev *ca, int flags)
-{
-	BUG_ON(ca->mi.state == BCH_MEMBER_STATE_RW &&
-	       bch2_dev_is_online(ca));
-
-	return bch2_dev_usrdata_migrate(c, ca, flags) ?:
-		bch2_dev_metadata_migrate(c, ca, flags);
-}
-
 static int drop_dev_ptrs(struct bch_fs *c, struct bkey_s_extent e,
 			 unsigned dev_idx, int flags, bool metadata)
 {
@@ -152,7 +40,7 @@ static int bch2_dev_usrdata_drop(struct bch_fs *c, unsigned dev_idx, int flags)
 	int ret = 0;
 
 	mutex_lock(&c->replicas_gc_lock);
-	bch2_replicas_gc_start(c, 1 << BCH_DATA_USER);
+	bch2_replicas_gc_start(c, (1 << BCH_DATA_USER)|(1 << BCH_DATA_CACHED));
 
 	bch2_btree_iter_init(&iter, c, BTREE_ID_EXTENTS,
 			     POS_MIN, BTREE_ITER_PREFETCH);
@@ -161,8 +49,7 @@ static int bch2_dev_usrdata_drop(struct bch_fs *c, unsigned dev_idx, int flags)
 	       !(ret = btree_iter_err(k))) {
 		if (!bkey_extent_is_data(k.k) ||
 		    !bch2_extent_has_device(bkey_s_c_to_extent(k), dev_idx)) {
-			ret = bch2_check_mark_super(c, BCH_DATA_USER,
-						    bch2_bkey_devs(k));
+			ret = bch2_mark_bkey_replicas(c, BCH_DATA_USER, k);
 			if (ret)
 				break;
 			bch2_btree_iter_next(&iter);
@@ -183,8 +70,8 @@ static int bch2_dev_usrdata_drop(struct bch_fs *c, unsigned dev_idx, int flags)
 		 */
 		bch2_extent_normalize(c, e.s);
 
-		ret = bch2_check_mark_super(c, BCH_DATA_USER,
-				bch2_bkey_devs(bkey_i_to_s_c(&tmp.key)));
+		ret = bch2_mark_bkey_replicas(c, BCH_DATA_USER,
+					      bkey_i_to_s_c(&tmp.key));
 		if (ret)
 			break;
 
@@ -240,8 +127,8 @@ retry:
 						    dev_idx)) {
 				bch2_btree_iter_set_locks_want(&iter, 0);
 
-				ret = bch2_check_mark_super(c, BCH_DATA_BTREE,
-						bch2_bkey_devs(bkey_i_to_s_c(&b->key)));
+				ret = bch2_mark_bkey_replicas(c, BCH_DATA_BTREE,
+							      bkey_i_to_s_c(&b->key));
 				if (ret)
 					goto err;
 			} else {

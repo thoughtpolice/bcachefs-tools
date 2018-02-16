@@ -430,6 +430,7 @@ struct btree *__bch2_btree_node_alloc_replacement(struct btree_update *as,
 	n->data->min_key	= b->data->min_key;
 	n->data->max_key	= b->data->max_key;
 	n->data->format		= format;
+	SET_BTREE_NODE_SEQ(n->data, BTREE_NODE_SEQ(b->data) + 1);
 
 	btree_node_set_format(n, format);
 
@@ -559,8 +560,8 @@ static struct btree_reserve *bch2_btree_reserve_get(struct bch_fs *c,
 			goto err_free;
 		}
 
-		ret = bch2_check_mark_super(c, BCH_DATA_BTREE,
-					bch2_bkey_devs(bkey_i_to_s_c(&b->key)));
+		ret = bch2_mark_bkey_replicas(c, BCH_DATA_BTREE,
+					      bkey_i_to_s_c(&b->key));
 		if (ret)
 			goto err_free;
 
@@ -1225,6 +1226,7 @@ static struct btree *__btree_split_node(struct btree_update *as,
 
 	n2->data->max_key	= n1->data->max_key;
 	n2->data->format	= n1->format;
+	SET_BTREE_NODE_SEQ(n2->data, BTREE_NODE_SEQ(n1->data));
 	n2->key.k.p = n1->key.k.p;
 
 	btree_node_set_format(n2, n2->data->format);
@@ -2019,8 +2021,8 @@ int bch2_btree_node_update_key(struct bch_fs *c, struct btree_iter *iter,
 			goto err;
 	}
 
-	ret = bch2_check_mark_super(c, BCH_DATA_BTREE,
-				    bch2_extent_devs(extent_i_to_s_c(new_key)));
+	ret = bch2_mark_bkey_replicas(c, BCH_DATA_BTREE,
+				      extent_i_to_s_c(new_key).s_c);
 	if (ret)
 		goto err_free_update;
 

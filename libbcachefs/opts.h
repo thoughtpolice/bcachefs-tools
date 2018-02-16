@@ -73,10 +73,10 @@ enum opt_type {
 	BCH_OPT(errors,			u8,	OPT_RUNTIME,		\
 		OPT_STR(bch2_error_actions),				\
 		BCH_SB_ERROR_ACTION,		BCH_ON_ERROR_RO)	\
-	BCH_OPT(metadata_replicas,	u8,	OPT_MOUNT,		\
+	BCH_OPT(metadata_replicas,	u8,	OPT_RUNTIME,		\
 		OPT_UINT(1, BCH_REPLICAS_MAX),				\
 		BCH_SB_META_REPLICAS_WANT,	1)			\
-	BCH_OPT(data_replicas,		u8,	OPT_MOUNT,		\
+	BCH_OPT(data_replicas,		u8,	OPT_RUNTIME,		\
 		OPT_UINT(1, BCH_REPLICAS_MAX),				\
 		BCH_SB_DATA_REPLICAS_WANT,	1)			\
 	BCH_OPT(metadata_replicas_required, u8,	OPT_MOUNT,		\
@@ -125,6 +125,9 @@ enum opt_type {
 		OPT_BOOL(),						\
 		NO_SB_OPT,			false)			\
 	BCH_OPT(verbose_recovery,	u8,	OPT_MOUNT,		\
+		OPT_BOOL(),						\
+		NO_SB_OPT,			false)			\
+	BCH_OPT(verbose_init,		u8,	OPT_MOUNT,		\
 		OPT_BOOL(),						\
 		NO_SB_OPT,			false)			\
 	BCH_OPT(journal_flush_disabled, u8,	OPT_RUNTIME,		\

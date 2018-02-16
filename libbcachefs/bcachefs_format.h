@@ -6,7 +6,6 @@
  */
 
 #include <asm/types.h>
-#include <linux/compiler.h>
 #include <asm/byteorder.h>
 #include <linux/uuid.h>
 
@@ -370,7 +369,8 @@ enum bch_compression_type {
 	BCH_COMPRESSION_LZ4_OLD		= 1,
 	BCH_COMPRESSION_GZIP		= 2,
 	BCH_COMPRESSION_LZ4		= 3,
-	BCH_COMPRESSION_NR		= 4,
+	BCH_COMPRESSION_ZSTD		= 4,
+	BCH_COMPRESSION_NR		= 5,
 };
 
 enum bch_extent_entry_type {
@@ -1082,6 +1082,7 @@ LE64_BITMASK(BCH_SB_DATA_REPLICAS_REQ,	struct bch_sb, flags[1], 24, 28);
 enum bch_sb_features {
 	BCH_FEATURE_LZ4			= 0,
 	BCH_FEATURE_GZIP		= 1,
+	BCH_FEATURE_ZSTD		= 2,
 };
 
 /* options: */
@@ -1109,11 +1110,17 @@ enum bch_str_hash_opts {
 	BCH_STR_HASH_NR			= 3,
 };
 
+#define BCH_COMPRESSION_TYPES()		\
+	x(NONE)				\
+	x(LZ4)				\
+	x(GZIP)				\
+	x(ZSTD)
+
 enum bch_compression_opts {
-	BCH_COMPRESSION_OPT_NONE	= 0,
-	BCH_COMPRESSION_OPT_LZ4		= 1,
-	BCH_COMPRESSION_OPT_GZIP	= 2,
-	BCH_COMPRESSION_OPT_NR		= 3,
+#define x(t) BCH_COMPRESSION_OPT_##t,
+	BCH_COMPRESSION_TYPES()
+#undef x
+	BCH_COMPRESSION_OPT_NR
 };
 
 /*
@@ -1322,8 +1329,10 @@ struct btree_node {
 	};
 } __attribute__((packed, aligned(8)));
 
-LE64_BITMASK(BTREE_NODE_ID,	struct btree_node, flags, 0, 4);
-LE64_BITMASK(BTREE_NODE_LEVEL,	struct btree_node, flags, 4, 8);
+LE64_BITMASK(BTREE_NODE_ID,	struct btree_node, flags,  0,  4);
+LE64_BITMASK(BTREE_NODE_LEVEL,	struct btree_node, flags,  4,  8);
+/* 8-32 unused */
+LE64_BITMASK(BTREE_NODE_SEQ,	struct btree_node, flags, 32, 64);
 
 struct btree_node_entry {
 	struct bch_csum		csum;

@@ -694,7 +694,7 @@ static void btree_ptr_debugcheck(struct bch_fs *c, struct btree *b,
 			goto err;
 	}
 
-	if (!bch2_sb_has_replicas(c, BCH_DATA_BTREE, bch2_extent_devs(e))) {
+	if (!bch2_bkey_replicas_marked(c, BCH_DATA_BTREE, e.s_c)) {
 		bch2_bkey_val_to_text(c, btree_node_type(b),
 				     buf, sizeof(buf), k);
 		bch2_fs_bug(c,
@@ -1834,7 +1834,7 @@ static void bch2_extent_debugcheck_extent(struct bch_fs *c, struct btree *b,
 	}
 
 	if (!bkey_extent_is_cached(e.k) &&
-	    !bch2_sb_has_replicas(c, BCH_DATA_USER, bch2_extent_devs(e))) {
+	    !bch2_bkey_replicas_marked(c, BCH_DATA_USER, e.s_c)) {
 		bch2_bkey_val_to_text(c, btree_node_type(b),
 				     buf, sizeof(buf), e.s_c);
 		bch2_fs_bug(c,
@@ -2013,17 +2013,18 @@ bool bch2_extent_normalize(struct bch_fs *c, struct bkey_s k)
 }
 
 void bch2_extent_mark_replicas_cached(struct bch_fs *c,
-				      struct bkey_s_extent e)
+				      struct bkey_s_extent e,
+				      unsigned nr_desired_replicas)
 {
 	struct bch_extent_ptr *ptr;
 	unsigned tier = 0, nr_cached = 0;
 	unsigned nr_good = bch2_extent_nr_good_ptrs(c, e.c);
 	bool have_higher_tier;
 
-	if (nr_good <= c->opts.data_replicas)
+	if (nr_good <= nr_desired_replicas)
 		return;
 
-	nr_cached = nr_good - c->opts.data_replicas;
+	nr_cached = nr_good - nr_desired_replicas;
 
 	do {
 		have_higher_tier = false;

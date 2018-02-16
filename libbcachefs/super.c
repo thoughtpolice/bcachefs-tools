@@ -507,9 +507,11 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	struct bch_fs *c;
 	unsigned i, iter_size;
 
+	pr_verbose_init(opts, "");
+
 	c = kvpmalloc(sizeof(struct bch_fs), GFP_KERNEL|__GFP_ZERO);
 	if (!c)
-		return NULL;
+		goto out;
 
 	__module_get(THIS_MODULE);
 
@@ -539,7 +541,6 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	mutex_init(&c->btree_interior_update_lock);
 
 	mutex_init(&c->bio_bounce_pages_lock);
-	mutex_init(&c->zlib_workspace_lock);
 
 	bio_list_init(&c->btree_write_error_list);
 	spin_lock_init(&c->btree_write_error_lock);
@@ -646,10 +647,13 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	kobject_init(&c->internal, &bch2_fs_internal_ktype);
 	kobject_init(&c->opts_dir, &bch2_fs_opts_dir_ktype);
 	kobject_init(&c->time_stats, &bch2_fs_time_stats_ktype);
+out:
+	pr_verbose_init(opts, "ret %i", c ? 0 : -ENOMEM);
 	return c;
 err:
 	bch2_fs_free(c);
-	return NULL;
+	c = NULL;
+	goto out;
 }
 
 static const char *__bch2_fs_online(struct bch_fs *c)
@@ -809,7 +813,7 @@ static const char *__bch2_fs_start(struct bch_fs *c)
 			goto err;
 		bch_verbose(c, "fsck done");
 
-		if (c->opts.usrquota || c->opts.grpquota) {
+		if (enabled_qtypes(c)) {
 			bch_verbose(c, "reading quotas:");
 			ret = bch2_fs_quota_read(c);
 			if (ret)
@@ -864,7 +868,7 @@ static const char *__bch2_fs_start(struct bch_fs *c)
 				     NULL, NULL, NULL, 0))
 			goto err;
 
-		if (c->opts.usrquota || c->opts.grpquota) {
+		if (enabled_qtypes(c)) {
 			ret = bch2_fs_quota_read(c);
 			if (ret)
 				goto err;
@@ -1084,14 +1088,17 @@ static int bch2_dev_sysfs_online(struct bch_fs *c, struct bch_dev *ca)
 static int bch2_dev_alloc(struct bch_fs *c, unsigned dev_idx)
 {
 	struct bch_member *member;
-	struct bch_dev *ca;
+	struct bch_dev *ca = NULL;
+	int ret = 0;
+
+	pr_verbose_init(c->opts, "");
 
 	if (bch2_fs_init_fault("dev_alloc"))
-		return -ENOMEM;
+		goto err;
 
 	ca = kzalloc(sizeof(*ca), GFP_KERNEL);
 	if (!ca)
-		return -ENOMEM;
+		goto err;
 
 	kobject_init(&ca->kobj, &bch2_dev_ktype);
 	init_completion(&ca->ref_completion);
@@ -1133,11 +1140,14 @@ static int bch2_dev_alloc(struct bch_fs *c, unsigned dev_idx)
 
 	if (bch2_dev_sysfs_online(c, ca))
 		pr_warn("error creating sysfs objects");
-
-	return 0;
+out:
+	pr_verbose_init(c->opts, "ret %i", ret);
+	return ret;
 err:
-	bch2_dev_free(ca);
-	return -ENOMEM;
+	if (ca)
+		bch2_dev_free(ca);
+	ret = -ENOMEM;
+	goto out;
 }
 
 static int __bch2_dev_online(struct bch_fs *c, struct bch_sb_handle *sb)
@@ -1240,7 +1250,8 @@ bool bch2_dev_state_allowed(struct bch_fs *c, struct bch_dev *ca,
 
 		/* do we have enough devices to write to?  */
 		for_each_member_device(ca2, c, i)
-			nr_rw += ca2->mi.state == BCH_MEMBER_STATE_RW;
+			if (ca2 != ca)
+				nr_rw += ca2->mi.state == BCH_MEMBER_STATE_RW;
 
 		required = max(!(flags & BCH_FORCE_IF_METADATA_DEGRADED)
 			       ? c->opts.metadata_replicas
@@ -1249,7 +1260,7 @@ bool bch2_dev_state_allowed(struct bch_fs *c, struct bch_dev *ca,
 			       ? c->opts.data_replicas
 			       : c->opts.data_replicas_required);
 
-		return nr_rw - 1 <= required;
+		return nr_rw >= required;
 	case BCH_MEMBER_STATE_FAILED:
 	case BCH_MEMBER_STATE_SPARE:
 		if (ca->mi.state != BCH_MEMBER_STATE_RW &&
@@ -1262,7 +1273,7 @@ bool bch2_dev_state_allowed(struct bch_fs *c, struct bch_dev *ca,
 
 		s = __bch2_replicas_status(c, new_online_devs);
 
-		return bch2_have_enough_devs(c, s, flags);
+		return bch2_have_enough_devs(s, flags);
 	default:
 		BUG();
 	}
@@ -1299,7 +1310,7 @@ static bool bch2_fs_may_start(struct bch_fs *c)
 
 	s = bch2_replicas_status(c);
 
-	return bch2_have_enough_devs(c, s, flags);
+	return bch2_have_enough_devs(s, flags);
 }
 
 static void __bch2_dev_read_only(struct bch_fs *c, struct bch_dev *ca)
@@ -1346,12 +1357,8 @@ int __bch2_dev_set_state(struct bch_fs *c, struct bch_dev *ca,
 	if (!bch2_dev_state_allowed(c, ca, new_state, flags))
 		return -EINVAL;
 
-	if (new_state == BCH_MEMBER_STATE_RW) {
-		if (__bch2_dev_read_write(c, ca))
-			return -ENOMEM;
-	} else {
+	if (new_state != BCH_MEMBER_STATE_RW)
 		__bch2_dev_read_only(c, ca);
-	}
 
 	bch_notice(ca, "%s", bch2_dev_state[new_state]);
 
@@ -1360,6 +1367,9 @@ int __bch2_dev_set_state(struct bch_fs *c, struct bch_dev *ca,
 	SET_BCH_MEMBER_STATE(&mi->members[ca->dev_idx], new_state);
 	bch2_write_super(c);
 	mutex_unlock(&c->sb_lock);
+
+	if (new_state == BCH_MEMBER_STATE_RW)
+		return __bch2_dev_read_write(c, ca) ? -ENOMEM : 0;
 
 	return 0;
 }
@@ -1701,11 +1711,17 @@ struct bch_fs *bch2_fs_open(char * const *devices, unsigned nr_devices,
 	const char *err;
 	int ret = -ENOMEM;
 
-	if (!nr_devices)
-		return ERR_PTR(-EINVAL);
+	pr_verbose_init(opts, "");
 
-	if (!try_module_get(THIS_MODULE))
-		return ERR_PTR(-ENODEV);
+	if (!nr_devices) {
+		c = ERR_PTR(-EINVAL);
+		goto out2;
+	}
+
+	if (!try_module_get(THIS_MODULE)) {
+		c = ERR_PTR(-ENODEV);
+		goto out2;
+	}
 
 	sb = kcalloc(nr_devices, sizeof(*sb), GFP_KERNEL);
 	if (!sb)
@@ -1760,8 +1776,11 @@ struct bch_fs *bch2_fs_open(char * const *devices, unsigned nr_devices,
 	if (err)
 		goto err_print;
 
+out:
 	kfree(sb);
 	module_put(THIS_MODULE);
+out2:
+	pr_verbose_init(opts, "ret %i", PTR_ERR_OR_ZERO(c));
 	return c;
 err_print:
 	pr_err("bch_fs_open err opening %s: %s",
@@ -1770,12 +1789,10 @@ err_print:
 err:
 	if (c)
 		bch2_fs_stop(c);
-
 	for (i = 0; i < nr_devices; i++)
 		bch2_free_super(&sb[i]);
-	kfree(sb);
-	module_put(THIS_MODULE);
-	return ERR_PTR(ret);
+	c = ERR_PTR(ret);
+	goto out;
 }
 
 static const char *__bch2_fs_open_incremental(struct bch_sb_handle *sb,

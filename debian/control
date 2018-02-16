@@ -5,7 +5,7 @@ Priority: optional
 Standards-Version: 3.9.5
 Build-Depends: debhelper (>= 9), pkg-config, libblkid-dev, uuid-dev,
 	libscrypt-dev, libsodium-dev, libkeyutils-dev, liburcu-dev, zlib1g-dev,
-	libattr1-dev, libaio-dev
+	libattr1-dev, libaio-dev, libzstd-dev
 Homepage: http://bcache.evilpiepirate.org/
 
 Package: bcachefs-tools

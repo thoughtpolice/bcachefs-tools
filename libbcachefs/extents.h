@@ -38,7 +38,8 @@ bch2_insert_fixup_extent(struct btree_insert *,
 			struct btree_insert_entry *);
 
 bool bch2_extent_normalize(struct bch_fs *, struct bkey_s);
-void bch2_extent_mark_replicas_cached(struct bch_fs *, struct bkey_s_extent);
+void bch2_extent_mark_replicas_cached(struct bch_fs *, struct bkey_s_extent,
+				      unsigned);
 
 const struct bch_extent_ptr *
 bch2_extent_has_device(struct bkey_s_c_extent, unsigned);
@@ -430,12 +431,46 @@ static inline struct bch_devs_list bch2_extent_dirty_devs(struct bkey_s_c_extent
 	return ret;
 }
 
+static inline struct bch_devs_list bch2_extent_cached_devs(struct bkey_s_c_extent e)
+{
+	struct bch_devs_list ret = (struct bch_devs_list) { 0 };
+	const struct bch_extent_ptr *ptr;
+
+	extent_for_each_ptr(e, ptr)
+		if (ptr->cached)
+			ret.devs[ret.nr++] = ptr->dev;
+
+	return ret;
+}
+
 static inline struct bch_devs_list bch2_bkey_devs(struct bkey_s_c k)
 {
 	switch (k.k->type) {
 	case BCH_EXTENT:
 	case BCH_EXTENT_CACHED:
 		return bch2_extent_devs(bkey_s_c_to_extent(k));
+	default:
+		return (struct bch_devs_list) { .nr = 0 };
+	}
+}
+
+static inline struct bch_devs_list bch2_bkey_dirty_devs(struct bkey_s_c k)
+{
+	switch (k.k->type) {
+	case BCH_EXTENT:
+	case BCH_EXTENT_CACHED:
+		return bch2_extent_dirty_devs(bkey_s_c_to_extent(k));
+	default:
+		return (struct bch_devs_list) { .nr = 0 };
+	}
+}
+
+static inline struct bch_devs_list bch2_bkey_cached_devs(struct bkey_s_c k)
+{
+	switch (k.k->type) {
+	case BCH_EXTENT:
+	case BCH_EXTENT_CACHED:
+		return bch2_extent_cached_devs(bkey_s_c_to_extent(k));
 	default:
 		return (struct bch_devs_list) { .nr = 0 };
 	}

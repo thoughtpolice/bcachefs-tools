@@ -344,8 +344,8 @@ static void link_data(struct bch_fs *c, struct bch_inode_unpacked *dst,
 			die("error reserving space in new filesystem: %s",
 			    strerror(-ret));
 
-		bch2_check_mark_super(c, BCH_DATA_USER,
-				      bch2_bkey_devs(extent_i_to_s_c(e).s_c));
+		bch2_mark_bkey_replicas(c, BCH_DATA_USER,
+					extent_i_to_s_c(e).s_c);
 
 		ret = bch2_btree_insert(c, BTREE_ID_EXTENTS, &e->k_i,
 					&res, NULL, NULL, 0);

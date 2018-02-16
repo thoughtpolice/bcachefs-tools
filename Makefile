@@ -9,6 +9,7 @@ CFLAGS+=-std=gnu89 -O2 -g -MMD -Wall				\
 	-D_GNU_SOURCE						\
 	-D_LGPL_SOURCE						\
 	-DRCU_MEMBARRIER					\
+	-DZSTD_STATIC_LINKING_ONLY				\
 	-DNO_BCACHEFS_CHARDEV					\
 	-DNO_BCACHEFS_FS					\
 	-DNO_BCACHEFS_SYSFS					\
@@ -31,9 +32,15 @@ ifdef D
 endif
 
 PKGCONFIG_LIBS="blkid uuid liburcu libsodium zlib"
+PKGCONFIG_LIBS_STATIC="libzstd"
+
 CFLAGS+=`pkg-config --cflags	${PKGCONFIG_LIBS}`
-LDLIBS+=`pkg-config --libs	${PKGCONFIG_LIBS}` 		\
-	-lm -lpthread -lrt -lscrypt -lkeyutils -laio
+LDLIBS+=`pkg-config --libs	${PKGCONFIG_LIBS}`
+
+CFLAGS+=`pkg-config --static --cflags	${PKGCONFIG_LIBS_STATIC}`
+LDLIBS+=`pkg-config --static --libs	${PKGCONFIG_LIBS_STATIC}`
+
+LDLIBS+=-lm -lpthread -lrt -lscrypt -lkeyutils -laio
 
 ifeq ($(PREFIX),/usr)
 	ROOT_SBINDIR=/sbin

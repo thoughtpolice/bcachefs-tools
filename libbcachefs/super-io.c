@@ -546,6 +546,8 @@ int bch2_read_super(const char *path, struct bch_opts *opts,
 	__le64 *i;
 	int ret;
 
+	pr_verbose_init(*opts, "");
+
 	memset(sb, 0, sizeof(*sb));
 	sb->mode = FMODE_READ;
 
@@ -566,8 +568,10 @@ int bch2_read_super(const char *path, struct bch_opts *opts,
 			opt_set(*opts, nochanges, true);
 	}
 
-	if (IS_ERR(sb->bdev))
-		return PTR_ERR(sb->bdev);
+	if (IS_ERR(sb->bdev)) {
+		ret = PTR_ERR(sb->bdev);
+		goto out;
+	}
 
 	err = "cannot allocate memory";
 	ret = __bch2_super_realloc(sb, 0);
@@ -638,12 +642,14 @@ got_super:
 	if (sb->mode & FMODE_WRITE)
 		bdev_get_queue(sb->bdev)->backing_dev_info->capabilities
 			|= BDI_CAP_STABLE_WRITES;
-
-	return 0;
+	ret = 0;
+out:
+	pr_verbose_init(*opts, "ret %i", ret);
+	return ret;
 err:
 	bch2_free_super(sb);
 	pr_err("error reading superblock: %s", err);
-	return ret;
+	goto out;
 }
 
 /* write superblock: */
@@ -744,17 +750,15 @@ void bch2_write_super(struct bch_fs *c)
 	nr_wrote = dev_mask_nr(&sb_written);
 
 	can_mount_with_written =
-		bch2_have_enough_devs(c,
-			__bch2_replicas_status(c, sb_written),
-			BCH_FORCE_IF_DEGRADED);
+		bch2_have_enough_devs(__bch2_replicas_status(c, sb_written),
+				      BCH_FORCE_IF_DEGRADED);
 
 	for (i = 0; i < ARRAY_SIZE(sb_written.d); i++)
 		sb_written.d[i] = ~sb_written.d[i];
 
 	can_mount_without_written =
-		bch2_have_enough_devs(c,
-			__bch2_replicas_status(c, sb_written),
-			BCH_FORCE_IF_DEGRADED);
+		bch2_have_enough_devs(__bch2_replicas_status(c, sb_written),
+				      BCH_FORCE_IF_DEGRADED);
 
 	/*
 	 * If we would be able to mount _without_ the devices we successfully
@@ -1052,7 +1056,7 @@ static bool replicas_has_entry(struct bch_replicas_cpu *r,
 }
 
 noinline
-static int bch2_check_mark_super_slowpath(struct bch_fs *c,
+static int bch2_mark_replicas_slowpath(struct bch_fs *c,
 				struct bch_replicas_cpu_entry new_entry,
 				unsigned max_dev)
 {
@@ -1109,9 +1113,9 @@ err:
 	return ret;
 }
 
-int bch2_check_mark_super(struct bch_fs *c,
-			  enum bch_data_type data_type,
-			  struct bch_devs_list devs)
+int bch2_mark_replicas(struct bch_fs *c,
+		       enum bch_data_type data_type,
+		       struct bch_devs_list devs)
 {
 	struct bch_replicas_cpu_entry search;
 	struct bch_replicas_cpu *r, *gc_r;
@@ -1120,6 +1124,8 @@ int bch2_check_mark_super(struct bch_fs *c,
 
 	if (!devs.nr)
 		return 0;
+
+	BUG_ON(devs.nr >= BCH_REPLICAS_MAX);
 
 	devlist_to_replicas(devs, data_type, &search, &max_dev);
 
@@ -1131,7 +1137,23 @@ int bch2_check_mark_super(struct bch_fs *c,
 	rcu_read_unlock();
 
 	return likely(marked) ? 0
-		: bch2_check_mark_super_slowpath(c, search, max_dev);
+		: bch2_mark_replicas_slowpath(c, search, max_dev);
+}
+
+int bch2_mark_bkey_replicas(struct bch_fs *c,
+			    enum bch_data_type data_type,
+			    struct bkey_s_c k)
+{
+	struct bch_devs_list cached = bch2_bkey_cached_devs(k);
+	unsigned i;
+	int ret;
+
+	for (i = 0; i < cached.nr; i++)
+		if ((ret = bch2_mark_replicas(c, BCH_DATA_CACHED,
+					      bch2_dev_list_single(cached.devs[i]))))
+			return ret;
+
+	return bch2_mark_replicas(c, data_type, bch2_bkey_dirty_devs(k));
 }
 
 int bch2_replicas_gc_end(struct bch_fs *c, int err)
@@ -1417,7 +1439,7 @@ int bch2_sb_replicas_to_text(struct bch_sb_field_replicas *r, char *buf, size_t 
 
 /* Query replicas: */
 
-bool bch2_sb_has_replicas(struct bch_fs *c,
+bool bch2_replicas_marked(struct bch_fs *c,
 			  enum bch_data_type data_type,
 			  struct bch_devs_list devs)
 {
@@ -1436,6 +1458,21 @@ bool bch2_sb_has_replicas(struct bch_fs *c,
 	rcu_read_unlock();
 
 	return ret;
+}
+
+bool bch2_bkey_replicas_marked(struct bch_fs *c,
+			       enum bch_data_type data_type,
+			       struct bkey_s_c k)
+{
+	struct bch_devs_list cached = bch2_bkey_cached_devs(k);
+	unsigned i;
+
+	for (i = 0; i < cached.nr; i++)
+		if (!bch2_replicas_marked(c, BCH_DATA_CACHED,
+					  bch2_dev_list_single(cached.devs[i])))
+			return false;
+
+	return bch2_replicas_marked(c, data_type, bch2_bkey_dirty_devs(k));
 }
 
 struct replicas_status __bch2_replicas_status(struct bch_fs *c,
@@ -1495,29 +1532,26 @@ struct replicas_status bch2_replicas_status(struct bch_fs *c)
 	return __bch2_replicas_status(c, bch2_online_devs(c));
 }
 
-bool bch2_have_enough_devs(struct bch_fs *c,
-			   struct replicas_status s,
-			   unsigned flags)
+static bool have_enough_devs(struct replicas_status s,
+			     enum bch_data_type type,
+			     bool force_if_degraded,
+			     bool force_if_lost)
 {
-	if ((s.replicas[BCH_DATA_JOURNAL].nr_offline ||
-	     s.replicas[BCH_DATA_BTREE].nr_offline) &&
-	    !(flags & BCH_FORCE_IF_METADATA_DEGRADED))
-		return false;
+	return (!s.replicas[type].nr_offline || force_if_degraded) &&
+		(s.replicas[type].nr_online || force_if_lost);
+}
 
-	if ((!s.replicas[BCH_DATA_JOURNAL].nr_online ||
-	     !s.replicas[BCH_DATA_BTREE].nr_online) &&
-	    !(flags & BCH_FORCE_IF_METADATA_LOST))
-		return false;
-
-	if (s.replicas[BCH_DATA_USER].nr_offline &&
-	    !(flags & BCH_FORCE_IF_DATA_DEGRADED))
-		return false;
-
-	if (!s.replicas[BCH_DATA_USER].nr_online &&
-	    !(flags & BCH_FORCE_IF_DATA_LOST))
-		return false;
-
-	return true;
+bool bch2_have_enough_devs(struct replicas_status s, unsigned flags)
+{
+	return (have_enough_devs(s, BCH_DATA_JOURNAL,
+				 flags & BCH_FORCE_IF_METADATA_DEGRADED,
+				 flags & BCH_FORCE_IF_METADATA_LOST) &&
+		have_enough_devs(s, BCH_DATA_BTREE,
+				 flags & BCH_FORCE_IF_METADATA_DEGRADED,
+				 flags & BCH_FORCE_IF_METADATA_LOST) &&
+		have_enough_devs(s, BCH_DATA_USER,
+				 flags & BCH_FORCE_IF_DATA_DEGRADED,
+				 flags & BCH_FORCE_IF_DATA_LOST));
 }
 
 unsigned bch2_replicas_online(struct bch_fs *c, bool meta)
