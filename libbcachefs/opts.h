@@ -42,6 +42,7 @@ enum opt_type {
 	BCH_OPT_BOOL,
 	BCH_OPT_UINT,
 	BCH_OPT_STR,
+	BCH_OPT_FN,
 };
 
 /**
@@ -94,9 +95,21 @@ enum opt_type {
 	BCH_OPT(compression,		u8,	OPT_RUNTIME,		\
 		OPT_STR(bch2_compression_types),			\
 		BCH_SB_COMPRESSION_TYPE,	BCH_COMPRESSION_OPT_NONE)\
+	BCH_OPT(background_compression,	u8,	OPT_RUNTIME,		\
+		OPT_STR(bch2_compression_types),			\
+		BCH_SB_BACKGROUND_COMPRESSION_TYPE,BCH_COMPRESSION_OPT_NONE)\
 	BCH_OPT(str_hash,		u8,	OPT_RUNTIME,		\
 		OPT_STR(bch2_str_hash_types),				\
 		BCH_SB_STR_HASH_TYPE,		BCH_STR_HASH_SIPHASH)	\
+	BCH_OPT(foreground_target,	u16,	OPT_RUNTIME,		\
+		OPT_FN(bch2_opt_target),				\
+		BCH_SB_FOREGROUND_TARGET,	0)			\
+	BCH_OPT(background_target,	u16,	OPT_RUNTIME,		\
+		OPT_FN(bch2_opt_target),				\
+		BCH_SB_BACKGROUND_TARGET,	0)			\
+	BCH_OPT(promote_target,		u16,	OPT_RUNTIME,		\
+		OPT_FN(bch2_opt_target),				\
+		BCH_SB_PROMOTE_TARGET,	0)				\
 	BCH_OPT(inodes_32bit,		u8,	OPT_RUNTIME,		\
 		OPT_BOOL(),						\
 		BCH_SB_INODE_32BIT,		false)			\
@@ -205,6 +218,8 @@ enum bch_opt_id {
 	bch2_opts_nr
 };
 
+struct bch_fs;
+
 struct bch_option {
 	struct attribute	attr;
 	void			(*set_sb)(struct bch_sb *, u64);
@@ -217,6 +232,10 @@ struct bch_option {
 	};
 	struct {
 		const char * const *choices;
+	};
+	struct {
+		int (*parse)(struct bch_fs *, const char *, u64 *);
+		int (*print)(struct bch_fs *, char *, size_t, u64);
 	};
 	};
 
@@ -231,14 +250,26 @@ void bch2_opt_set_by_id(struct bch_opts *, enum bch_opt_id, u64);
 struct bch_opts bch2_opts_from_sb(struct bch_sb *);
 
 int bch2_opt_lookup(const char *);
-int bch2_opt_parse(const struct bch_option *, const char *, u64 *);
+int bch2_opt_parse(struct bch_fs *, const struct bch_option *, const char *, u64 *);
+
+#define OPT_SHOW_FULL_LIST	(1 << 0)
+#define OPT_SHOW_MOUNT_STYLE	(1 << 1)
+
+int bch2_opt_to_text(struct bch_fs *, char *, size_t,
+		     const struct bch_option *, u64, unsigned);
+
 int bch2_parse_mount_opts(struct bch_opts *, char *);
 
 /* inode opts: */
 
 #define BCH_INODE_OPTS()					\
 	BCH_INODE_OPT(data_checksum,			8)	\
-	BCH_INODE_OPT(compression,			8)
+	BCH_INODE_OPT(compression,			8)	\
+	BCH_INODE_OPT(background_compression,		8)	\
+	BCH_INODE_OPT(data_replicas,			8)	\
+	BCH_INODE_OPT(promote_target,			16)	\
+	BCH_INODE_OPT(foreground_target,		16)	\
+	BCH_INODE_OPT(background_target,		16)
 
 struct bch_io_opts {
 #define BCH_INODE_OPT(_name, _bits)	unsigned _name##_defined:1;

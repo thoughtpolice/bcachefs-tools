@@ -149,6 +149,7 @@ int bch2_congested(void *data, int bdi_bits)
 	unsigned i;
 	int ret = 0;
 
+	rcu_read_lock();
 	if (bdi_bits & (1 << WB_sync_congested)) {
 		/* Reads - check all devices: */
 		for_each_readable_member(ca, c, i) {
@@ -160,12 +161,11 @@ int bch2_congested(void *data, int bdi_bits)
 			}
 		}
 	} else {
-		/* Writes prefer fastest tier: */
-		struct bch_tier *tier = READ_ONCE(c->fastest_tier);
-		struct bch_devs_mask *devs =
-			tier ? &tier->devs : &c->rw_devs[BCH_DATA_USER];
+		unsigned target = READ_ONCE(c->opts.foreground_target);
+		const struct bch_devs_mask *devs = target
+			? bch2_target_to_mask(c, target)
+			: &c->rw_devs[BCH_DATA_USER];
 
-		rcu_read_lock();
 		for_each_member_device_rcu(ca, c, i, devs) {
 			bdi = ca->disk_sb.bdev->bd_bdi;
 
@@ -174,8 +174,8 @@ int bch2_congested(void *data, int bdi_bits)
 				break;
 			}
 		}
-		rcu_read_unlock();
 	}
+	rcu_read_unlock();
 
 	return ret;
 }
@@ -185,9 +185,9 @@ int bch2_congested(void *data, int bdi_bits)
 /*
  * For startup/shutdown of RW stuff, the dependencies are:
  *
- * - foreground writes depend on copygc and tiering (to free up space)
+ * - foreground writes depend on copygc and rebalance (to free up space)
  *
- * - copygc and tiering depend on mark and sweep gc (they actually probably
+ * - copygc and rebalance depend on mark and sweep gc (they actually probably
  *   don't because they either reserve ahead of time or don't block if
  *   allocations fail, but allocations can require mark and sweep gc to run
  *   because of generation number wraparound)
@@ -225,7 +225,7 @@ static void __bch2_fs_read_only(struct bch_fs *c)
 	struct bch_dev *ca;
 	unsigned i;
 
-	bch2_tiering_stop(c);
+	bch2_rebalance_stop(c);
 
 	for_each_member_device(ca, c, i)
 		bch2_copygc_stop(ca);
@@ -385,8 +385,8 @@ const char *bch2_fs_read_write(struct bch_fs *c)
 			goto err;
 		}
 
-	err = "error starting tiering thread";
-	if (bch2_tiering_start(c))
+	err = "error starting rebalance thread";
+	if (bch2_rebalance_start(c))
 		goto err;
 
 	schedule_delayed_work(&c->pd_controllers_update, 5 * HZ);
@@ -531,7 +531,7 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 #undef BCH_TIME_STAT
 
 	bch2_fs_allocator_init(c);
-	bch2_fs_tiering_init(c);
+	bch2_fs_rebalance_init(c);
 	bch2_fs_quota_init(c);
 
 	INIT_LIST_HEAD(&c->list);
@@ -555,8 +555,8 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	c->writeback_pages_max = (256 << 10) / PAGE_SIZE;
 
 	c->copy_gc_enabled = 1;
-	c->tiering_enabled = 1;
-	c->tiering_percent = 10;
+	c->rebalance_enabled = 1;
+	c->rebalance_percent = 10;
 
 	c->journal.write_time	= &c->journal_write_time;
 	c->journal.delay_time	= &c->journal_delay_time;
@@ -626,7 +626,6 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	    bch2_fs_btree_cache_init(c) ||
 	    bch2_fs_encryption_init(c) ||
 	    bch2_fs_compress_init(c) ||
-	    bch2_check_set_has_compressed_data(c, c->opts.compression) ||
 	    bch2_fs_fsio_init(c))
 		goto err;
 
@@ -1216,6 +1215,8 @@ static int __bch2_dev_online(struct bch_fs *c, struct bch_sb_handle *sb)
 	if (ca->mi.state == BCH_MEMBER_STATE_RW)
 		bch2_dev_allocator_add(c, ca);
 
+	rebalance_wakeup(c);
+
 	percpu_ref_reinit(&ca->io_ref);
 	return 0;
 }
@@ -1340,9 +1341,6 @@ static const char *__bch2_dev_read_write(struct bch_fs *c, struct bch_dev *ca)
 	if (bch2_copygc_start(c, ca))
 		return "error starting copygc thread";
 
-	if (bch2_tiering_start(c))
-		return "error starting tiering thread";
-
 	return NULL;
 }
 
@@ -1350,6 +1348,7 @@ int __bch2_dev_set_state(struct bch_fs *c, struct bch_dev *ca,
 			 enum bch_member_state new_state, int flags)
 {
 	struct bch_sb_field_members *mi;
+	int ret = 0;
 
 	if (ca->mi.state == new_state)
 		return 0;
@@ -1368,10 +1367,13 @@ int __bch2_dev_set_state(struct bch_fs *c, struct bch_dev *ca,
 	bch2_write_super(c);
 	mutex_unlock(&c->sb_lock);
 
-	if (new_state == BCH_MEMBER_STATE_RW)
-		return __bch2_dev_read_write(c, ca) ? -ENOMEM : 0;
+	if (new_state == BCH_MEMBER_STATE_RW &&
+	    __bch2_dev_read_write(c, ca))
+		ret = -ENOMEM;
 
-	return 0;
+	rebalance_wakeup(c);
+
+	return ret;
 }
 
 int bch2_dev_set_state(struct bch_fs *c, struct bch_dev *ca,
@@ -1698,6 +1700,95 @@ int bch2_dev_resize(struct bch_fs *c, struct bch_dev *ca, u64 nbuckets)
 err:
 	mutex_unlock(&c->state_lock);
 	return ret;
+}
+
+/* return with ref on ca->ref: */
+struct bch_dev *bch2_dev_lookup(struct bch_fs *c, const char *path)
+{
+
+	struct block_device *bdev = lookup_bdev(path);
+	struct bch_dev *ca;
+	unsigned i;
+
+	if (IS_ERR(bdev))
+		return ERR_CAST(bdev);
+
+	for_each_member_device(ca, c, i)
+		if (ca->disk_sb.bdev == bdev)
+			goto found;
+
+	ca = ERR_PTR(-ENOENT);
+found:
+	bdput(bdev);
+	return ca;
+}
+
+int bch2_dev_group_set(struct bch_fs *c, struct bch_dev *ca, const char *label)
+{
+	struct bch_sb_field_disk_groups *groups;
+	struct bch_disk_group *g;
+	struct bch_member *mi;
+	unsigned i, v, nr_groups;
+	int ret;
+
+	if (strlen(label) > BCH_SB_LABEL_SIZE)
+		return -EINVAL;
+
+	mutex_lock(&c->sb_lock);
+	groups		= bch2_sb_get_disk_groups(c->disk_sb);
+	nr_groups	= disk_groups_nr(groups);
+
+	if (!strcmp(label, "none")) {
+		v = 0;
+		goto write_sb;
+	}
+
+	ret = __bch2_disk_group_find(groups, label);
+	if (ret >= 0) {
+		v = ret + 1;
+		goto write_sb;
+	}
+
+	/* not found - create a new disk group: */
+
+	for (i = 0;
+	     i < nr_groups && !BCH_GROUP_DELETED(&groups->entries[i]);
+	     i++)
+		;
+
+	if (i == nr_groups) {
+		unsigned u64s =
+			(sizeof(struct bch_sb_field_disk_groups) +
+			 sizeof(struct bch_disk_group) * (nr_groups + 1)) /
+			sizeof(u64);
+
+		groups = bch2_fs_sb_resize_disk_groups(c, u64s);
+		if (!groups) {
+			mutex_unlock(&c->sb_lock);
+			return -ENOSPC;
+		}
+
+		nr_groups = disk_groups_nr(groups);
+	}
+
+	BUG_ON(i >= nr_groups);
+
+	g = &groups->entries[i];
+	v = i + 1;
+
+	memcpy(g->label, label, strlen(label));
+	if (strlen(label) < sizeof(g->label))
+		g->label[strlen(label)] = '\0';
+	SET_BCH_GROUP_DELETED(g, 0);
+	SET_BCH_GROUP_DATA_ALLOWED(g, ~0);
+write_sb:
+	mi = &bch2_sb_get_members(c->disk_sb)->members[ca->dev_idx];
+	SET_BCH_MEMBER_GROUP(mi, v);
+
+	bch2_write_super(c);
+	mutex_unlock(&c->sb_lock);
+
+	return 0;
 }
 
 /* Filesystem open: */

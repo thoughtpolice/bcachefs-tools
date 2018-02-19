@@ -6,6 +6,7 @@
 #include "extents.h"
 #include "fs.h"
 #include "str_hash.h"
+#include "tier.h"
 #include "xattr.h"
 
 #include <linux/dcache.h>
@@ -366,6 +367,7 @@ static int bch2_xattr_bcachefs_get(const struct xattr_handler *handler,
 				   const char *name, void *buffer, size_t size)
 {
 	struct bch_inode_info *inode = to_bch_ei(vinode);
+	struct bch_fs *c = inode->v.i_sb->s_fs_info;
 	struct bch_opts opts =
 		bch2_inode_opts_to_opts(bch2_inode_opts_get(&inode->ei_inode));
 	const struct bch_option *opt;
@@ -383,12 +385,9 @@ static int bch2_xattr_bcachefs_get(const struct xattr_handler *handler,
 
 	v = bch2_opt_get_by_id(&opts, id);
 
-	if (opt->type == BCH_OPT_STR)
-		ret = snprintf(buffer, size, "%s", opt->choices[v]);
-	else
-		ret = snprintf(buffer, size, "%llu", v);
+	ret = bch2_opt_to_text(c, buffer, size, opt, v, 0);
 
-	return ret <= size || !buffer ? ret : -ERANGE;
+	return ret < size || !buffer ? ret : -ERANGE;
 }
 
 struct inode_opt_set {
@@ -435,17 +434,15 @@ static int bch2_xattr_bcachefs_set(const struct xattr_handler *handler,
 		memcpy(buf, value, size);
 		buf[size] = '\0';
 
-		ret = bch2_opt_parse(opt, buf, &s.v);
+		ret = bch2_opt_parse(c, opt, buf, &s.v);
 		kfree(buf);
 
 		if (ret < 0)
 			return ret;
 
-		if (s.id == Opt_compression) {
-			mutex_lock(&c->sb_lock);
+		if (s.id == Opt_compression ||
+		    s.id == Opt_background_compression) {
 			ret = bch2_check_set_has_compressed_data(c, s.v);
-			mutex_unlock(&c->sb_lock);
-
 			if (ret)
 				return ret;
 		}
@@ -458,6 +455,11 @@ static int bch2_xattr_bcachefs_set(const struct xattr_handler *handler,
 	mutex_lock(&inode->ei_update_lock);
 	ret = __bch2_write_inode(c, inode, inode_opt_set_fn, &s);
 	mutex_unlock(&inode->ei_update_lock);
+
+	if (value &&
+	    (s.id == Opt_background_compression ||
+	     s.id == Opt_background_target))
+		bch2_rebalance_add_work(c, inode->v.i_blocks);
 
 	return ret;
 }

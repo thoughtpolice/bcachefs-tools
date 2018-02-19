@@ -168,15 +168,14 @@ rw_attribute(writeback_pages_max);
 
 rw_attribute(discard);
 rw_attribute(cache_replacement_policy);
+rw_attribute(group);
 
 rw_attribute(copy_gc_enabled);
 sysfs_pd_controller_attribute(copy_gc);
 
-rw_attribute(tier);
-rw_attribute(tiering_enabled);
-rw_attribute(tiering_percent);
-sysfs_pd_controller_attribute(tiering);
-
+rw_attribute(rebalance_enabled);
+rw_attribute(rebalance_percent);
+sysfs_pd_controller_attribute(rebalance);
 
 rw_attribute(pd_controllers_update_seconds);
 
@@ -332,10 +331,10 @@ SHOW(bch2_fs)
 	sysfs_print(pd_controllers_update_seconds,
 		    c->pd_controllers_update_seconds);
 
-	sysfs_printf(tiering_enabled,		"%i", c->tiering_enabled);
-	sysfs_print(tiering_percent,		c->tiering_percent);
+	sysfs_printf(rebalance_enabled,		"%i", c->rebalance_enabled);
+	sysfs_print(rebalance_percent,		c->rebalance_percent);
 
-	sysfs_pd_controller_show(tiering,	&c->tiers[1].pd); /* XXX */
+	sysfs_pd_controller_show(rebalance,	&c->rebalance_pd); /* XXX */
 
 	sysfs_printf(meta_replicas_have, "%u",	bch2_replicas_online(c, true));
 	sysfs_printf(data_replicas_have, "%u",	bch2_replicas_online(c, false));
@@ -397,19 +396,19 @@ STORE(__bch2_fs)
 		return ret;
 	}
 
-	if (attr == &sysfs_tiering_enabled) {
-		ssize_t ret = strtoul_safe(buf, c->tiering_enabled)
+	if (attr == &sysfs_rebalance_enabled) {
+		ssize_t ret = strtoul_safe(buf, c->rebalance_enabled)
 			?: (ssize_t) size;
 
-		bch2_tiering_start(c); /* issue wakeups */
+		rebalance_wakeup(c);
 		return ret;
 	}
 
 	sysfs_strtoul(pd_controllers_update_seconds,
 		      c->pd_controllers_update_seconds);
 
-	sysfs_strtoul(tiering_percent,		c->tiering_percent);
-	sysfs_pd_controller_store(tiering,	&c->tiers[1].pd); /* XXX */
+	sysfs_strtoul(rebalance_percent,	c->rebalance_percent);
+	sysfs_pd_controller_store(rebalance,	&c->rebalance_pd);
 
 	/* Debugging: */
 
@@ -468,7 +467,7 @@ struct attribute *bch2_fs_files[] = {
 
 	&sysfs_writeback_pages_max,
 
-	&sysfs_tiering_percent,
+	&sysfs_rebalance_percent,
 
 	&sysfs_compression_stats,
 	NULL
@@ -506,8 +505,8 @@ struct attribute *bch2_fs_internal_files[] = {
 	&sysfs_prune_cache,
 
 	&sysfs_copy_gc_enabled,
-	&sysfs_tiering_enabled,
-	sysfs_pd_controller_files(tiering),
+	&sysfs_rebalance_enabled,
+	sysfs_pd_controller_files(rebalance),
 	&sysfs_internal_uuid,
 
 #define BCH_DEBUG_PARAM(name, description) &sysfs_##name,
@@ -527,9 +526,7 @@ SHOW(bch2_fs_opts_dir)
 	int id = opt - bch2_opt_table;
 	u64 v = bch2_opt_get_by_id(&c->opts, id);
 
-	out += opt->type == BCH_OPT_STR
-		? bch2_scnprint_string_list(out, end - out, opt->choices, v)
-		: scnprintf(out, end - out, "%lli", v);
+	out += bch2_opt_to_text(c, out, end - out, opt, v, OPT_SHOW_FULL_LIST);
 	out += scnprintf(out, end - out, "\n");
 
 	return out - buf;
@@ -542,13 +539,12 @@ STORE(bch2_fs_opts_dir)
 	int ret, id = opt - bch2_opt_table;
 	u64 v;
 
-	ret = bch2_opt_parse(opt, buf, &v);
+	ret = bch2_opt_parse(c, opt, buf, &v);
 	if (ret < 0)
 		return ret;
 
-	mutex_lock(&c->sb_lock);
-
-	if (id == Opt_compression) {
+	if (id == Opt_compression ||
+	    id == Opt_background_compression) {
 		int ret = bch2_check_set_has_compressed_data(c, v);
 		if (ret) {
 			mutex_unlock(&c->sb_lock);
@@ -557,13 +553,19 @@ STORE(bch2_fs_opts_dir)
 	}
 
 	if (opt->set_sb != SET_NO_SB_OPT) {
+		mutex_lock(&c->sb_lock);
 		opt->set_sb(c->disk_sb, v);
 		bch2_write_super(c);
+		mutex_unlock(&c->sb_lock);
 	}
 
 	bch2_opt_set_by_id(&c->opts, id, v);
 
-	mutex_unlock(&c->sb_lock);
+	if ((id == Opt_background_target ||
+	     id == Opt_background_compression) && v) {
+		bch2_rebalance_add_work(c, S64_MAX);
+		rebalance_wakeup(c);
+	}
 
 	return size;
 }
@@ -809,6 +811,26 @@ SHOW(bch2_dev)
 	sysfs_print(nbuckets,		ca->mi.nbuckets);
 	sysfs_print(discard,		ca->mi.discard);
 
+	if (attr == &sysfs_group) {
+		struct bch_sb_field_disk_groups *groups;
+		struct bch_disk_group *g;
+		unsigned len;
+
+		if (!ca->mi.group)
+			return scnprintf(out, end - out, "none\n");
+
+		mutex_lock(&c->sb_lock);
+		groups = bch2_sb_get_disk_groups(c->disk_sb);
+
+		g = &groups->entries[ca->mi.group - 1];
+		len = strnlen(g->label, sizeof(g->label));
+		memcpy(buf, g->label, len);
+		mutex_unlock(&c->sb_lock);
+
+		buf[len++] = '\n';
+		return len;
+	}
+
 	if (attr == &sysfs_has_data) {
 		out += bch2_scnprint_flag_list(out, end - out,
 					       bch2_data_types,
@@ -826,8 +848,6 @@ SHOW(bch2_dev)
 		out += scnprintf(out, end - out, "\n");
 		return out - buf;
 	}
-
-	sysfs_print(tier,		ca->mi.tier);
 
 	if (attr == &sysfs_state_rw) {
 		out += bch2_scnprint_string_list(out, end - out,
@@ -892,29 +912,10 @@ STORE(bch2_dev)
 		mutex_unlock(&c->sb_lock);
 	}
 
-	if (attr == &sysfs_tier) {
-		unsigned prev_tier;
-		unsigned v = strtoul_restrict_or_return(buf,
-					0, BCH_TIER_MAX - 1);
-
-		mutex_lock(&c->sb_lock);
-		prev_tier = ca->mi.tier;
-
-		if (v == ca->mi.tier) {
-			mutex_unlock(&c->sb_lock);
-			return size;
-		}
-
-		mi = &bch2_sb_get_members(c->disk_sb)->members[ca->dev_idx];
-		SET_BCH_MEMBER_TIER(mi, v);
-		bch2_write_super(c);
-
-		clear_bit(ca->dev_idx, c->tiers[prev_tier].devs.d);
-		set_bit(ca->dev_idx, c->tiers[ca->mi.tier].devs.d);
-		mutex_unlock(&c->sb_lock);
-
-		bch2_recalc_capacity(c);
-		bch2_tiering_start(c);
+	if (attr == &sysfs_group) {
+		int ret = bch2_dev_group_set(c, ca, buf);
+		if (ret)
+			return ret;
 	}
 
 	if (attr == &sysfs_wake_allocator)
@@ -934,8 +935,8 @@ struct attribute *bch2_dev_files[] = {
 	/* settings: */
 	&sysfs_discard,
 	&sysfs_cache_replacement_policy,
-	&sysfs_tier,
 	&sysfs_state_rw,
+	&sysfs_group,
 
 	&sysfs_has_data,
 	&sysfs_iostats,

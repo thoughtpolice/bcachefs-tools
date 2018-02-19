@@ -17,6 +17,7 @@ enum data_cmd {
 };
 
 struct data_opts {
+	u16		target;
 	unsigned	rewrite_dev;
 	int		btree_insert_flags;
 };
@@ -38,13 +39,10 @@ struct migrate_write {
 
 void bch2_migrate_read_done(struct migrate_write *, struct bch_read_bio *);
 int bch2_migrate_write_init(struct bch_fs *, struct migrate_write *,
-			    struct bch_devs_mask *,
 			    struct write_point_specifier,
 			    struct bch_io_opts,
 			    enum data_cmd, struct data_opts,
 			    struct bkey_s_c);
-
-#define SECTORS_IN_FLIGHT_PER_DEVICE	2048
 
 typedef enum data_cmd (*move_pred_fn)(struct bch_fs *, void *,
 				enum bkey_type, struct bkey_s_c_extent,
@@ -61,7 +59,6 @@ struct bch_move_stats {
 };
 
 int bch2_move_data(struct bch_fs *, struct bch_ratelimit *,
-		   unsigned, struct bch_devs_mask *,
 		   struct write_point_specifier,
 		   struct bpos, struct bpos,
 		   move_pred_fn, void *,
