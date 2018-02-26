@@ -15,11 +15,40 @@ prereqs)
     ;;
 esac
 
-# Check if it needs unlocking:
-if bcachefs unlock -c $ROOT >/dev/null 2>&1; then
-    echo "Unlocking $ROOT:"
-
-    while true; do
-	bcachefs unlock $ROOT && break
-    done
+# Nothing to do if ROOTFSTYPE is set to something other than bcachefs
+if [ -n "$ROOTFSTYPE" -a "$ROOTFSTYPE" != bcachefs ]; then
+    exit 0
 fi
+
+# source for resolve_device() and panic() functions
+. /scripts/functions
+
+# Resolve the root device (e.g. if root is specified by UUID)
+DEV=$(resolve_device "$ROOT")
+
+# Check if the root device needs unlocking:
+if bcachefs unlock -c $DEV >/dev/null 2>&1; then
+    if [ "$DEV" == "$ROOT" ]; then
+        echo "Please unlock $DEV:"
+    else
+        echo "Please unlock $DEV ($ROOT):"
+    fi
+
+    count=0
+    tries=3
+    while [ $tries -le 0 -o $count -lt $tries ]; do
+        if bcachefs unlock "$DEV"; then
+            echo "Bcachefs: $DEV successfully unlocked"
+            break
+        fi
+
+        let count++
+    done
+
+    if [ $tries -gt 0 -a $count -ge $tries ]; then
+        panic "Bcachefs: maximum number of tries exceeded for $DEV"
+        exit 1
+    fi
+fi
+
+exit 0
