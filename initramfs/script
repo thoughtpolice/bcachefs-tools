@@ -23,22 +23,68 @@ fi
 # source for resolve_device() and panic() functions
 . /scripts/functions
 
+#
+# Helper functions
+#
+message()
+{
+    if [ -x /bin/plymouth ] && plymouth --ping; then
+        plymouth message --text="$*"
+    else
+        echo "$*" >&2
+    fi
+}
+
+panic2()
+{
+    # Send the panic message to plymouth
+    if [ -x /bin/plymouth ] && plymouth --ping; then
+        plymouth message --text="$*"
+    fi
+    panic "$@"
+    exit 1
+}
+
+unlock()
+{
+    local msg=$1
+    shift
+
+    if [ -x /bin/plymouth ] && plymouth --ping; then
+        msg=$(plymouth ask-for-password --prompt="$msg" | \
+              bcachefs unlock "$@" 2>&1)
+        # If the unlock failed, send any printed messages to plymouth
+        if [ $? -ne 0 ]; then
+            plymouth message --text="Bcachefs: $msg"
+            return 1
+        fi
+    else
+        # If unlock() is called multiple times, don't re-print the prompt message
+        # unless it has changed
+        if [ "$LAST_UNLOCK_MSG" != "$msg" ]; then
+            echo "$msg" >&2
+            LAST_UNLOCK_MSG=$msg
+        fi
+        bcachefs unlock "$@"
+    fi
+}
+
 # Resolve the root device (e.g. if root is specified by UUID)
 DEV=$(resolve_device "$ROOT")
 
 # Check if the root device needs unlocking:
 if bcachefs unlock -c $DEV >/dev/null 2>&1; then
     if [ "$DEV" == "$ROOT" ]; then
-        echo "Please unlock $DEV:"
+        msg="Please unlock $DEV:"
     else
-        echo "Please unlock $DEV ($ROOT):"
+        msg="Please unlock $DEV ($ROOT):"
     fi
 
     count=0
     tries=3
     while [ $tries -le 0 -o $count -lt $tries ]; do
-        if bcachefs unlock "$DEV"; then
-            echo "Bcachefs: $DEV successfully unlocked"
+        if unlock "$msg" "$DEV"; then
+            message "Bcachefs: $DEV successfully unlocked"
             break
         fi
 
@@ -46,8 +92,7 @@ if bcachefs unlock -c $DEV >/dev/null 2>&1; then
     done
 
     if [ $tries -gt 0 -a $count -ge $tries ]; then
-        panic "Bcachefs: maximum number of tries exceeded for $DEV"
-        exit 1
+        panic2 "Bcachefs: maximum number of tries exceeded for $DEV"
     fi
 fi
 
