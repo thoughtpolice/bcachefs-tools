@@ -128,8 +128,8 @@ static unsigned parse_target(struct dev_opts *devs, size_t nr_devs,
 			     struct bch_sb_field_disk_groups *gi,
 			     const char *s)
 {
-	struct bch_disk_group *g;
 	struct dev_opts *i;
+	int idx;
 
 	if (!s)
 		return 0;
@@ -138,15 +138,9 @@ static unsigned parse_target(struct dev_opts *devs, size_t nr_devs,
 		if (!strcmp(s, i->path))
 			return dev_to_target(i - devs);
 
-	for (g = gi->entries;
-	     g < gi->entries + disk_groups_nr(gi);
-	     g++) {
-		unsigned len = strnlen(g->label, sizeof(g->label));
-
-		if (len == strlen(s) &&
-		    !memcmp(s, g->label, len))
-			return group_to_target(g - gi->entries);
-	}
+	idx = __bch2_disk_group_find(gi, s);
+	if (idx >= 0)
+		return group_to_target(idx);
 
 	die("Invalid target %s", s);
 	return 0;
@@ -212,6 +206,7 @@ struct bch_sb *bch2_format(struct format_opts opts,
 	SET_BCH_SB_META_CSUM_TYPE(sb,		opts.meta_csum_type);
 	SET_BCH_SB_DATA_CSUM_TYPE(sb,		opts.data_csum_type);
 	SET_BCH_SB_COMPRESSION_TYPE(sb,		opts.compression_type);
+	SET_BCH_SB_BACKGROUND_COMPRESSION_TYPE(sb, opts.background_compression_type);
 
 	SET_BCH_SB_BTREE_NODE_SIZE(sb,		opts.btree_node_size);
 	SET_BCH_SB_GC_RESERVE(sb,		8);
@@ -446,11 +441,15 @@ static void bch2_sb_print_members(struct bch_sb *sb, struct bch_sb_field *f,
 		uuid_unparse(m->uuid.b, member_uuid_str);
 
 		if (BCH_MEMBER_GROUP(m)) {
-			if (BCH_MEMBER_GROUP(m) < disk_groups_nr(gi))
-				memcpy(group, gi->entries[BCH_MEMBER_GROUP(m)].label,
+			unsigned idx = BCH_MEMBER_GROUP(m) - 1;
+
+			if (idx < disk_groups_nr(gi)) {
+				memcpy(group, gi->entries[idx].label,
 				       BCH_SB_LABEL_SIZE);
-			else
+				group[BCH_SB_LABEL_SIZE] = '\0';
+			} else {
 				strcpy(group, "(bad disk groups section");
+			}
 		}
 
 		bch2_scnprint_flag_list(data_allowed_str,

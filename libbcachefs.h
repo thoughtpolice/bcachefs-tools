@@ -32,6 +32,7 @@ struct format_opts {
 	unsigned	meta_csum_type;
 	unsigned	data_csum_type;
 	unsigned	compression_type;
+	unsigned	background_compression_type;
 
 	bool		encrypted;
 	char		*passphrase;

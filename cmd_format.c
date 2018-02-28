@@ -30,19 +30,20 @@
 
 #define OPTS									\
 t("bcachefs format - create a new bcachefs filesystem on one or more devices")	\
-t("Usage: bcachefs format [OPTION]... <devices>")					\
+t("Usage: bcachefs format [OPTION]... <devices>")				\
 t("")										\
 x('b',	block_size,		"size",			NULL)			\
 x(0,	btree_node_size,	"size",			"Default 256k")		\
 x(0,	metadata_checksum_type,	"(none|crc32c|crc64)",	NULL)			\
 x(0,	data_checksum_type,	"(none|crc32c|crc64)",	NULL)			\
 x(0,	compression_type,	"(none|lz4|gzip)",	NULL)			\
+x(0,	background_compression_type,	"(none|lz4|gzip)",	NULL)		\
 x(0,	replicas,		"#",			NULL)			\
 x(0,	data_replicas,		"#",			NULL)			\
 x(0,	metadata_replicas,	"#",			NULL)			\
 x(0,	foreground_target,	"target",		NULL)			\
 x(0,	background_target,	"target",		NULL)			\
-x(0,	promote_target,	"target",		NULL)			\
+x(0,	promote_target,		"target",		NULL)			\
 x(0,	encrypted,		NULL,			"Enable whole filesystem encryption (chacha20/poly1305)")\
 x(0,	no_passphrase,		NULL,			"Don't encrypt master encryption key")\
 x('e',	error_action,		"(continue|remount-ro|panic)", NULL)		\
@@ -78,7 +79,8 @@ static void usage(void)
 	     "      --btree_node=size       Btree node size, default 256k\n"
 	     "      --metadata_checksum_type=(none|crc32c|crc64)\n"
 	     "      --data_checksum_type=(none|crc32c|crc64)\n"
-	     "      --compression_type=(none|lz4|gzip)\n"
+	     "      --compression_type=(none|lz4|gzip|zstd)\n"
+	     "      --background_compression_type=(none|lz4|gzip|zstd)\n"
 	     "      --data_replicas=#       Number of data replicas\n"
 	     "      --metadata_replicas=#   Number of metadata replicas\n"
 	     "      --replicas=#            Sets both data and metadata replicas\n"
@@ -174,6 +176,12 @@ int cmd_format(int argc, char *argv[])
 			break;
 		case O_compression_type:
 			opts.compression_type =
+				read_string_list_or_die(optarg,
+						bch2_compression_types,
+						"compression type");
+			break;
+		case O_background_compression_type:
+			opts.background_compression_type =
 				read_string_list_or_die(optarg,
 						bch2_compression_types,
 						"compression type");
