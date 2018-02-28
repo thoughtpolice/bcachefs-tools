@@ -399,6 +399,7 @@ struct bch_dev {
 	size_t			inc_gen_really_needs_gc;
 	u64			allocator_journal_seq_flush;
 	bool			allocator_invalidating_data;
+	bool			allocator_blocked;
 
 	alloc_heap		alloc_heap;
 
@@ -671,9 +672,6 @@ struct bch_fs {
 	bool			fsck_alloc_err;
 
 	/* FILESYSTEM */
-	wait_queue_head_t	writeback_wait;
-	atomic_t		writeback_pages;
-	unsigned		writeback_pages_max;
 	atomic_long_t		nr_inodes;
 
 	/* QUOTAS */

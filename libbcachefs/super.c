@@ -551,9 +551,6 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 
 	seqcount_init(&c->gc_pos_lock);
 
-	init_waitqueue_head(&c->writeback_wait);
-	c->writeback_pages_max = (256 << 10) / PAGE_SIZE;
-
 	c->copy_gc_enabled = 1;
 	c->rebalance_enabled = 1;
 	c->rebalance_percent = 10;
@@ -589,7 +586,8 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	if (bch2_fs_init_fault("fs_alloc"))
 		goto err;
 
-	iter_size = (btree_blocks(c) + 1) * 2 *
+	iter_size = sizeof(struct btree_node_iter_large) +
+		(btree_blocks(c) + 1) * 2 *
 		sizeof(struct btree_node_iter_set);
 
 	if (!(c->wq = alloc_workqueue("bcachefs",
