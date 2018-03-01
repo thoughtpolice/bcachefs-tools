@@ -947,7 +947,7 @@ enum btree_validate_ret {
 
 #define btree_err(type, c, b, i, msg, ...)				\
 ({									\
-	char _buf[200], *out = _buf, *end = out + sizeof(_buf);		\
+	char _buf[300], *out = _buf, *end = out + sizeof(_buf);		\
 									\
 	out += btree_err_msg(c, b, i, b->written, write, out, end - out);\
 	out += scnprintf(out, end - out, ": " msg, ##__VA_ARGS__);	\
@@ -1103,7 +1103,7 @@ static int validate_bset(struct bch_fs *c, struct btree *b,
 
 			bch2_bkey_val_to_text(c, type, buf, sizeof(buf), u);
 			btree_err(BTREE_ERR_FIXABLE, c, b, i,
-				  "invalid bkey %s: %s", buf, invalid);
+				  "invalid bkey:\n%s\n%s", buf, invalid);
 
 			i->u64s = cpu_to_le16(le16_to_cpu(i->u64s) - k->u64s);
 			memmove_u64s_down(k, bkey_next(k),
@@ -1192,7 +1192,6 @@ int bch2_btree_node_read_done(struct bch_fs *c, struct btree *b, bool have_retry
 
 			sectors = vstruct_sectors(b->data, c->block_bits);
 
-			set_btree_bset(b, b->set, &b->data->keys);
 			btree_node_set_format(b, b->data->format);
 		} else {
 			bne = write_block(b);
@@ -1257,6 +1256,8 @@ int bch2_btree_node_read_done(struct bch_fs *c, struct btree *b, bool have_retry
 
 	sorted = btree_bounce_alloc(c, btree_page_order(c), &used_mempool);
 	sorted->keys.u64s = 0;
+
+	set_btree_bset(b, b->set, &b->data->keys);
 
 	b->nr = btree_node_is_extents(b)
 		? bch2_extent_sort_fix_overlapping(c, &sorted->keys, b, iter)
