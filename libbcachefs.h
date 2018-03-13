@@ -59,6 +59,7 @@ struct dev_opts {
 	unsigned	bucket_size;
 	const char	*group;
 	unsigned	data_allowed;
+	unsigned	durability;
 	bool		discard;
 
 	u64		nbuckets;
@@ -71,6 +72,7 @@ static inline struct dev_opts dev_opts_default()
 {
 	return (struct dev_opts) {
 		.data_allowed		= ~0U << 2,
+		.durability		= 1,
 	};
 }
 

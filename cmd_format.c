@@ -57,6 +57,7 @@ x(0,	bucket_size,		"size",			"Bucket size")		\
 x('g',	group,			"label",		"Disk group")\
 x(0,	discard,		NULL,			NULL)			\
 x(0,	data_allowed,		"journal,btree,data",	"Allowed types of data on this device")\
+x(0,	durability,		"#",			"Number of times data written to this device will have been considered replicated")\
 t("Device specific options must come before corresponding devices, e.g.")	\
 t("  bcachefs format --group cache /dev/sdb --tier 1 /dev/sdc")			\
 t("")										\
@@ -96,6 +97,7 @@ static void usage(void)
 	     "      --fs_size=size          Size of filesystem on device\n"
 	     "      --bucket=size           Bucket size\n"
 	     "      --discard               Enable discards\n"
+	     "      --durability=#          Device durability (0-4)\n"
 	     "  -g, --group=label           Disk group\n"
 	     "\n"
 	     "  -q, --quiet                 Only print errors\n"
@@ -260,6 +262,11 @@ int cmd_format(int argc, char *argv[])
 			dev_opts.data_allowed =
 				read_flag_list_or_die(optarg,
 					bch2_data_types, "data type");
+			break;
+		case O_durability:
+			if (kstrtouint(optarg, 10, &dev_opts.durability) ||
+			    dev_opts.durability > BCH_REPLICAS_MAX)
+				die("invalid durability");
 			break;
 		case O_no_opt:
 			dev_opts.path = strdup(optarg);

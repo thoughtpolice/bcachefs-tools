@@ -247,6 +247,7 @@ struct bch_sb *bch2_format(struct format_opts opts,
 		SET_BCH_MEMBER_REPLACEMENT(m,	CACHE_REPLACEMENT_LRU);
 		SET_BCH_MEMBER_DISCARD(m,	i->discard);
 		SET_BCH_MEMBER_DATA_ALLOWED(m,	i->data_allowed);
+		SET_BCH_MEMBER_DURABILITY(m,	i->durability + 1);
 	}
 
 	/* Disk groups */
