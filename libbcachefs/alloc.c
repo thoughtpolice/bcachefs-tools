@@ -1253,7 +1253,9 @@ static enum bucket_alloc_ret __bch2_bucket_alloc_set(struct bch_fs *c,
 		if (!ca)
 			continue;
 
-		if (have_cache_dev && !ca->mi.durability)
+		if (!ca->mi.durability &&
+		    (have_cache_dev ||
+		     wp->type != BCH_DATA_USER))
 			continue;
 
 		ob = bch2_bucket_alloc(c, ca, reserve,
@@ -1533,11 +1535,6 @@ struct write_point *bch2_alloc_sectors_start(struct bch_fs *c,
 			swap(wp->ptrs[i], wp->ptrs[wp->first_ptr]);
 			wp->first_ptr++;
 		}
-
-	ret = open_bucket_add_buckets(c, target, wp, devs_have,
-				      nr_replicas, reserve, cl);
-	if (ret && ret != -EROFS)
-		goto err;
 
 	if (flags & BCH_WRITE_ONLY_SPECIFIED_DEVS) {
 		ret = open_bucket_add_buckets(c, target, wp, devs_have,
