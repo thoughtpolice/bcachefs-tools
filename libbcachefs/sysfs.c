@@ -18,11 +18,13 @@
 #include "btree_update_interior.h"
 #include "btree_gc.h"
 #include "buckets.h"
+#include "disk_groups.h"
 #include "inode.h"
 #include "journal.h"
 #include "keylist.h"
 #include "move.h"
 #include "opts.h"
+#include "replicas.h"
 #include "super-io.h"
 #include "tier.h"
 
@@ -140,10 +142,10 @@ read_attribute(first_bucket);
 read_attribute(nbuckets);
 read_attribute(durability);
 read_attribute(iostats);
-read_attribute(read_priority_stats);
-read_attribute(write_priority_stats);
-read_attribute(fragmentation_stats);
-read_attribute(oldest_gen_stats);
+read_attribute(last_read_quantiles);
+read_attribute(last_write_quantiles);
+read_attribute(fragmentation_quantiles);
+read_attribute(oldest_gen_quantiles);
 read_attribute(reserve_stats);
 read_attribute(btree_cache_size);
 read_attribute(compression_stats);
@@ -167,7 +169,7 @@ rw_attribute(journal_reclaim_delay_ms);
 
 rw_attribute(discard);
 rw_attribute(cache_replacement_policy);
-rw_attribute(group);
+rw_attribute(label);
 
 rw_attribute(copy_gc_enabled);
 sysfs_pd_controller_attribute(copy_gc);
@@ -546,7 +548,7 @@ STORE(bch2_fs_opts_dir)
 
 	if (opt->set_sb != SET_NO_SB_OPT) {
 		mutex_lock(&c->sb_lock);
-		opt->set_sb(c->disk_sb, v);
+		opt->set_sb(c->disk_sb.sb, v);
 		bch2_write_super(c);
 		mutex_unlock(&c->sb_lock);
 	}
@@ -621,36 +623,41 @@ struct attribute *bch2_fs_time_stats_files[] = {
 	NULL
 };
 
-typedef unsigned (bucket_map_fn)(struct bch_dev *, size_t, void *);
+typedef unsigned (bucket_map_fn)(struct bch_fs *, struct bch_dev *,
+				 size_t, void *);
 
-static unsigned bucket_priority_fn(struct bch_dev *ca, size_t b,
-				   void *private)
+static unsigned bucket_last_io_fn(struct bch_fs *c, struct bch_dev *ca,
+				  size_t b, void *private)
 {
-	struct bucket *g = bucket(ca, b);
 	int rw = (private ? 1 : 0);
 
-	return ca->fs->prio_clock[rw].hand - g->prio[rw];
+	return bucket_last_io(c, bucket(ca, b), rw);
 }
 
-static unsigned bucket_sectors_used_fn(struct bch_dev *ca, size_t b,
-				       void *private)
+static unsigned bucket_sectors_used_fn(struct bch_fs *c, struct bch_dev *ca,
+				       size_t b, void *private)
 {
 	struct bucket *g = bucket(ca, b);
 	return bucket_sectors_used(g->mark);
 }
 
-static unsigned bucket_oldest_gen_fn(struct bch_dev *ca, size_t b,
-				     void *private)
+static unsigned bucket_oldest_gen_fn(struct bch_fs *c, struct bch_dev *ca,
+				     size_t b, void *private)
 {
 	return bucket_gc_gen(ca, b);
 }
 
-static ssize_t show_quantiles(struct bch_dev *ca, char *buf,
-			      bucket_map_fn *fn, void *private)
+static int unsigned_cmp(const void *_l, const void *_r)
 {
-	int cmp(const void *l, const void *r)
-	{	return *((unsigned *) r) - *((unsigned *) l); }
+	unsigned l = *((unsigned *) _l);
+	unsigned r = *((unsigned *) _r);
 
+	return (l > r) - (l < r);
+}
+
+static ssize_t show_quantiles(struct bch_fs *c, struct bch_dev *ca,
+			      char *buf, bucket_map_fn *fn, void *private)
+{
 	size_t i, n;
 	/* Compute 31 quantiles */
 	unsigned q[31], *p;
@@ -666,9 +673,9 @@ static ssize_t show_quantiles(struct bch_dev *ca, char *buf,
 	}
 
 	for (i = ca->mi.first_bucket; i < n; i++)
-		p[i] = fn(ca, i, private);
+		p[i] = fn(c, ca, i, private);
 
-	sort(p, n, sizeof(unsigned), cmp, NULL);
+	sort(p, n, sizeof(unsigned), unsigned_cmp, NULL);
 	up_read(&ca->bucket_lock);
 
 	while (n &&
@@ -804,24 +811,18 @@ SHOW(bch2_dev)
 	sysfs_print(durability,		ca->mi.durability);
 	sysfs_print(discard,		ca->mi.discard);
 
-	if (attr == &sysfs_group) {
-		struct bch_sb_field_disk_groups *groups;
-		struct bch_disk_group *g;
-		unsigned len;
+	if (attr == &sysfs_label) {
+		if (ca->mi.group) {
+			mutex_lock(&c->sb_lock);
+			out += bch2_disk_path_print(&c->disk_sb, out, end - out,
+						    ca->mi.group - 1);
+			mutex_unlock(&c->sb_lock);
+		} else {
+			out += scnprintf(out, end - out, "none");
+		}
 
-		if (!ca->mi.group)
-			return scnprintf(out, end - out, "none\n");
-
-		mutex_lock(&c->sb_lock);
-		groups = bch2_sb_get_disk_groups(c->disk_sb);
-
-		g = &groups->entries[ca->mi.group - 1];
-		len = strnlen(g->label, sizeof(g->label));
-		memcpy(buf, g->label, len);
-		mutex_unlock(&c->sb_lock);
-
-		buf[len++] = '\n';
-		return len;
+		out += scnprintf(out, end - out, "\n");
+		return out - buf;
 	}
 
 	if (attr == &sysfs_has_data) {
@@ -852,14 +853,16 @@ SHOW(bch2_dev)
 
 	if (attr == &sysfs_iostats)
 		return show_dev_iostats(ca, buf);
-	if (attr == &sysfs_read_priority_stats)
-		return show_quantiles(ca, buf, bucket_priority_fn, (void *) 0);
-	if (attr == &sysfs_write_priority_stats)
-		return show_quantiles(ca, buf, bucket_priority_fn, (void *) 1);
-	if (attr == &sysfs_fragmentation_stats)
-		return show_quantiles(ca, buf, bucket_sectors_used_fn, NULL);
-	if (attr == &sysfs_oldest_gen_stats)
-		return show_quantiles(ca, buf, bucket_oldest_gen_fn, NULL);
+
+	if (attr == &sysfs_last_read_quantiles)
+		return show_quantiles(c, ca, buf, bucket_last_io_fn, (void *) 0);
+	if (attr == &sysfs_last_write_quantiles)
+		return show_quantiles(c, ca, buf, bucket_last_io_fn, (void *) 1);
+	if (attr == &sysfs_fragmentation_quantiles)
+		return show_quantiles(c, ca, buf, bucket_sectors_used_fn, NULL);
+	if (attr == &sysfs_oldest_gen_quantiles)
+		return show_quantiles(c, ca, buf, bucket_oldest_gen_fn, NULL);
+
 	if (attr == &sysfs_reserve_stats)
 		return show_reserve_stats(ca, buf);
 	if (attr == &sysfs_alloc_debug)
@@ -880,7 +883,7 @@ STORE(bch2_dev)
 		bool v = strtoul_or_return(buf);
 
 		mutex_lock(&c->sb_lock);
-		mi = &bch2_sb_get_members(c->disk_sb)->members[ca->dev_idx];
+		mi = &bch2_sb_get_members(c->disk_sb.sb)->members[ca->dev_idx];
 
 		if (v != BCH_MEMBER_DISCARD(mi)) {
 			SET_BCH_MEMBER_DISCARD(mi, v);
@@ -896,7 +899,7 @@ STORE(bch2_dev)
 			return v;
 
 		mutex_lock(&c->sb_lock);
-		mi = &bch2_sb_get_members(c->disk_sb)->members[ca->dev_idx];
+		mi = &bch2_sb_get_members(c->disk_sb.sb)->members[ca->dev_idx];
 
 		if ((unsigned) v != BCH_MEMBER_REPLACEMENT(mi)) {
 			SET_BCH_MEMBER_REPLACEMENT(mi, v);
@@ -905,7 +908,7 @@ STORE(bch2_dev)
 		mutex_unlock(&c->sb_lock);
 	}
 
-	if (attr == &sysfs_group) {
+	if (attr == &sysfs_label) {
 		char *tmp;
 		int ret;
 
@@ -938,16 +941,16 @@ struct attribute *bch2_dev_files[] = {
 	&sysfs_discard,
 	&sysfs_cache_replacement_policy,
 	&sysfs_state_rw,
-	&sysfs_group,
+	&sysfs_label,
 
 	&sysfs_has_data,
 	&sysfs_iostats,
 
 	/* alloc info - other stats: */
-	&sysfs_read_priority_stats,
-	&sysfs_write_priority_stats,
-	&sysfs_fragmentation_stats,
-	&sysfs_oldest_gen_stats,
+	&sysfs_last_read_quantiles,
+	&sysfs_last_write_quantiles,
+	&sysfs_fragmentation_quantiles,
+	&sysfs_oldest_gen_quantiles,
 	&sysfs_reserve_stats,
 
 	/* debug: */

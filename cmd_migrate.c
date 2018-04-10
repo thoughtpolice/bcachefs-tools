@@ -31,6 +31,7 @@
 #include "libbcachefs/fs.h"
 #include "libbcachefs/inode.h"
 #include "libbcachefs/io.h"
+#include "libbcachefs/replicas.h"
 #include "libbcachefs/str_hash.h"
 #include "libbcachefs/super.h"
 #include "libbcachefs/xattr.h"

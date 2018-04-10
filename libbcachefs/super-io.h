@@ -11,8 +11,6 @@
 struct bch_sb_field *bch2_sb_field_get(struct bch_sb *, enum bch_sb_field_type);
 struct bch_sb_field *bch2_sb_field_resize(struct bch_sb_handle *,
 					  enum bch_sb_field_type, unsigned);
-struct bch_sb_field *bch2_fs_sb_field_resize(struct bch_fs *,
-					 enum bch_sb_field_type, unsigned);
 
 #define field_to_type(_f, _name)					\
 	container_of_or_null(_f, struct bch_sb_field_##_name, field)
@@ -30,19 +28,18 @@ bch2_sb_resize_##_name(struct bch_sb_handle *sb, unsigned u64s)	\
 {									\
 	return field_to_type(bch2_sb_field_resize(sb,			\
 				BCH_SB_FIELD_##_name, u64s), _name);	\
-}									\
-									\
-static inline struct bch_sb_field_##_name *				\
-bch2_fs_sb_resize_##_name(struct bch_fs *c, unsigned u64s)		\
-{									\
-	return field_to_type(bch2_fs_sb_field_resize(c,			\
-				BCH_SB_FIELD_##_name, u64s), _name);	\
 }
 
 BCH_SB_FIELDS()
 #undef x
 
 extern const char * const bch2_sb_fields[];
+
+struct bch_sb_field_ops {
+	const char *	(*validate)(struct bch_sb *, struct bch_sb_field *);
+	size_t		(*to_text)(char *, size_t, struct bch_sb *,
+				   struct bch_sb_field *);
+};
 
 static inline bool bch2_sb_test_feature(struct bch_sb *sb,
 					enum bch_sb_features f)
@@ -90,7 +87,7 @@ int bch2_sb_to_fs(struct bch_fs *, struct bch_sb *);
 int bch2_sb_from_fs(struct bch_fs *, struct bch_dev *);
 
 void bch2_free_super(struct bch_sb_handle *);
-int bch2_super_realloc(struct bch_sb_handle *, unsigned);
+int bch2_sb_realloc(struct bch_sb_handle *, unsigned);
 
 const char *bch2_sb_validate(struct bch_sb_handle *);
 
@@ -138,136 +135,5 @@ static inline struct bch_member_cpu bch2_mi_to_cpu(struct bch_member *mi)
 		.valid		= !bch2_is_zero(mi->uuid.b, sizeof(uuid_le)),
 	};
 }
-
-/* BCH_SB_FIELD_replicas: */
-
-bool bch2_replicas_marked(struct bch_fs *, enum bch_data_type,
-			  struct bch_devs_list);
-bool bch2_bkey_replicas_marked(struct bch_fs *, enum bch_data_type,
-			       struct bkey_s_c);
-int bch2_mark_replicas(struct bch_fs *, enum bch_data_type,
-		       struct bch_devs_list);
-int bch2_mark_bkey_replicas(struct bch_fs *, enum bch_data_type,
-			    struct bkey_s_c);
-
-int bch2_cpu_replicas_to_text(struct bch_replicas_cpu *, char *, size_t);
-int bch2_sb_replicas_to_text(struct bch_sb_field_replicas *, char *, size_t);
-
-struct replicas_status {
-	struct {
-		unsigned	nr_online;
-		unsigned	nr_offline;
-	}			replicas[BCH_DATA_NR];
-};
-
-struct replicas_status __bch2_replicas_status(struct bch_fs *,
-					      struct bch_devs_mask);
-struct replicas_status bch2_replicas_status(struct bch_fs *);
-bool bch2_have_enough_devs(struct replicas_status, unsigned);
-
-unsigned bch2_replicas_online(struct bch_fs *, bool);
-unsigned bch2_dev_has_data(struct bch_fs *, struct bch_dev *);
-
-int bch2_replicas_gc_end(struct bch_fs *, int);
-int bch2_replicas_gc_start(struct bch_fs *, unsigned);
-
-/* iterate over superblock replicas - used by userspace tools: */
-
-static inline struct bch_replicas_entry *
-replicas_entry_next(struct bch_replicas_entry *i)
-{
-	return (void *) i + offsetof(struct bch_replicas_entry, devs) + i->nr;
-}
-
-#define for_each_replicas_entry(_r, _i)					\
-	for (_i = (_r)->entries;					\
-	     (void *) (_i) < vstruct_end(&(_r)->field) && (_i)->data_type;\
-	     (_i) = replicas_entry_next(_i))
-
-/* disk groups: */
-
-static inline unsigned disk_groups_nr(struct bch_sb_field_disk_groups *groups)
-{
-	return groups
-		? (vstruct_end(&groups->field) -
-		   (void *) &groups->entries[0]) / sizeof(struct bch_disk_group)
-		: 0;
-}
-
-struct target {
-	enum {
-		TARGET_NULL,
-		TARGET_DEV,
-		TARGET_GROUP,
-	}			type;
-	union {
-		unsigned	dev;
-		unsigned	group;
-	};
-};
-
-#define TARGET_DEV_START	1
-#define TARGET_GROUP_START	(256 + TARGET_DEV_START)
-
-static inline u16 dev_to_target(unsigned dev)
-{
-	return TARGET_DEV_START + dev;
-}
-
-static inline u16 group_to_target(unsigned group)
-{
-	return TARGET_GROUP_START + group;
-}
-
-static inline struct target target_decode(unsigned target)
-{
-	if (target >= TARGET_GROUP_START)
-		return (struct target) {
-			.type	= TARGET_GROUP,
-			.group	= target - TARGET_GROUP_START
-		};
-
-	if (target >= TARGET_DEV_START)
-		return (struct target) {
-			.type	= TARGET_DEV,
-			.group	= target - TARGET_DEV_START
-		};
-
-	return (struct target) { .type = TARGET_NULL };
-}
-
-static inline bool dev_in_target(struct bch_dev *ca, unsigned target)
-{
-	struct target t = target_decode(target);
-
-	switch (t.type) {
-	case TARGET_NULL:
-		return false;
-	case TARGET_DEV:
-		return ca->dev_idx == t.dev;
-	case TARGET_GROUP:
-		return ca->mi.group && ca->mi.group - 1 == t.group;
-	default:
-		BUG();
-	}
-}
-
-static inline bool dev_idx_in_target(struct bch_fs *c, unsigned dev, unsigned target)
-{
-	bool ret;
-
-	rcu_read_lock();
-	ret = dev_in_target(rcu_dereference(c->devs[dev]), target);
-	rcu_read_unlock();
-
-	return ret;
-}
-
-const struct bch_devs_mask *bch2_target_to_mask(struct bch_fs *, unsigned);
-
-int __bch2_disk_group_find(struct bch_sb_field_disk_groups *, const char *);
-
-int bch2_opt_target_parse(struct bch_fs *, const char *, u64 *);
-int bch2_opt_target_print(struct bch_fs *, char *, size_t, u64);
 
 #endif /* _BCACHEFS_SUPER_IO_H */

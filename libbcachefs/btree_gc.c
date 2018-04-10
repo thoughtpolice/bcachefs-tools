@@ -18,6 +18,7 @@
 #include "journal.h"
 #include "keylist.h"
 #include "move.h"
+#include "replicas.h"
 #include "super-io.h"
 
 #include <linux/slab.h>
@@ -317,7 +318,8 @@ void bch2_mark_dev_superblock(struct bch_fs *c, struct bch_dev *ca,
 	unsigned i;
 	u64 b;
 
-	lockdep_assert_held(&c->sb_lock);
+	if (c)
+		lockdep_assert_held(&c->sb_lock);
 
 	for (i = 0; i < layout->nr_superblocks; i++) {
 		u64 offset = le64_to_cpu(layout->sb_offset[i]);
@@ -331,7 +333,8 @@ void bch2_mark_dev_superblock(struct bch_fs *c, struct bch_dev *ca,
 				      BCH_DATA_SB, flags);
 	}
 
-	spin_lock(&c->journal.lock);
+	if (c)
+		spin_lock(&c->journal.lock);
 
 	for (i = 0; i < ca->journal.nr; i++) {
 		b = ca->journal.buckets[i];
@@ -340,7 +343,8 @@ void bch2_mark_dev_superblock(struct bch_fs *c, struct bch_dev *ca,
 					  gc_phase(GC_PHASE_SB), flags);
 	}
 
-	spin_unlock(&c->journal.lock);
+	if (c)
+		spin_unlock(&c->journal.lock);
 }
 
 static void bch2_mark_superblocks(struct bch_fs *c)
@@ -1034,8 +1038,8 @@ static int __bch2_initial_gc(struct bch_fs *c, struct list_head *journal)
 	int ret;
 
 	mutex_lock(&c->sb_lock);
-	if (!bch2_sb_get_replicas(c->disk_sb)) {
-		if (BCH_SB_INITIALIZED(c->disk_sb))
+	if (!bch2_sb_get_replicas(c->disk_sb.sb)) {
+		if (BCH_SB_INITIALIZED(c->disk_sb.sb))
 			bch_info(c, "building replicas info");
 		set_bit(BCH_FS_REBUILD_REPLICAS, &c->flags);
 	}

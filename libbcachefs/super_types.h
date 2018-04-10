@@ -7,6 +7,9 @@ struct bch_sb_handle {
 	struct bio		*bio;
 	unsigned		page_order;
 	fmode_t			mode;
+	unsigned		have_layout:1;
+	unsigned		have_bio:1;
+	unsigned		fs_sb:1;
 };
 
 struct bch_devs_mask {
@@ -44,8 +47,9 @@ struct bch_replicas_cpu {
 };
 
 struct bch_disk_group_cpu {
-	struct bch_devs_mask		devs;
 	bool				deleted;
+	u16				parent;
+	struct bch_devs_mask		devs;
 };
 
 struct bch_disk_groups_cpu {

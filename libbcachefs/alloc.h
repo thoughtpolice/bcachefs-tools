@@ -9,6 +9,14 @@ struct bch_dev;
 struct bch_fs;
 struct bch_devs_List;
 
+const char *bch2_alloc_invalid(const struct bch_fs *, struct bkey_s_c);
+void bch2_alloc_to_text(struct bch_fs *, char *, size_t, struct bkey_s_c);
+
+#define bch2_bkey_alloc_ops (struct bkey_ops) {		\
+	.key_invalid	= bch2_alloc_invalid,		\
+	.val_to_text	= bch2_alloc_to_text,		\
+}
+
 struct dev_alloc_list {
 	unsigned	nr;
 	u8		devs[BCH_SB_MEMBERS_MAX];
@@ -29,6 +37,8 @@ enum bucket_alloc_ret {
 	FREELIST_EMPTY		= -2,	/* Allocator thread not keeping up */
 	NO_DEVICES		= -3,	/* -EROFS */
 };
+
+long bch2_bucket_alloc_new_fs(struct bch_dev *);
 
 int bch2_bucket_alloc(struct bch_fs *, struct bch_dev *, enum alloc_reserve, bool,
 		      struct closure *);
@@ -126,7 +136,5 @@ static inline void writepoint_init(struct write_point *wp,
 int bch2_alloc_write(struct bch_fs *);
 int bch2_fs_allocator_start(struct bch_fs *);
 void bch2_fs_allocator_init(struct bch_fs *);
-
-extern const struct bkey_ops bch2_bkey_alloc_ops;
 
 #endif /* _BCACHEFS_ALLOC_H */

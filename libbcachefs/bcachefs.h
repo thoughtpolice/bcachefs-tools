@@ -384,7 +384,7 @@ struct bch_dev {
 	alloc_fifo		free[RESERVE_NR];
 	alloc_fifo		free_inc;
 	spinlock_t		freelist_lock;
-	unsigned		nr_invalidated;
+	size_t			nr_invalidated;
 
 	u8			open_buckets_partial[OPEN_BUCKETS_COUNT];
 	unsigned		open_buckets_partial_nr;
@@ -392,7 +392,7 @@ struct bch_dev {
 	size_t			fifo_last_bucket;
 
 	/* last calculated minimum prio */
-	u16			min_prio[2];
+	u16			max_last_bucket_io[2];
 
 	atomic_long_t		saturated_count;
 	size_t			inc_gen_needs_gc;
@@ -431,11 +431,11 @@ struct bch_dev {
  */
 enum {
 	/* startup: */
-	BCH_FS_BRAND_NEW_FS,
 	BCH_FS_ALLOC_READ_DONE,
 	BCH_FS_ALLOCATOR_STARTED,
 	BCH_FS_INITIAL_GC_DONE,
 	BCH_FS_FSCK_DONE,
+	BCH_FS_STARTED,
 
 	/* shutdown: */
 	BCH_FS_EMERGENCY_RO,
@@ -519,8 +519,7 @@ struct bch_fs {
 		u64		features;
 	}			sb;
 
-	struct bch_sb		*disk_sb;
-	unsigned		disk_sb_order;
+	struct bch_sb_handle	disk_sb;
 
 	unsigned short		block_bits;	/* ilog2(block_size) */
 
@@ -595,7 +594,7 @@ struct bch_fs {
 	 * those together consistently we keep track of the smallest nonzero
 	 * priority of any bucket.
 	 */
-	struct prio_clock	prio_clock[2];
+	struct bucket_clock	bucket_clock[2];
 
 	struct io_clock		io_clock[2];
 

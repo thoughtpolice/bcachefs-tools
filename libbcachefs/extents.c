@@ -14,19 +14,18 @@
 #include "checksum.h"
 #include "debug.h"
 #include "dirent.h"
+#include "disk_groups.h"
 #include "error.h"
 #include "extents.h"
 #include "inode.h"
 #include "journal.h"
+#include "replicas.h"
 #include "super.h"
 #include "super-io.h"
 #include "util.h"
 #include "xattr.h"
 
 #include <trace/events/bcachefs.h>
-
-static enum merge_result bch2_extent_merge(struct bch_fs *, struct btree *,
-					   struct bkey_i *, struct bkey_i *);
 
 static void sort_key_next(struct btree_node_iter_large *iter,
 			  struct btree *b,
@@ -160,9 +159,13 @@ bch2_extent_has_target(struct bch_fs *c, struct bkey_s_c_extent e, unsigned targ
 {
 	const struct bch_extent_ptr *ptr;
 
-	extent_for_each_ptr(e, ptr)
-		if (dev_in_target(c->devs[ptr->dev], target))
+	extent_for_each_ptr(e, ptr) {
+		struct bch_dev *ca = bch_dev_bkey_exists(c, ptr->dev);
+
+		if (dev_in_target(ca, target) &&
+		    (!ptr->cached || !ptr_stale(ca, ptr)))
 			return ptr;
+	}
 
 	return NULL;
 }
@@ -356,11 +359,25 @@ restart_narrow_pointers:
 	return true;
 }
 
+/* returns true if not equal */
+static inline bool bch2_crc_unpacked_cmp(struct bch_extent_crc_unpacked l,
+					 struct bch_extent_crc_unpacked r)
+{
+	return (l.csum_type		!= r.csum_type ||
+		l.compression_type	!= r.compression_type ||
+		l.compressed_size	!= r.compressed_size ||
+		l.uncompressed_size	!= r.uncompressed_size ||
+		l.offset		!= r.offset ||
+		l.live_size		!= r.live_size ||
+		l.nonce			!= r.nonce ||
+		bch2_crc_cmp(l.csum, r.csum));
+}
+
 void bch2_extent_drop_redundant_crcs(struct bkey_s_extent e)
 {
 	union bch_extent_entry *entry = e.v->start;
 	union bch_extent_crc *crc, *prev = NULL;
-	struct bch_extent_crc_unpacked u, prev_u;
+	struct bch_extent_crc_unpacked u, prev_u = { 0 };
 
 	while (entry != extent_entry_last(e)) {
 		union bch_extent_entry *next = extent_entry_next(entry);
@@ -382,7 +399,7 @@ void bch2_extent_drop_redundant_crcs(struct bkey_s_extent e)
 			goto drop;
 		}
 
-		if (prev && !memcmp(&u, &prev_u, sizeof(u))) {
+		if (prev && !bch2_crc_unpacked_cmp(u, prev_u)) {
 			/* identical to previous crc entry: */
 			goto drop;
 		}
@@ -439,13 +456,12 @@ static void bch2_extent_drop_stale(struct bch_fs *c, struct bkey_s_extent e)
 		bch2_extent_drop_redundant_crcs(e);
 }
 
-static bool bch2_ptr_normalize(struct bch_fs *c, struct btree *bk,
-			      struct bkey_s k)
+bool bch2_ptr_normalize(struct bch_fs *c, struct btree *b, struct bkey_s k)
 {
 	return bch2_extent_normalize(c, k);
 }
 
-static void bch2_ptr_swab(const struct bkey_format *f, struct bkey_packed *k)
+void bch2_ptr_swab(const struct bkey_format *f, struct bkey_packed *k)
 {
 	switch (k->type) {
 	case BCH_EXTENT:
@@ -628,8 +644,7 @@ use:
 
 /* Btree ptrs */
 
-static const char *bch2_btree_ptr_invalid(const struct bch_fs *c,
-					 struct bkey_s_c k)
+const char *bch2_btree_ptr_invalid(const struct bch_fs *c, struct bkey_s_c k)
 {
 	if (bkey_extent_is_cached(k.k))
 		return "cached";
@@ -671,8 +686,8 @@ static const char *bch2_btree_ptr_invalid(const struct bch_fs *c,
 	}
 }
 
-static void btree_ptr_debugcheck(struct bch_fs *c, struct btree *b,
-				 struct bkey_s_c k)
+void bch2_btree_ptr_debugcheck(struct bch_fs *c, struct btree *b,
+			       struct bkey_s_c k)
 {
 	struct bkey_s_c_extent e = bkey_s_c_to_extent(k);
 	const struct bch_extent_ptr *ptr;
@@ -727,8 +742,8 @@ err:
 		      mark.gen, (unsigned) mark.counter);
 }
 
-static void bch2_btree_ptr_to_text(struct bch_fs *c, char *buf,
-				  size_t size, struct bkey_s_c k)
+void bch2_btree_ptr_to_text(struct bch_fs *c, char *buf,
+			    size_t size, struct bkey_s_c k)
 {
 	char *out = buf, *end = buf + size;
 	const char *invalid;
@@ -755,13 +770,6 @@ bch2_btree_pick_ptr(struct bch_fs *c, const struct btree *b,
 
 	return pick;
 }
-
-const struct bkey_ops bch2_bkey_btree_ops = {
-	.key_invalid	= bch2_btree_ptr_invalid,
-	.key_debugcheck	= btree_ptr_debugcheck,
-	.val_to_text	= bch2_btree_ptr_to_text,
-	.swab		= bch2_ptr_swab,
-};
 
 /* Extents */
 
@@ -1436,7 +1444,7 @@ extent_squash(struct extent_insert_state *s, struct bkey_i *insert,
 }
 
 static enum btree_insert_ret
-bch2_delete_fixup_extent(struct extent_insert_state *s)
+__bch2_delete_fixup_extent(struct extent_insert_state *s)
 {
 	struct bch_fs *c = s->trans->c;
 	struct btree_iter *iter = s->insert->iter;
@@ -1450,8 +1458,7 @@ bch2_delete_fixup_extent(struct extent_insert_state *s)
 
 	EBUG_ON(bkey_cmp(iter->pos, bkey_start_pos(&insert->k)));
 
-	s->whiteout	= *insert;
-	s->do_journal	= false;
+	s->whiteout = *insert;
 
 	while (bkey_cmp(s->committed, insert->k.p) < 0 &&
 	       (ret = extent_insert_should_stop(s)) == BTREE_INSERT_OK &&
@@ -1474,12 +1481,12 @@ bch2_delete_fixup_extent(struct extent_insert_state *s)
 		overlap = bch2_extent_overlap(&insert->k, k.k);
 
 		ret = extent_insert_check_split_compressed(s, k.s_c, overlap);
-		if (ret != BTREE_INSERT_OK)
-			goto stop;
+		if (ret)
+			break;
 
 		ret = extent_insert_advance_pos(s, k.s_c);
 		if (ret)
-			goto stop;
+			break;
 
 		s->do_journal = true;
 
@@ -1520,25 +1527,65 @@ next:
 		bch2_btree_iter_set_pos_same_leaf(iter, s->committed);
 	}
 
-	if (ret == BTREE_INSERT_OK &&
-	    bkey_cmp(s->committed, insert->k.p) < 0)
-		ret = extent_insert_advance_pos(s, bkey_s_c_null);
-stop:
-	extent_insert_committed(s);
+	return ret;
+}
 
-	bch2_fs_usage_apply(c, &s->stats, s->trans->disk_res,
-			   gc_pos_btree_node(b));
+static enum btree_insert_ret
+__bch2_insert_fixup_extent(struct extent_insert_state *s)
+{
+	struct btree_iter *iter = s->insert->iter;
+	struct btree_iter_level *l = &iter->l[0];
+	struct btree *b = l->b;
+	struct btree_node_iter *node_iter = &l->iter;
+	struct bkey_packed *_k;
+	struct bkey unpacked;
+	struct bkey_i *insert = s->insert->k;
+	enum btree_insert_ret ret = BTREE_INSERT_OK;
 
-	EBUG_ON(bkey_cmp(iter->pos, s->committed));
-	EBUG_ON((bkey_cmp(iter->pos, b->key.k.p) == 0) !=
-		!!(iter->flags & BTREE_ITER_AT_END_OF_LEAF));
+	while (bkey_cmp(s->committed, insert->k.p) < 0 &&
+	       (ret = extent_insert_should_stop(s)) == BTREE_INSERT_OK &&
+	       (_k = bch2_btree_node_iter_peek_all(node_iter, b))) {
+		struct bset_tree *t = bch2_bkey_to_bset(b, _k);
+		struct bkey_s k = __bkey_disassemble(b, _k, &unpacked);
+		enum bch_extent_overlap overlap;
 
-	bch2_cut_front(iter->pos, insert);
+		EBUG_ON(bkey_cmp(iter->pos, bkey_start_pos(&insert->k)));
+		EBUG_ON(bkey_cmp(iter->pos, k.k->p) >= 0);
 
-	if (insert->k.size && (iter->flags & BTREE_ITER_AT_END_OF_LEAF))
-		ret = BTREE_INSERT_NEED_TRAVERSE;
+		if (bkey_cmp(bkey_start_pos(k.k), insert->k.p) >= 0)
+			break;
 
-	EBUG_ON(insert->k.size && ret == BTREE_INSERT_OK);
+		overlap = bch2_extent_overlap(&insert->k, k.k);
+
+		ret = extent_insert_check_split_compressed(s, k.s_c, overlap);
+		if (ret)
+			break;
+
+		if (!k.k->size)
+			goto squash;
+
+		/*
+		 * Only call advance pos & call hook for nonzero size extents:
+		 */
+		ret = extent_insert_advance_pos(s, k.s_c);
+		if (ret)
+			break;
+
+		if (k.k->size &&
+		    (k.k->needs_whiteout || bset_written(b, bset(b, t))))
+			insert->k.needs_whiteout = true;
+
+		if (overlap == BCH_EXTENT_OVERLAP_ALL &&
+		    bkey_whiteout(k.k) &&
+		    k.k->needs_whiteout) {
+			unreserve_whiteout(b, t, _k);
+			_k->needs_whiteout = false;
+		}
+squash:
+		ret = extent_squash(s, insert, t, _k, k, overlap);
+		if (ret != BTREE_INSERT_OK)
+			break;
+	}
 
 	return ret;
 }
@@ -1590,9 +1637,6 @@ bch2_insert_fixup_extent(struct btree_insert *trans,
 	struct btree_iter *iter = insert->iter;
 	struct btree_iter_level *l = &iter->l[0];
 	struct btree *b = l->b;
-	struct btree_node_iter *node_iter = &l->iter;
-	struct bkey_packed *_k;
-	struct bkey unpacked;
 	enum btree_insert_ret ret = BTREE_INSERT_OK;
 
 	struct extent_insert_state s = {
@@ -1605,9 +1649,6 @@ bch2_insert_fixup_extent(struct btree_insert *trans,
 	EBUG_ON(iter->level);
 	EBUG_ON(bkey_deleted(&insert->k->k) || !insert->k->k.size);
 
-	if (s.deleting)
-		return bch2_delete_fixup_extent(&s);
-
 	/*
 	 * As we process overlapping extents, we advance @iter->pos both to
 	 * signal to our caller (btree_insert_key()) how much of @insert->k has
@@ -1616,67 +1657,32 @@ bch2_insert_fixup_extent(struct btree_insert *trans,
 	 */
 	EBUG_ON(bkey_cmp(iter->pos, bkey_start_pos(&insert->k->k)));
 
-	if (!(trans->flags & BTREE_INSERT_JOURNAL_REPLAY))
+	if (!s.deleting &&
+	    !(trans->flags & BTREE_INSERT_JOURNAL_REPLAY))
 		bch2_add_sectors(&s, bkey_i_to_s_c(insert->k),
 				bkey_start_offset(&insert->k->k),
 				insert->k->k.size);
 
-	while (bkey_cmp(s.committed, insert->k->k.p) < 0 &&
-	       (ret = extent_insert_should_stop(&s)) == BTREE_INSERT_OK &&
-	       (_k = bch2_btree_node_iter_peek_all(node_iter, b))) {
-		struct bset_tree *t = bch2_bkey_to_bset(b, _k);
-		struct bkey_s k = __bkey_disassemble(b, _k, &unpacked);
-		enum bch_extent_overlap overlap;
-
-		EBUG_ON(bkey_cmp(iter->pos, bkey_start_pos(&insert->k->k)));
-		EBUG_ON(bkey_cmp(iter->pos, k.k->p) >= 0);
-
-		if (bkey_cmp(bkey_start_pos(k.k), insert->k->k.p) >= 0)
-			break;
-
-		overlap = bch2_extent_overlap(&insert->k->k, k.k);
-
-		ret = extent_insert_check_split_compressed(&s, k.s_c, overlap);
-		if (ret != BTREE_INSERT_OK)
-			goto stop;
-
-		if (!k.k->size)
-			goto squash;
-
-		/*
-		 * Only call advance pos & call hook for nonzero size extents:
-		 */
-		ret = extent_insert_advance_pos(&s, k.s_c);
-		if (ret != BTREE_INSERT_OK)
-			goto stop;
-
-		if (k.k->size &&
-		    (k.k->needs_whiteout || bset_written(b, bset(b, t))))
-			insert->k->k.needs_whiteout = true;
-
-		if (overlap == BCH_EXTENT_OVERLAP_ALL &&
-		    bkey_whiteout(k.k) &&
-		    k.k->needs_whiteout) {
-			unreserve_whiteout(b, t, _k);
-			_k->needs_whiteout = false;
-		}
-squash:
-		ret = extent_squash(&s, insert->k, t, _k, k, overlap);
-		if (ret != BTREE_INSERT_OK)
-			goto stop;
-	}
+	ret = !s.deleting
+		? __bch2_insert_fixup_extent(&s)
+		: __bch2_delete_fixup_extent(&s);
 
 	if (ret == BTREE_INSERT_OK &&
 	    bkey_cmp(s.committed, insert->k->k.p) < 0)
 		ret = extent_insert_advance_pos(&s, bkey_s_c_null);
-stop:
+
 	extent_insert_committed(&s);
+
+	if (s.deleting)
+		bch2_cut_front(iter->pos, insert->k);
+
 	/*
 	 * Subtract any remaining sectors from @insert, if we bailed out early
 	 * and didn't fully insert @insert:
 	 */
-	if (insert->k->k.size &&
-	    !(trans->flags & BTREE_INSERT_JOURNAL_REPLAY))
+	if (!s.deleting &&
+	    !(trans->flags & BTREE_INSERT_JOURNAL_REPLAY) &&
+	    insert->k->k.size)
 		bch2_subtract_sectors(&s, bkey_i_to_s_c(insert->k),
 				     bkey_start_offset(&insert->k->k),
 				     insert->k->k.size);
@@ -1692,13 +1698,13 @@ stop:
 	if (insert->k->k.size && (iter->flags & BTREE_ITER_AT_END_OF_LEAF))
 		ret = BTREE_INSERT_NEED_TRAVERSE;
 
-	EBUG_ON(insert->k->k.size && ret == BTREE_INSERT_OK);
+	WARN_ONCE((ret == BTREE_INSERT_OK) != (insert->k->k.size == 0),
+		  "ret %u insert->k.size %u", ret, insert->k->k.size);
 
 	return ret;
 }
 
-static const char *bch2_extent_invalid(const struct bch_fs *c,
-				       struct bkey_s_c k)
+const char *bch2_extent_invalid(const struct bch_fs *c, struct bkey_s_c k)
 {
 	if (bkey_val_u64s(k.k) > BKEY_EXTENT_VAL_U64s_MAX)
 		return "value too big";
@@ -1865,8 +1871,7 @@ bad_ptr:
 	return;
 }
 
-static void bch2_extent_debugcheck(struct bch_fs *c, struct btree *b,
-				   struct bkey_s_c k)
+void bch2_extent_debugcheck(struct bch_fs *c, struct btree *b, struct bkey_s_c k)
 {
 	switch (k.k->type) {
 	case BCH_EXTENT:
@@ -1880,8 +1885,8 @@ static void bch2_extent_debugcheck(struct bch_fs *c, struct btree *b,
 	}
 }
 
-static void bch2_extent_to_text(struct bch_fs *c, char *buf,
-				size_t size, struct bkey_s_c k)
+void bch2_extent_to_text(struct bch_fs *c, char *buf,
+			 size_t size, struct bkey_s_c k)
 {
 	char *out = buf, *end = buf + size;
 	const char *invalid;
@@ -1963,7 +1968,7 @@ void bch2_extent_crc_append(struct bkey_i_extent *e,
 	extent_for_each_crc(extent_i_to_s(e), crc, i)
 		;
 
-	if (!memcmp(&crc, &new, sizeof(crc)))
+	if (!bch2_crc_unpacked_cmp(crc, new))
 		return;
 
 	bch2_extent_crc_init((void *) extent_entry_last(extent_i_to_s(e)), new);
@@ -2089,9 +2094,8 @@ void bch2_extent_pick_ptr(struct bch_fs *c, struct bkey_s_c k,
 	}
 }
 
-static enum merge_result bch2_extent_merge(struct bch_fs *c,
-					   struct btree *bk,
-					   struct bkey_i *l, struct bkey_i *r)
+enum merge_result bch2_extent_merge(struct bch_fs *c, struct btree *b,
+				    struct bkey_i *l, struct bkey_i *r)
 {
 	struct bkey_s_extent el, er;
 	union bch_extent_entry *en_l, *en_r;
@@ -2410,13 +2414,3 @@ int bch2_check_range_allocated(struct bch_fs *c, struct bpos pos, u64 size)
 
 	return ret;
 }
-
-const struct bkey_ops bch2_bkey_extent_ops = {
-	.key_invalid	= bch2_extent_invalid,
-	.key_debugcheck	= bch2_extent_debugcheck,
-	.val_to_text	= bch2_extent_to_text,
-	.swab		= bch2_ptr_swab,
-	.key_normalize	= bch2_ptr_normalize,
-	.key_merge	= bch2_extent_merge,
-	.is_extents	= true,
-};

@@ -14,12 +14,14 @@
 
 #include <uuid/uuid.h>
 
-#include "libbcachefs/bcachefs_format.h"
-#include "libbcachefs/checksum.h"
-#include "crypto.h"
 #include "libbcachefs.h"
+#include "crypto.h"
+#include "libbcachefs/bcachefs_format.h"
 #include "libbcachefs/btree_cache.h"
+#include "libbcachefs/checksum.h"
+#include "libbcachefs/disk_groups.h"
 #include "libbcachefs/opts.h"
+#include "libbcachefs/replicas.h"
 #include "libbcachefs/super-io.h"
 
 #define NSEC_PER_SEC	1000000000L
@@ -124,8 +126,8 @@ void bch2_pick_bucket_size(struct format_opts opts, struct dev_opts *dev)
 
 }
 
-static unsigned parse_target(struct dev_opts *devs, size_t nr_devs,
-			     struct bch_sb_field_disk_groups *gi,
+static unsigned parse_target(struct bch_sb_handle *sb,
+			     struct dev_opts *devs, size_t nr_devs,
 			     const char *s)
 {
 	struct dev_opts *i;
@@ -138,7 +140,7 @@ static unsigned parse_target(struct dev_opts *devs, size_t nr_devs,
 		if (!strcmp(s, i->path))
 			return dev_to_target(i - devs);
 
-	idx = __bch2_disk_group_find(gi, s);
+	idx = bch2_disk_path_find(sb, s);
 	if (idx >= 0)
 		return group_to_target(idx);
 
@@ -149,11 +151,9 @@ static unsigned parse_target(struct dev_opts *devs, size_t nr_devs,
 struct bch_sb *bch2_format(struct format_opts opts,
 			   struct dev_opts *devs, size_t nr_devs)
 {
-	struct bch_sb *sb;
+	struct bch_sb_handle sb = { NULL };
 	struct dev_opts *i;
 	struct bch_sb_field_members *mi;
-	struct bch_sb_field_disk_groups *gi = NULL;
-	unsigned u64s;
 
 	/* calculate block size: */
 	if (!opts.block_size)
@@ -184,58 +184,51 @@ struct bch_sb *bch2_format(struct format_opts opts,
 	if (uuid_is_null(opts.uuid.b))
 		uuid_generate(opts.uuid.b);
 
-	sb = calloc(1, sizeof(*sb) +
-		    sizeof(struct bch_sb_field_members) +
-		    sizeof(struct bch_member) * nr_devs +
-		    sizeof(struct bch_sb_field_disk_groups) +
-		    sizeof(struct bch_disk_group) * nr_devs +
-		    sizeof(struct bch_sb_field_crypt));
+	if (bch2_sb_realloc(&sb, 0))
+		die("insufficient memory");
 
-	sb->version	= cpu_to_le64(BCH_SB_VERSION_MAX);
-	sb->magic	= BCACHE_MAGIC;
-	sb->block_size	= cpu_to_le16(opts.block_size);
-	sb->user_uuid	= opts.uuid;
-	sb->nr_devices	= nr_devs;
+	sb.sb->version		= cpu_to_le64(BCH_SB_VERSION_MAX);
+	sb.sb->magic		= BCACHE_MAGIC;
+	sb.sb->block_size	= cpu_to_le16(opts.block_size);
+	sb.sb->user_uuid	= opts.uuid;
+	sb.sb->nr_devices	= nr_devs;
 
-	uuid_generate(sb->uuid.b);
+	uuid_generate(sb.sb->uuid.b);
 
 	if (opts.label)
-		strncpy((char *) sb->label, opts.label, sizeof(sb->label));
+		strncpy((char *) sb.sb->label, opts.label, sizeof(sb.sb->label));
 
-	SET_BCH_SB_CSUM_TYPE(sb,		opts.meta_csum_type);
-	SET_BCH_SB_META_CSUM_TYPE(sb,		opts.meta_csum_type);
-	SET_BCH_SB_DATA_CSUM_TYPE(sb,		opts.data_csum_type);
-	SET_BCH_SB_COMPRESSION_TYPE(sb,		opts.compression_type);
-	SET_BCH_SB_BACKGROUND_COMPRESSION_TYPE(sb, opts.background_compression_type);
+	SET_BCH_SB_CSUM_TYPE(sb.sb,		opts.meta_csum_type);
+	SET_BCH_SB_META_CSUM_TYPE(sb.sb,	opts.meta_csum_type);
+	SET_BCH_SB_DATA_CSUM_TYPE(sb.sb,	opts.data_csum_type);
+	SET_BCH_SB_COMPRESSION_TYPE(sb.sb,	opts.compression_type);
+	SET_BCH_SB_BACKGROUND_COMPRESSION_TYPE(sb.sb,
+						opts.background_compression_type);
 
-	SET_BCH_SB_BTREE_NODE_SIZE(sb,		opts.btree_node_size);
-	SET_BCH_SB_GC_RESERVE(sb,		8);
-	SET_BCH_SB_META_REPLICAS_WANT(sb,	opts.meta_replicas);
-	SET_BCH_SB_META_REPLICAS_REQ(sb,	opts.meta_replicas_required);
-	SET_BCH_SB_DATA_REPLICAS_WANT(sb,	opts.data_replicas);
-	SET_BCH_SB_DATA_REPLICAS_REQ(sb,	opts.data_replicas_required);
-	SET_BCH_SB_ERROR_ACTION(sb,		opts.on_error_action);
-	SET_BCH_SB_STR_HASH_TYPE(sb,		BCH_STR_HASH_SIPHASH);
-	SET_BCH_SB_ENCODED_EXTENT_MAX_BITS(sb,	ilog2(opts.encoded_extent_max));
+	SET_BCH_SB_BTREE_NODE_SIZE(sb.sb,	opts.btree_node_size);
+	SET_BCH_SB_GC_RESERVE(sb.sb,		8);
+	SET_BCH_SB_META_REPLICAS_WANT(sb.sb,	opts.meta_replicas);
+	SET_BCH_SB_META_REPLICAS_REQ(sb.sb,	opts.meta_replicas_required);
+	SET_BCH_SB_DATA_REPLICAS_WANT(sb.sb,	opts.data_replicas);
+	SET_BCH_SB_DATA_REPLICAS_REQ(sb.sb,	opts.data_replicas_required);
+	SET_BCH_SB_ERROR_ACTION(sb.sb,		opts.on_error_action);
+	SET_BCH_SB_STR_HASH_TYPE(sb.sb,		BCH_STR_HASH_SIPHASH);
+	SET_BCH_SB_ENCODED_EXTENT_MAX_BITS(sb.sb,ilog2(opts.encoded_extent_max));
 
-	SET_BCH_SB_POSIX_ACL(sb,		1);
+	SET_BCH_SB_POSIX_ACL(sb.sb,		1);
 
 	struct timespec now;
 	if (clock_gettime(CLOCK_REALTIME, &now))
 		die("error getting current time: %m");
 
-	sb->time_base_lo	= cpu_to_le64(now.tv_sec * NSEC_PER_SEC + now.tv_nsec);
-	sb->time_precision	= cpu_to_le32(1);
-
-	mi = vstruct_end(sb);
-	u64s = (sizeof(struct bch_sb_field_members) +
-		sizeof(struct bch_member) * nr_devs) / sizeof(u64);
-
-	le32_add_cpu(&sb->u64s, u64s);
-	le32_add_cpu(&mi->field.u64s, u64s);
-	mi->field.type = BCH_SB_FIELD_members;
+	sb.sb->time_base_lo	= cpu_to_le64(now.tv_sec * NSEC_PER_SEC + now.tv_nsec);
+	sb.sb->time_precision	= cpu_to_le32(1);
 
 	/* Member info: */
+	mi = bch2_sb_resize_members(&sb,
+			(sizeof(*mi) + sizeof(struct bch_member) *
+			 nr_devs) / sizeof(u64));
+
 	for (i = devs; i < devs + nr_devs; i++) {
 		struct bch_member *m = mi->members + (i - devs);
 
@@ -253,63 +246,38 @@ struct bch_sb *bch2_format(struct format_opts opts,
 	/* Disk groups */
 	for (i = devs; i < devs + nr_devs; i++) {
 		struct bch_member *m = mi->members + (i - devs);
-		struct bch_disk_group *g;
-		size_t len;
 		int idx;
 
 		if (!i->group)
 			continue;
 
-		len = min_t(size_t, strlen(i->group) + 1, BCH_SB_LABEL_SIZE);
+		idx = bch2_disk_path_find_or_create(&sb, i->group);
+		if (idx < 0)
+			die("error creating disk path: %s", idx);
 
-		if (!gi) {
-			gi = vstruct_end(sb);
-			u64s = sizeof(*gi) / sizeof(u64);
-			le32_add_cpu(&sb->u64s, u64s);
-			le32_add_cpu(&gi->field.u64s, u64s);
-			gi->field.type = BCH_SB_FIELD_disk_groups;
-		}
-
-		idx = __bch2_disk_group_find(gi, i->group);
-		if (idx >= 0) {
-			g = gi->entries + idx;
-		} else {
-			u64s = sizeof(*g) / sizeof(u64);
-			g = vstruct_end(&gi->field);
-			le32_add_cpu(&sb->u64s, u64s);
-			le32_add_cpu(&gi->field.u64s, u64s);
-			memcpy(g->label, i->group, len);
-			SET_BCH_GROUP_DATA_ALLOWED(g, ~0);
-		}
-
-		SET_BCH_MEMBER_GROUP(m,	(g - gi->entries) + 1);
+		SET_BCH_MEMBER_GROUP(m,	idx + 1);
 	}
 
-	SET_BCH_SB_FOREGROUND_TARGET(sb,
-		parse_target(devs, nr_devs, gi, opts.foreground_target));
-	SET_BCH_SB_BACKGROUND_TARGET(sb,
-		parse_target(devs, nr_devs, gi, opts.background_target));
-	SET_BCH_SB_PROMOTE_TARGET(sb,
-		parse_target(devs, nr_devs, gi, opts.promote_target));
+	SET_BCH_SB_FOREGROUND_TARGET(sb.sb,
+		parse_target(&sb, devs, nr_devs, opts.foreground_target));
+	SET_BCH_SB_BACKGROUND_TARGET(sb.sb,
+		parse_target(&sb, devs, nr_devs, opts.background_target));
+	SET_BCH_SB_PROMOTE_TARGET(sb.sb,
+		parse_target(&sb, devs, nr_devs, opts.promote_target));
 
 	/* Crypt: */
 	if (opts.encrypted) {
-		struct bch_sb_field_crypt *crypt = vstruct_end(sb);
+		struct bch_sb_field_crypt *crypt =
+			bch2_sb_resize_crypt(&sb, sizeof(*crypt) / sizeof(u64));
 
-		u64s = sizeof(struct bch_sb_field_crypt) / sizeof(u64);
-
-		le32_add_cpu(&sb->u64s, u64s);
-		crypt->field.u64s = cpu_to_le32(u64s);
-		crypt->field.type = BCH_SB_FIELD_crypt;
-
-		bch_sb_crypt_init(sb, crypt, opts.passphrase);
-		SET_BCH_SB_ENCRYPTION_TYPE(sb, 1);
+		bch_sb_crypt_init(sb.sb, crypt, opts.passphrase);
+		SET_BCH_SB_ENCRYPTION_TYPE(sb.sb, 1);
 	}
 
 	for (i = devs; i < devs + nr_devs; i++) {
-		sb->dev_idx = i - devs;
+		sb.sb->dev_idx = i - devs;
 
-		init_layout(&sb->layout, opts.block_size,
+		init_layout(&sb.sb->layout, opts.block_size,
 			    i->sb_offset, i->sb_end);
 
 		if (i->sb_offset == BCH_SB_SECTOR) {
@@ -319,11 +287,11 @@ struct bch_sb *bch2_format(struct format_opts opts,
 			xpwrite(i->fd, zeroes, BCH_SB_SECTOR << 9, 0);
 		}
 
-		bch2_super_write(i->fd, sb);
+		bch2_super_write(i->fd, sb.sb);
 		close(i->fd);
 	}
 
-	return sb;
+	return sb.sb;
 }
 
 void bch2_super_write(int fd, struct bch_sb *sb)
@@ -553,11 +521,11 @@ static void bch2_sb_print_disk_groups(struct bch_sb *sb, struct bch_sb_field *f,
 
 typedef void (*sb_field_print_fn)(struct bch_sb *, struct bch_sb_field *, enum units);
 
-struct bch_sb_field_ops {
+struct bch_sb_field_toolops {
 	sb_field_print_fn	print;
 };
 
-static const struct bch_sb_field_ops bch2_sb_field_ops[] = {
+static const struct bch_sb_field_toolops bch2_sb_field_ops[] = {
 #define x(f, nr)					\
 	[BCH_SB_FIELD_##f] = {				\
 		.print	= bch2_sb_print_##f,		\
