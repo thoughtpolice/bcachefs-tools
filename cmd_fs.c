@@ -4,11 +4,71 @@
 
 #include <uuid/uuid.h>
 
+#include "ccan/darray/darray.h"
+
+#include "linux/sort.h"
+
 #include "libbcachefs/bcachefs_ioctl.h"
 #include "libbcachefs/opts.h"
 
 #include "cmds.h"
 #include "libbcachefs.h"
+
+static void print_dev_usage(struct bch_ioctl_dev_usage *d, unsigned idx,
+			    const char *label, enum units units)
+{
+	char *name = NULL;
+	u64 available = d->nr_buckets;
+	unsigned i;
+
+	printf("\n");
+	printf_pad(20, "%s (device %u):", label, idx);
+
+	name = !d->dev ? strdup("(offline)")
+		: dev_to_path(d->dev)
+		?: strdup("(device not found)");
+	printf("%24s%12s\n", name, bch2_dev_state[d->state]);
+	free(name);
+
+	printf("%-20s%12s%12s%12s\n",
+	       "", "data", "buckets", "fragmented");
+
+	for (i = BCH_DATA_SB; i < BCH_DATA_NR; i++) {
+		u64 frag = max((s64) d->buckets[i] * d->bucket_size -
+			       (s64) d->sectors[i], 0LL);
+
+		printf_pad(20, "  %s:", bch2_data_types[i]);
+		printf("%12s%12llu%12s\n",
+		       pr_units(d->sectors[i], units),
+		       d->buckets[i],
+		       pr_units(frag, units));
+
+		if (i != BCH_DATA_CACHED)
+			available -= d->buckets[i];
+	}
+
+	printf_pad(20, "  available:");
+	printf("%12s%12llu\n",
+	       pr_units(available * d->bucket_size, units),
+	       available);
+
+	printf_pad(20, "  capacity:");
+	printf("%12s%12llu\n",
+	       pr_units(d->nr_buckets * d->bucket_size, units),
+	       d->nr_buckets);
+}
+
+struct dev_by_label {
+	unsigned	idx;
+	char		*label;
+};
+
+static int dev_by_label_cmp(const void *_l, const void *_r)
+{
+	const struct dev_by_label *l = _l, *r = _r;
+
+	return strcmp(l->label, r->label);
+}
 
 static void print_fs_usage(const char *path, enum units units)
 {
@@ -42,36 +102,33 @@ static void print_fs_usage(const char *path, enum units units)
 
 	printf("%-20s%12s\n", "  online reserved:", pr_units(u->fs.online_reserved, units));
 
+	darray(struct dev_by_label) devs_by_label;
+	darray_init(devs_by_label);
+
 	for (i = 0; i < u->nr_devices; i++) {
 		struct bch_ioctl_dev_usage *d = u->devs + i;
-		char *name = NULL;
 
 		if (!d->alive)
 			continue;
 
-		printf("\n");
-		printf_pad(20, "Device %u usage:", i);
-		name = !d->dev ? strdup("(offline)")
-			: dev_to_path(d->dev)
-			?: strdup("(device not found)");
+		char *label_attr = mprintf("dev-%u/label", i);
+		char *label = read_file_str(fs.sysfs_fd, label_attr);
+		free(label_attr);
 
-		printf("%24s%12s\n", name, bch2_dev_state[d->state]);
-		free(name);
-
-		printf("%-20s%12s%12s%12s\n",
-		       "", "data", "buckets", "fragmented");
-
-		for (j = BCH_DATA_SB; j < BCH_DATA_NR; j++) {
-			u64 frag = max((s64) d->buckets[j] * d->bucket_size -
-				       (s64) d->sectors[j], 0LL);
-
-			printf_pad(20, "  %s:", bch2_data_types[j]);
-			printf("%12s%12llu%12s\n",
-			       pr_units(d->sectors[j], units),
-			       d->buckets[j],
-			       pr_units(frag, units));
-		}
+		darray_append(devs_by_label,
+			(struct dev_by_label) { i, label });
 	}
+
+	sort(&darray_item(devs_by_label, 0), darray_size(devs_by_label),
+	     sizeof(darray_item(devs_by_label, 0)), dev_by_label_cmp, NULL);
+
+	struct dev_by_label *d;
+	darray_foreach(d, devs_by_label)
+		print_dev_usage(u->devs + d->idx, d->idx, d->label, units);
+
+	darray_foreach(d, devs_by_label)
+		free(d->label);
+	darray_free(devs_by_label);
 
 	free(u);
 	bcache_fs_close(fs);

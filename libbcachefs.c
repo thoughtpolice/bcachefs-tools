@@ -718,7 +718,8 @@ struct bchfs_handle bcache_fs_open(const char *path)
 		ret.ioctl_fd = xopen(path, O_RDONLY);
 
 		struct bch_ioctl_query_uuid uuid;
-		xioctl(ret.ioctl_fd, BCH_IOCTL_QUERY_UUID, &uuid);
+		if (ioctl(ret.ioctl_fd, BCH_IOCTL_QUERY_UUID, &uuid) < 0)
+			die("error opening %s: not a bcachefs filesystem", path);
 
 		ret.uuid = uuid.uuid;
 
