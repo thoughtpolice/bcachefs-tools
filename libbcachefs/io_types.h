@@ -14,6 +14,8 @@
 
 struct bch_read_bio {
 	struct bch_fs		*c;
+	u64			start_time;
+	u64			submit_time;
 
 	/*
 	 * Reads will often have to be split, and if the extent being read from
@@ -35,17 +37,19 @@ struct bch_read_bio {
 	 */
 	struct bvec_iter	bvec_iter;
 
-	unsigned		submit_time_us;
-	u8			flags;
+	u16			flags;
 	union {
 	struct {
-	u8			bounce:1,
+	u16			bounce:1,
 				split:1,
+				kmalloc:1,
+				have_ioref:1,
 				narrow_crcs:1,
+				hole:1,
 				retry:2,
 				context:2;
 	};
-	u8			_state;
+	u16			_state;
 	};
 
 	struct bch_devs_list	devs_have;
@@ -66,19 +70,19 @@ struct bch_read_bio {
 
 struct bch_write_bio {
 	struct bch_fs		*c;
-	struct bch_dev		*ca;
 	struct bch_write_bio	*parent;
+
+	u64			submit_time;
 
 	struct bch_devs_list	failed;
 	u8			order;
+	u8			dev;
 
 	unsigned		split:1,
 				bounce:1,
 				put_bio:1,
-				have_io_ref:1,
+				have_ioref:1,
 				used_mempool:1;
-
-	unsigned		submit_time_us;
 
 	struct bio		bio;
 };
@@ -87,6 +91,7 @@ struct bch_write_op {
 	struct closure		cl;
 	struct bch_fs		*c;
 	struct workqueue_struct	*io_wq;
+	u64			start_time;
 
 	unsigned		written; /* sectors */
 	u16			flags;

@@ -26,6 +26,8 @@
 #include "inode.h"
 #include "io.h"
 #include "journal.h"
+#include "journal_io.h"
+#include "journal_reclaim.h"
 #include "keylist.h"
 #include "move.h"
 #include "migrate.h"
@@ -396,9 +398,15 @@ err:
 
 static void bch2_fs_free(struct bch_fs *c)
 {
+#define BCH_TIME_STAT(name)				\
+	bch2_time_stats_exit(&c->name##_time);
+	BCH_TIME_STATS()
+#undef BCH_TIME_STAT
+
 	bch2_fs_quota_exit(c);
 	bch2_fs_fsio_exit(c);
 	bch2_fs_encryption_exit(c);
+	bch2_fs_io_exit(c);
 	bch2_fs_btree_cache_exit(c);
 	bch2_fs_journal_exit(&c->journal);
 	bch2_io_clock_exit(&c->io_clock[WRITE]);
@@ -407,10 +415,6 @@ static void bch2_fs_free(struct bch_fs *c)
 	lg_lock_free(&c->usage_lock);
 	free_percpu(c->usage_percpu);
 	mempool_exit(&c->btree_bounce_pool);
-	mempool_exit(&c->bio_bounce_pages);
-	bioset_exit(&c->bio_write);
-	bioset_exit(&c->bio_read_split);
-	bioset_exit(&c->bio_read);
 	bioset_exit(&c->btree_bio);
 	mempool_exit(&c->btree_interior_update_pool);
 	mempool_exit(&c->btree_reserve_pool);
@@ -561,8 +565,8 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 
 	init_rwsem(&c->gc_lock);
 
-#define BCH_TIME_STAT(name, frequency_units, duration_units)		\
-	spin_lock_init(&c->name##_time.lock);
+#define BCH_TIME_STAT(name)				\
+	bch2_time_stats_init(&c->name##_time);
 	BCH_TIME_STATS()
 #undef BCH_TIME_STAT
 
@@ -587,9 +591,10 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 
 	seqcount_init(&c->gc_pos_lock);
 
-	c->copy_gc_enabled = 1;
-	c->rebalance_enabled = 1;
-	c->rebalance_percent = 10;
+	c->copy_gc_enabled		= 1;
+	c->rebalance_enabled		= 1;
+	c->rebalance_percent		= 10;
+	c->promote_whole_extents	= true;
 
 	c->journal.write_time	= &c->journal_write_time;
 	c->journal.delay_time	= &c->journal_delay_time;
@@ -640,17 +645,6 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 			max(offsetof(struct btree_read_bio, bio),
 			    offsetof(struct btree_write_bio, wbio.bio)),
 			BIOSET_NEED_BVECS) ||
-	    bioset_init(&c->bio_read, 1, offsetof(struct bch_read_bio, bio),
-			BIOSET_NEED_BVECS) ||
-	    bioset_init(&c->bio_read_split, 1, offsetof(struct bch_read_bio, bio),
-			BIOSET_NEED_BVECS) ||
-	    bioset_init(&c->bio_write, 1, offsetof(struct bch_write_bio, bio),
-			BIOSET_NEED_BVECS) ||
-	    mempool_init_page_pool(&c->bio_bounce_pages,
-				   max_t(unsigned,
-					 c->opts.btree_node_size,
-					 c->sb.encoded_extent_max) /
-				   PAGE_SECTORS, 0) ||
 	    !(c->usage_percpu = alloc_percpu(struct bch_fs_usage)) ||
 	    lg_lock_init(&c->usage_lock) ||
 	    mempool_init_vp_pool(&c->btree_bounce_pool, 1, btree_bytes(c)) ||
@@ -658,6 +652,7 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	    bch2_io_clock_init(&c->io_clock[WRITE]) ||
 	    bch2_fs_journal_init(&c->journal) ||
 	    bch2_fs_btree_cache_init(c) ||
+	    bch2_fs_io_init(c) ||
 	    bch2_fs_encryption_init(c) ||
 	    bch2_fs_compress_init(c) ||
 	    bch2_fs_fsio_init(c))
@@ -774,11 +769,11 @@ const char *bch2_fs_start(struct bch_fs *c)
 			goto recovery_done;
 
 		/*
-		 * bch2_journal_start() can't happen sooner, or btree_gc_finish()
+		 * bch2_fs_journal_start() can't happen sooner, or btree_gc_finish()
 		 * will give spurious errors about oldest_gen > bucket_gen -
 		 * this is a hack but oh well.
 		 */
-		bch2_journal_start(c);
+		bch2_fs_journal_start(&c->journal);
 
 		err = "error starting allocator";
 		if (bch2_fs_allocator_start(c))
@@ -834,7 +829,7 @@ const char *bch2_fs_start(struct bch_fs *c)
 		 * journal_res_get() will crash if called before this has
 		 * set up the journal.pin FIFO and journal.cur pointer:
 		 */
-		bch2_journal_start(c);
+		bch2_fs_journal_start(&c->journal);
 		bch2_journal_set_replay_done(&c->journal);
 
 		err = "error starting allocator";
@@ -993,6 +988,9 @@ static void bch2_dev_free(struct bch_dev *ca)
 	bioset_exit(&ca->replica_set);
 	bch2_dev_buckets_free(ca);
 
+	bch2_time_stats_exit(&ca->io_latency[WRITE]);
+	bch2_time_stats_exit(&ca->io_latency[READ]);
+
 	percpu_ref_exit(&ca->io_ref);
 	percpu_ref_exit(&ca->ref);
 	kobject_put(&ca->kobj);
@@ -1088,6 +1086,9 @@ static struct bch_dev *__bch2_dev_alloc(struct bch_fs *c,
 	bch2_dev_copygc_init(ca);
 
 	INIT_WORK(&ca->io_error_work, bch2_io_error_work);
+
+	bch2_time_stats_init(&ca->io_latency[READ]);
+	bch2_time_stats_init(&ca->io_latency[WRITE]);
 
 	ca->mi = bch2_mi_to_cpu(member);
 	ca->uuid = member->uuid;
@@ -1421,7 +1422,7 @@ int bch2_dev_remove(struct bch_fs *c, struct bch_dev *ca, int flags)
 		goto err;
 	}
 
-	ret = bch2_journal_flush_device(&c->journal, ca->dev_idx);
+	ret = bch2_journal_flush_device_pins(&c->journal, ca->dev_idx);
 	if (ret) {
 		bch_err(ca, "Remove failed: error %i flushing journal", ret);
 		goto err;

@@ -271,17 +271,19 @@ do {									\
 #define BCH_DEBUG_PARAMS() BCH_DEBUG_PARAMS_ALWAYS()
 #endif
 
-/* name, frequency_units, duration_units */
-#define BCH_TIME_STATS()						\
-	BCH_TIME_STAT(btree_node_mem_alloc,	sec, us)		\
-	BCH_TIME_STAT(btree_gc,			sec, ms)		\
-	BCH_TIME_STAT(btree_split,		sec, us)		\
-	BCH_TIME_STAT(btree_sort,		ms, us)			\
-	BCH_TIME_STAT(btree_read,		ms, us)			\
-	BCH_TIME_STAT(journal_write,		us, us)			\
-	BCH_TIME_STAT(journal_delay,		ms, us)			\
-	BCH_TIME_STAT(journal_blocked,		sec, ms)		\
-	BCH_TIME_STAT(journal_flush_seq,	us, us)
+#define BCH_TIME_STATS()				\
+	BCH_TIME_STAT(btree_node_mem_alloc)		\
+	BCH_TIME_STAT(btree_gc)				\
+	BCH_TIME_STAT(btree_split)			\
+	BCH_TIME_STAT(btree_sort)			\
+	BCH_TIME_STAT(btree_read)			\
+	BCH_TIME_STAT(data_write)			\
+	BCH_TIME_STAT(data_read)			\
+	BCH_TIME_STAT(data_promote)			\
+	BCH_TIME_STAT(journal_write)			\
+	BCH_TIME_STAT(journal_delay)			\
+	BCH_TIME_STAT(journal_blocked)			\
+	BCH_TIME_STAT(journal_flush_seq)
 
 #include "alloc_types.h"
 #include "buckets_types.h"
@@ -416,7 +418,12 @@ struct bch_dev {
 	struct work_struct	io_error_work;
 
 	/* The rest of this all shows up in sysfs */
-	atomic_t		latency[2];
+	atomic64_t		cur_latency[2];
+	struct time_stats	io_latency[2];
+
+#define CONGESTED_MAX		1024
+	atomic_t		congested;
+	u64			congested_last;
 
 	struct io_count __percpu *io_done;
 };
@@ -644,6 +651,7 @@ struct bch_fs {
 	struct bio_set		bio_write;
 	struct mutex		bio_bounce_pages_lock;
 	mempool_t		bio_bounce_pages;
+	struct rhashtable	promote_table;
 
 	mempool_t		compression_bounce[2];
 	mempool_t		compress_workspace[BCH_COMPRESSION_NR];
@@ -708,12 +716,13 @@ struct bch_fs {
 	unsigned		copy_gc_enabled:1;
 	unsigned		rebalance_enabled:1;
 	unsigned		rebalance_percent;
+	bool			promote_whole_extents;
 
 #define BCH_DEBUG_PARAM(name, description) bool name;
 	BCH_DEBUG_PARAMS_ALL()
 #undef BCH_DEBUG_PARAM
 
-#define BCH_TIME_STAT(name, frequency_units, duration_units)		\
+#define BCH_TIME_STAT(name)				\
 	struct time_stats	name##_time;
 	BCH_TIME_STATS()
 #undef BCH_TIME_STAT

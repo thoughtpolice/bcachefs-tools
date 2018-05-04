@@ -141,11 +141,19 @@ read_attribute(btree_node_size);
 read_attribute(first_bucket);
 read_attribute(nbuckets);
 read_attribute(durability);
-read_attribute(iostats);
-read_attribute(last_read_quantiles);
-read_attribute(last_write_quantiles);
-read_attribute(fragmentation_quantiles);
-read_attribute(oldest_gen_quantiles);
+read_attribute(iodone);
+
+read_attribute(io_latency_read);
+read_attribute(io_latency_write);
+read_attribute(io_latency_stats_read);
+read_attribute(io_latency_stats_write);
+read_attribute(congested);
+
+read_attribute(bucket_quantiles_last_read);
+read_attribute(bucket_quantiles_last_write);
+read_attribute(bucket_quantiles_fragmentation);
+read_attribute(bucket_quantiles_oldest_gen);
+
 read_attribute(reserve_stats);
 read_attribute(btree_cache_size);
 read_attribute(compression_stats);
@@ -177,6 +185,7 @@ sysfs_pd_controller_attribute(copy_gc);
 rw_attribute(rebalance_enabled);
 rw_attribute(rebalance_percent);
 sysfs_pd_controller_attribute(rebalance);
+rw_attribute(promote_whole_extents);
 
 rw_attribute(pd_controllers_update_seconds);
 
@@ -189,8 +198,9 @@ read_attribute(data_replicas_have);
 	BCH_DEBUG_PARAMS()
 #undef BCH_DEBUG_PARAM
 
-#define BCH_TIME_STAT(name, frequency_units, duration_units)		\
-	sysfs_time_stats_attribute(name, frequency_units, duration_units);
+#define BCH_TIME_STAT(_name)						\
+	static struct attribute sysfs_time_stat_##_name =		\
+		{ .name = #_name, .mode = S_IRUGO };
 	BCH_TIME_STATS()
 #undef BCH_TIME_STAT
 
@@ -332,8 +342,9 @@ SHOW(bch2_fs)
 
 	sysfs_printf(rebalance_enabled,		"%i", c->rebalance_enabled);
 	sysfs_print(rebalance_percent,		c->rebalance_percent);
-
 	sysfs_pd_controller_show(rebalance,	&c->rebalance_pd); /* XXX */
+
+	sysfs_print(promote_whole_extents,	c->promote_whole_extents);
 
 	sysfs_printf(meta_replicas_have, "%u",	bch2_replicas_online(c, true));
 	sysfs_printf(data_replicas_have, "%u",	bch2_replicas_online(c, false));
@@ -406,6 +417,8 @@ STORE(__bch2_fs)
 	sysfs_strtoul(rebalance_percent,	c->rebalance_percent);
 	sysfs_pd_controller_store(rebalance,	&c->rebalance_pd);
 
+	sysfs_strtoul(promote_whole_extents,	c->promote_whole_extents);
+
 	/* Debugging: */
 
 #define BCH_DEBUG_PARAM(name, description) sysfs_strtoul(name, c->name);
@@ -462,6 +475,7 @@ struct attribute *bch2_fs_files[] = {
 	&sysfs_journal_reclaim_delay_ms,
 
 	&sysfs_rebalance_percent,
+	&sysfs_promote_whole_extents,
 
 	&sysfs_compression_stats,
 	NULL
@@ -531,9 +545,16 @@ STORE(bch2_fs_opts_dir)
 	struct bch_fs *c = container_of(kobj, struct bch_fs, opts_dir);
 	const struct bch_option *opt = container_of(attr, struct bch_option, attr);
 	int ret, id = opt - bch2_opt_table;
+	char *tmp;
 	u64 v;
 
-	ret = bch2_opt_parse(c, opt, buf, &v);
+	tmp = kstrdup(buf, GFP_KERNEL);
+	if (!tmp)
+		return -ENOMEM;
+
+	ret = bch2_opt_parse(c, opt, strim(tmp), &v);
+	kfree(tmp);
+
 	if (ret < 0)
 		return ret;
 
@@ -592,9 +613,9 @@ SHOW(bch2_fs_time_stats)
 {
 	struct bch_fs *c = container_of(kobj, struct bch_fs, time_stats);
 
-#define BCH_TIME_STAT(name, frequency_units, duration_units)		\
-	sysfs_print_time_stats(&c->name##_time, name,			\
-			       frequency_units, duration_units);
+#define BCH_TIME_STAT(name)						\
+	if (attr == &sysfs_time_stat_##name)				\
+		return bch2_time_stats_print(&c->name##_time, buf, PAGE_SIZE);
 	BCH_TIME_STATS()
 #undef BCH_TIME_STAT
 
@@ -603,23 +624,15 @@ SHOW(bch2_fs_time_stats)
 
 STORE(bch2_fs_time_stats)
 {
-	struct bch_fs *c = container_of(kobj, struct bch_fs, time_stats);
-
-#define BCH_TIME_STAT(name, frequency_units, duration_units)		\
-	sysfs_clear_time_stats(&c->name##_time, name);
-	BCH_TIME_STATS()
-#undef BCH_TIME_STAT
-
 	return size;
 }
 SYSFS_OPS(bch2_fs_time_stats);
 
 struct attribute *bch2_fs_time_stats_files[] = {
-#define BCH_TIME_STAT(name, frequency_units, duration_units)		\
-	sysfs_time_stats_attribute_list(name, frequency_units, duration_units)
+#define BCH_TIME_STAT(name)						\
+	&sysfs_time_stat_##name,
 	BCH_TIME_STATS()
 #undef BCH_TIME_STAT
-
 	NULL
 };
 
@@ -774,7 +787,7 @@ static const char * const bch2_rw[] = {
 	NULL
 };
 
-static ssize_t show_dev_iostats(struct bch_dev *ca, char *buf)
+static ssize_t show_dev_iodone(struct bch_dev *ca, char *buf)
 {
 	char *out = buf, *end = buf + PAGE_SIZE;
 	int rw, i, cpu;
@@ -851,16 +864,28 @@ SHOW(bch2_dev)
 		return out - buf;
 	}
 
-	if (attr == &sysfs_iostats)
-		return show_dev_iostats(ca, buf);
+	if (attr == &sysfs_iodone)
+		return show_dev_iodone(ca, buf);
 
-	if (attr == &sysfs_last_read_quantiles)
+	sysfs_print(io_latency_read,		atomic64_read(&ca->cur_latency[READ]));
+	sysfs_print(io_latency_write,		atomic64_read(&ca->cur_latency[WRITE]));
+
+	if (attr == &sysfs_io_latency_stats_read)
+		return bch2_time_stats_print(&ca->io_latency[READ], buf, PAGE_SIZE);
+	if (attr == &sysfs_io_latency_stats_write)
+		return bch2_time_stats_print(&ca->io_latency[WRITE], buf, PAGE_SIZE);
+
+	sysfs_printf(congested,			"%u%%",
+		     clamp(atomic_read(&ca->congested), 0, CONGESTED_MAX)
+		     * 100 / CONGESTED_MAX);
+
+	if (attr == &sysfs_bucket_quantiles_last_read)
 		return show_quantiles(c, ca, buf, bucket_last_io_fn, (void *) 0);
-	if (attr == &sysfs_last_write_quantiles)
+	if (attr == &sysfs_bucket_quantiles_last_write)
 		return show_quantiles(c, ca, buf, bucket_last_io_fn, (void *) 1);
-	if (attr == &sysfs_fragmentation_quantiles)
+	if (attr == &sysfs_bucket_quantiles_fragmentation)
 		return show_quantiles(c, ca, buf, bucket_sectors_used_fn, NULL);
-	if (attr == &sysfs_oldest_gen_quantiles)
+	if (attr == &sysfs_bucket_quantiles_oldest_gen)
 		return show_quantiles(c, ca, buf, bucket_oldest_gen_fn, NULL);
 
 	if (attr == &sysfs_reserve_stats)
@@ -944,13 +969,20 @@ struct attribute *bch2_dev_files[] = {
 	&sysfs_label,
 
 	&sysfs_has_data,
-	&sysfs_iostats,
+	&sysfs_iodone,
+
+	&sysfs_io_latency_read,
+	&sysfs_io_latency_write,
+	&sysfs_io_latency_stats_read,
+	&sysfs_io_latency_stats_write,
+	&sysfs_congested,
 
 	/* alloc info - other stats: */
-	&sysfs_last_read_quantiles,
-	&sysfs_last_write_quantiles,
-	&sysfs_fragmentation_quantiles,
-	&sysfs_oldest_gen_quantiles,
+	&sysfs_bucket_quantiles_last_read,
+	&sysfs_bucket_quantiles_last_write,
+	&sysfs_bucket_quantiles_fragmentation,
+	&sysfs_bucket_quantiles_oldest_gen,
+
 	&sysfs_reserve_stats,
 
 	/* debug: */

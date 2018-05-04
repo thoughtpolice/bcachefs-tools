@@ -13,12 +13,15 @@
 #include <linux/kthread.h>
 #include <linux/log2.h>
 #include <linux/math64.h>
+#include <linux/percpu.h>
+#include <linux/preempt.h>
 #include <linux/random.h>
 #include <linux/seq_file.h>
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/sched/clock.h>
 
+#include "eytzinger.h"
 #include "util.h"
 
 #define simple_strtoint(c, end, base)	simple_strtol(c, end, base)
@@ -200,58 +203,188 @@ bool bch2_is_zero(const void *_p, size_t n)
 	return true;
 }
 
-void bch2_time_stats_clear(struct time_stats *stats)
+void bch2_quantiles_update(struct quantiles *q, u64 v)
 {
-	spin_lock(&stats->lock);
+	unsigned i = 0;
 
-	stats->count = 0;
-	stats->last_duration = 0;
-	stats->max_duration = 0;
-	stats->average_duration = 0;
-	stats->average_frequency = 0;
-	stats->last = 0;
+	while (i < ARRAY_SIZE(q->entries)) {
+		struct quantile_entry *e = q->entries + i;
 
-	spin_unlock(&stats->lock);
+		if (unlikely(!e->step)) {
+			e->m = v;
+			e->step = max_t(unsigned, v / 2, 1024);
+		} else if (e->m > v) {
+			e->m = e->m >= e->step
+				? e->m - e->step
+				: 0;
+		} else if (e->m < v) {
+			e->m = e->m + e->step > e->m
+				? e->m + e->step
+				: U32_MAX;
+		}
+
+		if ((e->m > v ? e->m - v : v - e->m) < e->step)
+			e->step = max_t(unsigned, e->step / 2, 1);
+
+		if (v >= e->m)
+			break;
+
+		i = eytzinger0_child(i, v > e->m);
+	}
 }
 
-void __bch2_time_stats_update(struct time_stats *stats, u64 start_time)
+/* time stats: */
+
+static void bch2_time_stats_update_one(struct time_stats *stats,
+				       u64 start, u64 end)
 {
-	u64 now, duration, last;
+	u64 duration, freq;
+
+	duration	= time_after64(end, start)
+		? end - start : 0;
+	freq		= time_after64(end, stats->last_event)
+		? end - stats->last_event : 0;
 
 	stats->count++;
 
-	now		= local_clock();
-	duration	= time_after64(now, start_time)
-		? now - start_time : 0;
-	last		= time_after64(now, stats->last)
-		? now - stats->last : 0;
+	stats->average_duration = stats->average_duration
+		? ewma_add(stats->average_duration, duration, 6)
+		: duration;
 
-	stats->last_duration = duration;
+	stats->average_frequency = stats->average_frequency
+		? ewma_add(stats->average_frequency, freq, 6)
+		: freq;
+
 	stats->max_duration = max(stats->max_duration, duration);
 
-	if (stats->last) {
-		stats->average_duration = ewma_add(stats->average_duration,
-						   duration << 8, 3);
+	stats->last_event = end;
 
-		if (stats->average_frequency)
-			stats->average_frequency =
-				ewma_add(stats->average_frequency,
-					 last << 8, 3);
-		else
-			stats->average_frequency  = last << 8;
+	bch2_quantiles_update(&stats->quantiles, duration);
+}
+
+void __bch2_time_stats_update(struct time_stats *stats, u64 start, u64 end)
+{
+	unsigned long flags;
+
+	if (!stats->buffer) {
+		spin_lock_irqsave(&stats->lock, flags);
+		bch2_time_stats_update_one(stats, start, end);
+
+		if (stats->average_frequency < 32 &&
+		    stats->count > 1024)
+			stats->buffer =
+				alloc_percpu_gfp(struct time_stat_buffer,
+						 GFP_ATOMIC);
+		spin_unlock_irqrestore(&stats->lock, flags);
 	} else {
-		stats->average_duration = duration << 8;
+		struct time_stat_buffer_entry *i;
+		struct time_stat_buffer *b;
+
+		preempt_disable();
+		b = this_cpu_ptr(stats->buffer);
+
+		BUG_ON(b->nr >= ARRAY_SIZE(b->entries));
+		b->entries[b->nr++] = (struct time_stat_buffer_entry) {
+			.start = start,
+			.end = end
+		};
+
+		if (b->nr == ARRAY_SIZE(b->entries)) {
+			spin_lock_irqsave(&stats->lock, flags);
+			for (i = b->entries;
+			     i < b->entries + ARRAY_SIZE(b->entries);
+			     i++)
+				bch2_time_stats_update_one(stats, i->start, i->end);
+			spin_unlock_irqrestore(&stats->lock, flags);
+
+			b->nr = 0;
+		}
+
+		preempt_enable();
+	}
+}
+
+static const struct time_unit {
+	const char	*name;
+	u32		nsecs;
+} time_units[] = {
+	{ "ns",		1		},
+	{ "us",		NSEC_PER_USEC	},
+	{ "ms",		NSEC_PER_MSEC	},
+	{ "sec",	NSEC_PER_SEC	},
+};
+
+static const struct time_unit *pick_time_units(u64 ns)
+{
+	const struct time_unit *u;
+
+	for (u = time_units;
+	     u + 1 < time_units + ARRAY_SIZE(time_units) &&
+	     ns >= u[1].nsecs << 1;
+	     u++)
+		;
+
+	return u;
+}
+
+static size_t pr_time_units(char *buf, size_t len, u64 ns)
+{
+	const struct time_unit *u = pick_time_units(ns);
+
+	return scnprintf(buf, len, "%llu %s", div_u64(ns, u->nsecs), u->name);
+}
+
+size_t bch2_time_stats_print(struct time_stats *stats, char *buf, size_t len)
+{
+	char *out = buf, *end = buf + len;
+	const struct time_unit *u;
+	u64 freq = READ_ONCE(stats->average_frequency);
+	u64 q, last_q = 0;
+	int i;
+
+	out += scnprintf(out, end - out, "count:\t\t%llu\n",
+			 stats->count);
+	out += scnprintf(out, end - out, "rate:\t\t%llu/sec\n",
+			 freq ?  div64_u64(NSEC_PER_SEC, freq) : 0);
+
+	out += scnprintf(out, end - out, "frequency:\t");
+	out += pr_time_units(out, end - out, freq);
+
+	out += scnprintf(out, end - out, "\navg duration:\t");
+	out += pr_time_units(out, end - out, stats->average_duration);
+
+	out += scnprintf(out, end - out, "\nmax duration:\t");
+	out += pr_time_units(out, end - out, stats->max_duration);
+
+	i = eytzinger0_first(NR_QUANTILES);
+	u = pick_time_units(stats->quantiles.entries[i].m);
+
+	out += scnprintf(out, end - out, "\nquantiles (%s):\t", u->name);
+	eytzinger0_for_each(i, NR_QUANTILES) {
+		bool is_last = eytzinger0_next(i, NR_QUANTILES) == -1;
+
+		q = max(stats->quantiles.entries[i].m, last_q);
+		out += scnprintf(out, end - out, "%llu%s",
+				 div_u64(q, u->nsecs),
+				 is_last ? "\n" : " ");
+		last_q = q;
 	}
 
-	stats->last = now ?: 1;
+	return out - buf;
 }
 
-void bch2_time_stats_update(struct time_stats *stats, u64 start_time)
+void bch2_time_stats_exit(struct time_stats *stats)
 {
-	spin_lock(&stats->lock);
-	__bch2_time_stats_update(stats, start_time);
-	spin_unlock(&stats->lock);
+	free_percpu(stats->buffer);
 }
+
+void bch2_time_stats_init(struct time_stats *stats)
+{
+	memset(stats, 0, sizeof(*stats));
+	spin_lock_init(&stats->lock);
+}
+
+/* ratelimit: */
 
 /**
  * bch2_ratelimit_delay() - return how long to delay until the next time to do
@@ -309,6 +442,8 @@ int bch2_ratelimit_wait_freezable_stoppable(struct bch_ratelimit *d)
 		try_to_freeze();
 	}
 }
+
+/* pd controller: */
 
 /*
  * Updates pd_controller. Attempts to scale inputed values to units per second.
@@ -403,6 +538,8 @@ size_t bch2_pd_controller_print_debug(struct bch_pd_controller *pd, char *buf)
 		       rate, target, actual, proportional,
 		       derivative, change, next_io);
 }
+
+/* misc: */
 
 void bch2_bio_map(struct bio *bio, void *base)
 {

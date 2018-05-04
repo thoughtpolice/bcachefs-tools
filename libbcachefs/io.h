@@ -16,7 +16,7 @@ void bch2_bio_free_pages_pool(struct bch_fs *, struct bio *);
 void bch2_bio_alloc_pages_pool(struct bch_fs *, struct bio *, size_t);
 void bch2_bio_alloc_more_pages_pool(struct bch_fs *, struct bio *, size_t);
 
-void bch2_latency_acct(struct bch_dev *, unsigned, int);
+void bch2_latency_acct(struct bch_dev *, u64, int);
 
 void bch2_submit_wbio_replicas(struct bch_write_bio *, struct bch_fs *,
 			       enum bch_data_type, const struct bkey_i *);
@@ -99,40 +99,28 @@ struct cache_promote_op;
 struct extent_pick_ptr;
 
 int __bch2_read_extent(struct bch_fs *, struct bch_read_bio *, struct bvec_iter,
-		       struct bkey_s_c_extent e, struct extent_pick_ptr *,
-		       unsigned);
-void __bch2_read(struct bch_fs *, struct bch_read_bio *, struct bvec_iter,
-		 u64, struct bch_devs_mask *, unsigned);
+		       struct bkey_s_c, struct bch_devs_mask *, unsigned);
+void bch2_read(struct bch_fs *, struct bch_read_bio *, u64);
 
 enum bch_read_flags {
 	BCH_READ_RETRY_IF_STALE		= 1 << 0,
 	BCH_READ_MAY_PROMOTE		= 1 << 1,
 	BCH_READ_USER_MAPPED		= 1 << 2,
 	BCH_READ_NODECODE		= 1 << 3,
+	BCH_READ_LAST_FRAGMENT		= 1 << 4,
 
 	/* internal: */
-	BCH_READ_MUST_BOUNCE		= 1 << 4,
-	BCH_READ_MUST_CLONE		= 1 << 5,
-	BCH_READ_IN_RETRY		= 1 << 6,
+	BCH_READ_MUST_BOUNCE		= 1 << 5,
+	BCH_READ_MUST_CLONE		= 1 << 6,
+	BCH_READ_IN_RETRY		= 1 << 7,
 };
 
 static inline void bch2_read_extent(struct bch_fs *c,
 				    struct bch_read_bio *rbio,
-				    struct bkey_s_c_extent e,
-				    struct extent_pick_ptr *pick,
+				    struct bkey_s_c k,
 				    unsigned flags)
 {
-	__bch2_read_extent(c, rbio, rbio->bio.bi_iter, e, pick, flags);
-}
-
-static inline void bch2_read(struct bch_fs *c, struct bch_read_bio *rbio,
-			     u64 inode)
-{
-	BUG_ON(rbio->_state);
-	__bch2_read(c, rbio, rbio->bio.bi_iter, inode, NULL,
-		    BCH_READ_RETRY_IF_STALE|
-		    BCH_READ_MAY_PROMOTE|
-		    BCH_READ_USER_MAPPED);
+	__bch2_read_extent(c, rbio, rbio->bio.bi_iter, k, NULL, flags);
 }
 
 static inline struct bch_read_bio *rbio_init(struct bio *bio,
@@ -145,5 +133,8 @@ static inline struct bch_read_bio *rbio_init(struct bio *bio,
 	rbio->opts	= opts;
 	return rbio;
 }
+
+void bch2_fs_io_exit(struct bch_fs *);
+int bch2_fs_io_init(struct bch_fs *);
 
 #endif /* _BCACHEFS_IO_H */
