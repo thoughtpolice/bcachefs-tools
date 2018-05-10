@@ -5,6 +5,13 @@
 
 struct page;
 
+#ifndef PAGE_SIZE
+
+#define PAGE_SIZE   4096UL
+#define PAGE_MASK   (~(PAGE_SIZE - 1))
+
+#endif
+
 #define virt_to_page(p)							\
 	((struct page *) (((unsigned long) (p)) & PAGE_MASK))
 #define offset_in_page(p)		((unsigned long) (p) & ~PAGE_MASK)

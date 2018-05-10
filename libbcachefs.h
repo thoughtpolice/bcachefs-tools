@@ -100,7 +100,7 @@ struct bchfs_handle bchu_fs_open_by_dev(const char *, unsigned *);
 
 static inline void bchu_disk_add(struct bchfs_handle fs, char *dev)
 {
-	struct bch_ioctl_disk i = { .dev = (__u64) dev, };
+	struct bch_ioctl_disk i = { .dev = (unsigned long) dev, };
 
 	xioctl(fs.ioctl_fd, BCH_IOCTL_DISK_ADD, &i);
 }
@@ -118,7 +118,7 @@ static inline void bchu_disk_remove(struct bchfs_handle fs, unsigned dev_idx,
 
 static inline void bchu_disk_online(struct bchfs_handle fs, char *dev)
 {
-	struct bch_ioctl_disk i = { .dev = (__u64) dev, };
+	struct bch_ioctl_disk i = { .dev = (unsigned long) dev, };
 
 	xioctl(fs.ioctl_fd, BCH_IOCTL_DISK_ONLINE, &i);
 }
@@ -173,7 +173,7 @@ static inline struct bch_sb *bchu_read_super(struct bchfs_handle fs, unsigned id
 		sb = xrealloc(sb, size);
 		struct bch_ioctl_read_super i = {
 			.size	= size,
-			.sb	= (u64) sb,
+			.sb	= (unsigned long) sb,
 		};
 
 		if (idx != -1) {

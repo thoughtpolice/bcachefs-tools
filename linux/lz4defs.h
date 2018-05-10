@@ -62,9 +62,9 @@ typedef uintptr_t uptrval;
 #define LZ4_ARCH64 0
 #endif
 
-#if defined(__LITTLE_ENDIAN)
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 #define LZ4_LITTLE_ENDIAN 1
-#else
+#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 #define LZ4_LITTLE_ENDIAN 0
 #endif
 

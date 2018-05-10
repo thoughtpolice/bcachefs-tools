@@ -1,6 +1,8 @@
 #ifndef _LINUX_BACKING_DEV_H
 #define _LINUX_BACKING_DEV_H
 
+#include <linux/list.h>
+
 typedef int (congested_fn)(void *, int);
 
 enum wb_congested_state {

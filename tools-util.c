@@ -534,8 +534,6 @@ static u32 crc32c_sse42(u32 crc, const void *buf, size_t size)
 
 static void *resolve_crc32c(void)
 {
-	__builtin_cpu_init();
-
 #ifdef __x86_64__
 	if (__builtin_cpu_supports("sse4.2"))
 		return crc32c_sse42;
@@ -548,8 +546,15 @@ static void *resolve_crc32c(void)
  */
 #ifdef HAVE_WORKING_IFUNC
 
+static void *ifunc_resolve_crc32c(void)
+{
+	__builtin_cpu_init();
+
+	return resolve_crc32c
+}
+
 u32 crc32c(u32, const void *, size_t)
-	__attribute__((ifunc("resolve_crc32c")));
+	__attribute__((ifunc("ifunc_resolve_crc32c")));
 
 #else
 

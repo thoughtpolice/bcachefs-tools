@@ -5,7 +5,7 @@ struct super_block;
 struct inode;
 
 /* The hash is always the low bits of hash_len */
-#ifdef __LITTLE_ENDIAN
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
  #define HASH_LEN_DECLARE u32 hash; u32 len
 #else
  #define HASH_LEN_DECLARE u32 len; u32 hash

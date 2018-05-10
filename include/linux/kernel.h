@@ -111,17 +111,11 @@
 #define cpu_relax()		do {} while (0)
 #define cpu_relax_lowlatency()	do {} while (0)
 
-__printf(1, 2)
-static inline void panic(const char *fmt, ...)
-{
-       va_list args;
-
-       va_start(args, fmt);
-       vprintf(fmt, args);
-       va_end(args);
-
-       BUG();
-}
+#define panic(fmt, ...)					\
+do {							\
+	printf(fmt, ##__VA_ARGS__);			\
+	BUG();						\
+} while (0)
 
 unsigned long simple_strtoul(const char *,char **,unsigned int);
 long simple_strtol(const char *,char **,unsigned int);

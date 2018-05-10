@@ -3,6 +3,10 @@
 #include <string.h>
 #include <sys/mman.h>
 
+/* hack for mips: */
+#define CONFIG_RCU_HAVE_FUTEX 1
+#include <urcu/futex.h>
+
 #include <linux/math64.h>
 #include <linux/printk.h>
 #include <linux/rcupdate.h>
