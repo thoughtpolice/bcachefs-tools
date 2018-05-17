@@ -13,6 +13,7 @@ Dependencies:
 
 On debian, you can install these with
     apt install -y pkg-config libblkid-dev uuid-dev libscrypt-dev libsodium-dev
-	libkeyutils-dev liburcu-dev zlib1g-dev libattr1-dev
+	libkeyutils-dev liburcu-dev zlib1g-dev libzstd-dev libattr1-dev
+	libaio-dev
 
 Then, just make && make install
