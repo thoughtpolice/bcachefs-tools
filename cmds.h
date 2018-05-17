@@ -12,10 +12,12 @@
 int cmd_format(int argc, char *argv[]);
 int cmd_show_super(int argc, char *argv[]);
 
+#if 0
 int cmd_assemble(int argc, char *argv[]);
 int cmd_incremental(int argc, char *argv[]);
 int cmd_run(int argc, char *argv[]);
 int cmd_stop(int argc, char *argv[]);
+#endif
 
 int cmd_fs_usage(int argc, char *argv[]);
 

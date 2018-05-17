@@ -27,6 +27,7 @@
 #include <linux/kthread.h>
 #include <linux/preempt.h>
 #include <linux/rcupdate.h>
+#include <linux/sched/task.h>
 #include <trace/events/bcachefs.h>
 
 struct range_checks {
@@ -264,10 +265,11 @@ static int bch2_gc_btree(struct bch_fs *c, enum btree_id btree_id)
 
 		gc_pos_set(c, gc_pos_btree_node(b));
 
-		if (max_stale > 32)
+		if (max_stale > 64)
 			bch2_btree_node_rewrite(c, &iter,
 					b->data->keys.seq,
 					BTREE_INSERT_USE_RESERVE|
+					BTREE_INSERT_NOWAIT|
 					BTREE_INSERT_GC_LOCK_HELD);
 		else if (!btree_gc_rewrite_disabled(c) &&
 			 (btree_gc_always_rewrite(c) || max_stale > 16))
@@ -557,7 +559,7 @@ void bch2_gc(struct bch_fs *c)
 out:
 	up_write(&c->gc_lock);
 	trace_gc_end(c);
-	bch2_time_stats_update(&c->btree_gc_time, start_time);
+	bch2_time_stats_update(&c->times[BCH_TIME_btree_gc], start_time);
 
 	/*
 	 * Wake up allocator in case it was waiting for buckets
@@ -813,6 +815,7 @@ static int bch2_coalesce_btree(struct bch_fs *c, enum btree_id btree_id)
 {
 	struct btree_iter iter;
 	struct btree *b;
+	bool kthread = (current->flags & PF_KTHREAD) != 0;
 	unsigned i;
 
 	/* Sliding window of adjacent btree nodes */
@@ -859,7 +862,7 @@ static int bch2_coalesce_btree(struct bch_fs *c, enum btree_id btree_id)
 
 		lock_seq[0] = merge[0]->lock.state.seq;
 
-		if (test_bit(BCH_FS_GC_STOPPING, &c->flags)) {
+		if (kthread && kthread_should_stop()) {
 			bch2_btree_iter_unlock(&iter);
 			return -ESHUTDOWN;
 		}
@@ -958,13 +961,15 @@ static int bch2_gc_thread(void *arg)
 
 void bch2_gc_thread_stop(struct bch_fs *c)
 {
-	set_bit(BCH_FS_GC_STOPPING, &c->flags);
+	struct task_struct *p;
 
-	if (c->gc_thread)
-		kthread_stop(c->gc_thread);
-
+	p = c->gc_thread;
 	c->gc_thread = NULL;
-	clear_bit(BCH_FS_GC_STOPPING, &c->flags);
+
+	if (p) {
+		kthread_stop(p);
+		put_task_struct(p);
+	}
 }
 
 int bch2_gc_thread_start(struct bch_fs *c)
@@ -973,12 +978,13 @@ int bch2_gc_thread_start(struct bch_fs *c)
 
 	BUG_ON(c->gc_thread);
 
-	p = kthread_create(bch2_gc_thread, c, "bcache_gc");
+	p = kthread_create(bch2_gc_thread, c, "bch_gc");
 	if (IS_ERR(p))
 		return PTR_ERR(p);
 
+	get_task_struct(p);
 	c->gc_thread = p;
-	wake_up_process(c->gc_thread);
+	wake_up_process(p);
 	return 0;
 }
 

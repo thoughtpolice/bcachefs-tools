@@ -3,6 +3,72 @@
 
 /*
  * bcachefs on disk data structures
+ *
+ * OVERVIEW:
+ *
+ * There are three main types of on disk data structures in bcachefs (this is
+ * reduced from 5 in bcache)
+ *
+ *  - superblock
+ *  - journal
+ *  - btree
+ *
+ * The btree is the primary structure; most metadata exists as keys in the
+ * various btrees. There are only a small number of btrees, they're not
+ * sharded - we have one btree for extents, another for inodes, et cetera.
+ *
+ * SUPERBLOCK:
+ *
+ * The superblock contains the location of the journal, the list of devices in
+ * the filesystem, and in general any metadata we need in order to decide
+ * whether we can start a filesystem or prior to reading the journal/btree
+ * roots.
+ *
+ * The superblock is extensible, and most of the contents of the superblock are
+ * in variable length, type tagged fields; see struct bch_sb_field.
+ *
+ * Backup superblocks do not reside in a fixed location; also, superblocks do
+ * not have a fixed size. To locate backup superblocks we have struct
+ * bch_sb_layout; we store a copy of this inside every superblock, and also
+ * before the first superblock.
+ *
+ * JOURNAL:
+ *
+ * The journal primarily records btree updates in the order they occurred;
+ * journal replay consists of just iterating over all the keys in the open
+ * journal entries and re-inserting them into the btrees.
+ *
+ * The journal also contains entry types for the btree roots, and blacklisted
+ * journal sequence numbers (see journal_seq_blacklist.c).
+ *
+ * BTREE:
+ *
+ * bcachefs btrees are copy on write b+ trees, where nodes are big (typically
+ * 128k-256k) and log structured. We use struct btree_node for writing the first
+ * entry in a given node (offset 0), and struct btree_node_entry for all
+ * subsequent writes.
+ *
+ * After the header, btree node entries contain a list of keys in sorted order.
+ * Values are stored inline with the keys; since values are variable length (and
+ * keys effectively are variable length too, due to packing) we can't do random
+ * access without building up additional in memory tables in the btree node read
+ * path.
+ *
+ * BTREE KEYS (struct bkey):
+ *
+ * The various btrees share a common format for the key - so as to avoid
+ * switching in fastpath lookup/comparison code - but define their own
+ * structures for the key values.
+ *
+ * The size of a key/value pair is stored as a u8 in units of u64s, so the max
+ * size is just under 2k. The common part also contains a type tag for the
+ * value, and a format field indicating whether the key is packed or not (and
+ * also meant to allow adding new key fields in the future, if desired).
+ *
+ * bkeys, when stored within a btree node, may also be packed. In that case, the
+ * bkey_format in that node is used to unpack it. Packed bkeys mean that we can
+ * be generous with field sizes in the common part of the key format (64 bit
+ * inode number, 64 bit offset, 96 bit version field, etc.) for negligible cost.
  */
 
 #include <asm/types.h>
@@ -44,12 +110,19 @@ struct bkey_format {
 /* Btree keys - all units are in sectors */
 
 struct bpos {
-	/* Word order matches machine byte order */
-#if defined(__LITTLE_ENDIAN)
+	/*
+	 * Word order matches machine byte order - btree code treats a bpos as a
+	 * single large integer, for search/comparison purposes
+	 *
+	 * Note that wherever a bpos is embedded in another on disk data
+	 * structure, it has to be byte swabbed when reading in metadata that
+	 * wasn't written in native endian order:
+	 */
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 	__u32		snapshot;
 	__u64		offset;
 	__u64		inode;
-#elif defined(__BIG_ENDIAN)
+#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 	__u64		inode;
 	__u64		offset;		/* Points to end of extent - sectors */
 	__u32		snapshot;
@@ -83,10 +156,10 @@ struct bch_val {
 };
 
 struct bversion {
-#if defined(__LITTLE_ENDIAN)
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 	__u64		lo;
 	__u32		hi;
-#elif defined(__BIG_ENDIAN)
+#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 	__u32		hi;
 	__u64		lo;
 #endif
@@ -110,13 +183,13 @@ struct bkey {
 	/* Type of the value */
 	__u8		type;
 
-#if defined(__LITTLE_ENDIAN)
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 	__u8		pad[1];
 
 	struct bversion	version;
 	__u32		size;		/* extent size, in sectors */
 	struct bpos	p;
-#elif defined(__BIG_ENDIAN)
+#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 	struct bpos	p;
 	__u32		size;		/* extent size, in sectors */
 	struct bversion	version;
@@ -275,10 +348,10 @@ BKEY_VAL_TYPE(cookie,		KEY_TYPE_COOKIE);
  *
  * If an extent is not checksummed or compressed, when the extent is trimmed we
  * don't have to remember the extent we originally allocated and wrote: we can
- * merely adjust ptr->offset to point to the start of the start of the data that
- * is currently live. The size field in struct bkey records the current (live)
- * size of the extent, and is also used to mean "size of region on disk that we
- * point to" in this case.
+ * merely adjust ptr->offset to point to the start of the data that is currently
+ * live. The size field in struct bkey records the current (live) size of the
+ * extent, and is also used to mean "size of region on disk that we point to" in
+ * this case.
  *
  * Thus an extent that is not checksummed or compressed will consist only of a
  * list of bch_extent_ptrs, with none of the fields in
@@ -446,11 +519,11 @@ struct bch_extent_crc128 {
 #elif defined (__BIG_ENDIAN_BITFIELD)
 	__u64			compression_type:4,
 				csum_type:4,
-				nonce:14,
+				nonce:13,
 				offset:13,
 				_uncompressed_size:13,
 				_compressed_size:13,
-				type:3;
+				type:4;
 #endif
 	struct bch_csum		csum;
 } __attribute__((packed, aligned(8)));
@@ -496,7 +569,7 @@ struct bch_extent_reservation {
 };
 
 union bch_extent_entry {
-#if defined(__LITTLE_ENDIAN) ||  __BITS_PER_LONG == 64
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ ||  __BITS_PER_LONG == 64
 	unsigned long			type;
 #elif __BITS_PER_LONG == 32
 	struct {
@@ -551,9 +624,10 @@ BKEY_VAL_TYPE(reservation,	BCH_RESERVATION);
 	  sizeof(struct bch_extent_ptr)) / sizeof(u64))
 
 /* Maximum possible size of an entire extent value: */
-/* There's a hack in the keylist code that needs to be fixed.. */
 #define BKEY_EXTENT_VAL_U64s_MAX				\
 	(BKEY_EXTENT_PTR_U64s_MAX * (BCH_REPLICAS_MAX + 1))
+
+#define BKEY_PADDED(key)	__BKEY_PADDED(key, BKEY_EXTENT_VAL_U64s_MAX)
 
 /* * Maximum possible size of an entire extent, key + value: */
 #define BKEY_EXTENT_U64s_MAX		(BKEY_U64s + BKEY_EXTENT_VAL_U64s_MAX)
@@ -1377,34 +1451,5 @@ struct btree_node_entry {
 	};
 	};
 } __attribute__((packed, aligned(8)));
-
-/* Obsolete: */
-
-struct prio_set {
-	struct bch_csum		csum;
-
-	__le64			magic;
-	__le32			nonce[3];
-	__le16			version;
-	__le16			flags;
-
-	__u8			encrypted_start[0];
-
-	__le64			next_bucket;
-
-	struct bucket_disk {
-		__le16		prio[2];
-		__u8		gen;
-	} __attribute__((packed)) data[];
-} __attribute__((packed, aligned(8)));
-
-LE32_BITMASK(PSET_CSUM_TYPE,	struct prio_set, flags, 0, 4);
-
-#define PSET_MAGIC		__cpu_to_le64(0x6750e15f87337f91ULL)
-
-static inline __u64 __pset_magic(struct bch_sb *sb)
-{
-	return __le64_to_cpu(__bch2_sb_magic(sb) ^ PSET_MAGIC);
-}
 
 #endif /* _BCACHEFS_FORMAT_H */

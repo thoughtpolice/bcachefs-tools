@@ -54,6 +54,7 @@ static struct bch_dev *bch2_device_lookup(struct bch_fs *c, u64 dev,
 	return ca;
 }
 
+#if 0
 static long bch2_ioctl_assemble(struct bch_ioctl_assemble __user *user_arg)
 {
 	struct bch_ioctl_assemble arg;
@@ -127,14 +128,17 @@ static long bch2_ioctl_incremental(struct bch_ioctl_incremental __user *user_arg
 
 	return 0;
 }
+#endif
 
 static long bch2_global_ioctl(unsigned cmd, void __user *arg)
 {
 	switch (cmd) {
+#if 0
 	case BCH_IOCTL_ASSEMBLE:
 		return bch2_ioctl_assemble(arg);
 	case BCH_IOCTL_INCREMENTAL:
 		return bch2_ioctl_incremental(arg);
+#endif
 	default:
 		return -ENOTTY;
 	}
@@ -148,6 +152,7 @@ static long bch2_ioctl_query_uuid(struct bch_fs *c,
 			    sizeof(c->sb.user_uuid));
 }
 
+#if 0
 static long bch2_ioctl_start(struct bch_fs *c, struct bch_ioctl_start arg)
 {
 	if (arg.flags || arg.pad)
@@ -161,6 +166,7 @@ static long bch2_ioctl_stop(struct bch_fs *c)
 	bch2_fs_stop(c);
 	return 0;
 }
+#endif
 
 static long bch2_ioctl_disk_add(struct bch_fs *c, struct bch_ioctl_disk arg)
 {
@@ -294,18 +300,19 @@ static ssize_t bch2_data_job_read(struct file *file, char __user *buf,
 {
 	struct bch_data_ctx *ctx = file->private_data;
 	struct bch_fs *c = ctx->c;
-	struct bch_ioctl_data_progress p = {
-		.data_type	= ctx->stats.data_type,
-		.btree_id	= ctx->stats.iter.btree_id,
-		.pos		= ctx->stats.iter.pos,
-		.sectors_done	= atomic64_read(&ctx->stats.sectors_seen),
-		.sectors_total	= bch2_fs_sectors_used(c, bch2_fs_usage_read(c)),
+	struct bch_ioctl_data_event e = {
+		.type			= BCH_DATA_EVENT_PROGRESS,
+		.p.data_type		= ctx->stats.data_type,
+		.p.btree_id		= ctx->stats.iter.btree_id,
+		.p.pos			= ctx->stats.iter.pos,
+		.p.sectors_done		= atomic64_read(&ctx->stats.sectors_seen),
+		.p.sectors_total	= bch2_fs_sectors_used(c, bch2_fs_usage_read(c)),
 	};
 
-	if (len != sizeof(p))
+	if (len < sizeof(e))
 		return -EINVAL;
 
-	return copy_to_user(buf, &p, sizeof(p)) ?: sizeof(p);
+	return copy_to_user(buf, &e, sizeof(e)) ?: sizeof(e);
 }
 
 static const struct file_operations bcachefs_data_ops = {
@@ -419,7 +426,7 @@ static long bch2_ioctl_usage(struct bch_fs *c,
 
 		if (ca->dev_idx >= arg.nr_devices) {
 			percpu_ref_put(&ca->ref);
-			return -ENOSPC;
+			return -ERANGE;
 		}
 
 		if (percpu_ref_tryget(&ca->io_ref)) {
@@ -539,10 +546,12 @@ long bch2_fs_ioctl(struct bch_fs *c, unsigned cmd, void __user *arg)
 		return -EPERM;
 
 	switch (cmd) {
+#if 0
 	case BCH_IOCTL_START:
 		BCH_IOCTL(start, struct bch_ioctl_start);
 	case BCH_IOCTL_STOP:
 		return bch2_ioctl_stop(c);
+#endif
 	case BCH_IOCTL_READ_SUPER:
 		BCH_IOCTL(read_super, struct bch_ioctl_read_super);
 	case BCH_IOCTL_DISK_GET_IDX:

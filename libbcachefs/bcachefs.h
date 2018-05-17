@@ -197,7 +197,6 @@
 #include <linux/zstd.h>
 
 #include "bcachefs_format.h"
-#include "bset.h"
 #include "fifo.h"
 #include "opts.h"
 #include "util.h"
@@ -271,26 +270,38 @@ do {									\
 #define BCH_DEBUG_PARAMS() BCH_DEBUG_PARAMS_ALWAYS()
 #endif
 
-#define BCH_TIME_STATS()				\
-	BCH_TIME_STAT(btree_node_mem_alloc)		\
-	BCH_TIME_STAT(btree_gc)				\
-	BCH_TIME_STAT(btree_split)			\
-	BCH_TIME_STAT(btree_sort)			\
-	BCH_TIME_STAT(btree_read)			\
-	BCH_TIME_STAT(data_write)			\
-	BCH_TIME_STAT(data_read)			\
-	BCH_TIME_STAT(data_promote)			\
-	BCH_TIME_STAT(journal_write)			\
-	BCH_TIME_STAT(journal_delay)			\
-	BCH_TIME_STAT(journal_blocked)			\
-	BCH_TIME_STAT(journal_flush_seq)
+#define BCH_TIME_STATS()			\
+	x(btree_node_mem_alloc)			\
+	x(btree_gc)				\
+	x(btree_split)				\
+	x(btree_sort)				\
+	x(btree_read)				\
+	x(btree_lock_contended_read)		\
+	x(btree_lock_contended_intent)		\
+	x(btree_lock_contended_write)		\
+	x(data_write)				\
+	x(data_read)				\
+	x(data_promote)				\
+	x(journal_write)			\
+	x(journal_delay)			\
+	x(journal_blocked)			\
+	x(journal_flush_seq)
+
+enum bch_time_stats {
+#define x(name) BCH_TIME_##name,
+	BCH_TIME_STATS()
+#undef x
+	BCH_TIME_STAT_NR
+};
 
 #include "alloc_types.h"
+#include "btree_types.h"
 #include "buckets_types.h"
 #include "clock_types.h"
 #include "journal_types.h"
 #include "keylist_types.h"
 #include "quota_types.h"
+#include "rebalance_types.h"
 #include "super_types.h"
 
 /*
@@ -372,7 +383,7 @@ struct bch_dev {
 	struct bch_dev_usage	usage_cached;
 
 	/* Allocator: */
-	struct task_struct	*alloc_thread;
+	struct task_struct __rcu *alloc_thread;
 
 	/*
 	 * free: Buckets that are ready to be used
@@ -447,7 +458,6 @@ enum {
 	/* shutdown: */
 	BCH_FS_EMERGENCY_RO,
 	BCH_FS_WRITE_DISABLE_COMPLETE,
-	BCH_FS_GC_STOPPING,
 
 	/* errors: */
 	BCH_FS_ERROR,
@@ -570,12 +580,6 @@ struct bch_fs {
 	struct delayed_work	pd_controllers_update;
 	unsigned		pd_controllers_update_seconds;
 
-	/* REBALANCE */
-	struct task_struct	*rebalance_thread;
-	struct bch_pd_controller rebalance_pd;
-
-	atomic64_t		rebalance_work_unknown_dev;
-
 	struct bch_devs_mask	rw_devs[BCH_DATA_NR];
 
 	u64			capacity; /* sectors */
@@ -664,6 +668,9 @@ struct bch_fs {
 
 	atomic64_t		key_version;
 
+	/* REBALANCE */
+	struct bch_fs_rebalance	rebalance;
+
 	/* VFS IO PATH - fs-io.c */
 	struct bio_set		writepage_bioset;
 	struct bio_set		dio_write_bioset;
@@ -714,18 +721,13 @@ struct bch_fs {
 
 	unsigned		btree_gc_periodic:1;
 	unsigned		copy_gc_enabled:1;
-	unsigned		rebalance_enabled:1;
-	unsigned		rebalance_percent;
 	bool			promote_whole_extents;
 
 #define BCH_DEBUG_PARAM(name, description) bool name;
 	BCH_DEBUG_PARAMS_ALL()
 #undef BCH_DEBUG_PARAM
 
-#define BCH_TIME_STAT(name)				\
-	struct time_stats	name##_time;
-	BCH_TIME_STATS()
-#undef BCH_TIME_STAT
+	struct time_stats	times[BCH_TIME_STAT_NR];
 };
 
 static inline void bch2_set_ra_pages(struct bch_fs *c, unsigned ra_pages)

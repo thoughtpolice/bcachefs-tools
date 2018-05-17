@@ -6,6 +6,7 @@
  */
 
 #include "bcachefs.h"
+#include "btree_cache.h"
 #include "bset.h"
 #include "eytzinger.h"
 #include "util.h"
@@ -438,6 +439,10 @@ void bch2_btree_keys_free(struct btree *b)
 	b->aux_data = NULL;
 }
 
+#ifndef PAGE_KERNEL_EXEC
+# define PAGE_KERNEL_EXEC PAGE_KERNEL
+#endif
+
 int bch2_btree_keys_alloc(struct btree *b, unsigned page_order, gfp_t gfp)
 {
 	b->page_order	= page_order;
@@ -672,7 +677,7 @@ static inline unsigned bkey_mantissa(const struct bkey_packed *k,
 	 * (and then the bits we want are at the high end, so we shift them
 	 * back down):
 	 */
-#ifdef __LITTLE_ENDIAN
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 	v >>= f->exponent & 7;
 #else
 	v >>= 64 - (f->exponent & 7) - (idx < BFLOAT_32BIT_NR ? 32 : 16);
@@ -761,7 +766,7 @@ static void make_bfloat(struct btree *b, struct bset_tree *t,
 	 * Then we calculate the actual shift value, from the start of the key
 	 * (k->_data), to get the key bits starting at exponent:
 	 */
-#ifdef __LITTLE_ENDIAN
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 	shift = (int) (b->format.key_u64s * 64 - b->nr_key_bits) + exponent;
 
 	EBUG_ON(shift + bits > b->format.key_u64s * 64);
@@ -964,10 +969,14 @@ void bch2_bset_init_first(struct btree *b, struct bset *i)
 	set_btree_bset(b, t, i);
 }
 
-void bch2_bset_init_next(struct btree *b, struct bset *i)
+void bch2_bset_init_next(struct bch_fs *c, struct btree *b,
+			 struct btree_node_entry *bne)
 {
+	struct bset *i = &bne->keys;
 	struct bset_tree *t;
 
+	BUG_ON(bset_byte_offset(b, bne) >= btree_bytes(c));
+	BUG_ON((void *) bne < (void *) btree_bkey_last(b, bset_tree_last(b)));
 	BUG_ON(b->nsets >= MAX_BSETS);
 
 	memset(i, 0, sizeof(*i));

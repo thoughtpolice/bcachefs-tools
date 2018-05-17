@@ -8,7 +8,7 @@ struct task_struct;
 struct workqueue_struct;
 struct work_struct;
 typedef void (*work_func_t)(struct work_struct *work);
-void delayed_work_timer_fn(unsigned long __data);
+void delayed_work_timer_fn(struct timer_list *);
 
 #define work_data_bits(work) ((unsigned long *)(&(work)->data))
 
@@ -44,9 +44,7 @@ struct delayed_work {
 #define INIT_DELAYED_WORK(_work, _func)					\
 	do {								\
 		INIT_WORK(&(_work)->work, (_func));			\
-		__setup_timer(&(_work)->timer, delayed_work_timer_fn,	\
-			      (unsigned long)(_work),			\
-			      TIMER_IRQSAFE);				\
+		timer_setup(&(_work)->timer, delayed_work_timer_fn, 0);	\
 	} while (0)
 
 static inline struct delayed_work *to_delayed_work(struct work_struct *work)

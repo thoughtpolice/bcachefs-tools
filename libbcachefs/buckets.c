@@ -555,9 +555,9 @@ static void bch2_mark_pointer(struct bch_fs *c,
 		return;
 	}
 
-	v = READ_ONCE(g->_mark.counter);
+	v = atomic64_read(&g->_mark.v);
 	do {
-		new.counter = old.counter = v;
+		new.v.counter = old.v.counter = v;
 		saturated = 0;
 
 		/*
@@ -600,9 +600,9 @@ static void bch2_mark_pointer(struct bch_fs *c,
 			g->_mark = new;
 			break;
 		}
-	} while ((v = cmpxchg(&g->_mark.counter,
-			      old.counter,
-			      new.counter)) != old.counter);
+	} while ((v = atomic64_cmpxchg(&g->_mark.v,
+			      old.v.counter,
+			      new.v.counter)) != old.v.counter);
 
 	bch2_dev_usage_update(c, ca, old, new);
 
@@ -957,7 +957,8 @@ void bch2_dev_buckets_free(struct bch_dev *ca)
 	kvpfree(ca->buckets_dirty,
 		BITS_TO_LONGS(ca->mi.nbuckets) * sizeof(unsigned long));
 	kvpfree(ca->oldest_gens, ca->mi.nbuckets * sizeof(u8));
-	kvpfree(ca->buckets,	 sizeof(struct bucket_array) +
+	kvpfree(rcu_dereference_protected(ca->buckets, 1),
+		sizeof(struct bucket_array) +
 		ca->mi.nbuckets * sizeof(struct bucket));
 
 	free_percpu(ca->usage_percpu);

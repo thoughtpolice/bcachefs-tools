@@ -55,9 +55,10 @@ bool queue_work(struct workqueue_struct *wq, struct work_struct *work)
 	return ret;
 }
 
-void delayed_work_timer_fn(unsigned long __data)
+void delayed_work_timer_fn(struct timer_list *timer)
 {
-	struct delayed_work *dwork = (struct delayed_work *) __data;
+	struct delayed_work *dwork =
+		container_of(timer, struct delayed_work, timer);
 
 	pthread_mutex_lock(&wq_lock);
 	__queue_work(dwork->wq, &dwork->work);
@@ -71,8 +72,7 @@ static void __queue_delayed_work(struct workqueue_struct *wq,
 	struct timer_list *timer = &dwork->timer;
 	struct work_struct *work = &dwork->work;
 
-	BUG_ON(timer->function != delayed_work_timer_fn ||
-	       timer->data != (unsigned long)dwork);
+	BUG_ON(timer->function != delayed_work_timer_fn);
 	BUG_ON(timer_pending(timer));
 	BUG_ON(!list_empty(&work->entry));
 

@@ -15,6 +15,7 @@
 #include "cmds.h"
 #include "libbcachefs.h"
 
+#if 0
 int cmd_run(int argc, char *argv[])
 {
 	return 0;
@@ -29,3 +30,4 @@ int cmd_stop(int argc, char *argv[])
 	xioctl(fs.ioctl_fd, BCH_IOCTL_STOP);
 	return 0;
 }
+#endif

@@ -203,7 +203,7 @@ bool bch2_is_zero(const void *_p, size_t n)
 	return true;
 }
 
-void bch2_quantiles_update(struct quantiles *q, u64 v)
+static void bch2_quantiles_update(struct quantiles *q, u64 v)
 {
 	unsigned i = 0;
 
@@ -569,6 +569,23 @@ start:		bv->bv_len	= min_t(size_t, PAGE_SIZE - bv->bv_offset,
 	}
 }
 
+int bch2_bio_alloc_pages(struct bio *bio, gfp_t gfp_mask)
+{
+	int i;
+	struct bio_vec *bv;
+
+	bio_for_each_segment_all(bv, bio, i) {
+		bv->bv_page = alloc_page(gfp_mask);
+		if (!bv->bv_page) {
+			while (--bv >= bio->bi_io_vec)
+				__free_page(bv->bv_page);
+			return -ENOMEM;
+		}
+	}
+
+	return 0;
+}
+
 size_t bch2_rand_range(size_t max)
 {
 	size_t rand;
@@ -771,18 +788,26 @@ void sort_cmp_size(void *base, size_t num, size_t size,
 	}
 }
 
-void mempool_free_vp(void *element, void *pool_data)
+static void mempool_free_vp(void *element, void *pool_data)
 {
 	size_t size = (size_t) pool_data;
 
 	vpfree(element, size);
 }
 
-void *mempool_alloc_vp(gfp_t gfp_mask, void *pool_data)
+static void *mempool_alloc_vp(gfp_t gfp_mask, void *pool_data)
 {
 	size_t size = (size_t) pool_data;
 
 	return vpmalloc(size, gfp_mask);
+}
+
+int mempool_init_kvpmalloc_pool(mempool_t *pool, int min_nr, size_t size)
+{
+	return size < PAGE_SIZE
+		? mempool_init_kmalloc_pool(pool, min_nr, size)
+		: mempool_init(pool, min_nr, mempool_alloc_vp,
+			       mempool_free_vp, (void *) size);
 }
 
 #if 0

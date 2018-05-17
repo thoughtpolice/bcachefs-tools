@@ -237,7 +237,7 @@ static void __btree_node_free(struct bch_fs *c, struct btree *b,
 
 	clear_btree_node_noevict(b);
 
-	six_lock_write(&b->lock);
+	btree_node_lock_type(c, b, SIX_LOCK_write);
 
 	bch2_btree_node_hash_remove(&c->btree_cache, b);
 
@@ -622,7 +622,7 @@ static void btree_update_nodes_reachable(struct closure *cl)
 		 * b->will_make_reachable prevented it from being written, so
 		 * write it now if it needs to be written:
 		 */
-		six_lock_read(&b->lock);
+		btree_node_lock_type(c, b, SIX_LOCK_read);
 		bch2_btree_node_write_cond(c, b, btree_node_need_write(b));
 		six_unlock_read(&b->lock);
 		mutex_lock(&c->btree_interior_update_lock);
@@ -647,8 +647,10 @@ static void btree_update_wait_on_journal(struct closure *cl)
 	ret = bch2_journal_open_seq_async(&c->journal, as->journal_seq, cl);
 	if (ret < 0)
 		goto err;
-	if (!ret)
+	if (!ret) {
 		continue_at(cl, btree_update_wait_on_journal, system_wq);
+		return;
+	}
 
 	bch2_journal_flush_seq_async(&c->journal, as->journal_seq, cl);
 err:
@@ -679,7 +681,7 @@ retry:
 
 		if (!six_trylock_read(&b->lock)) {
 			mutex_unlock(&c->btree_interior_update_lock);
-			six_lock_read(&b->lock);
+			btree_node_lock_type(c, b, SIX_LOCK_read);
 			six_unlock_read(&b->lock);
 			goto retry;
 		}
@@ -720,7 +722,7 @@ retry:
 
 		if (!six_trylock_read(&b->lock)) {
 			mutex_unlock(&c->btree_interior_update_lock);
-			six_lock_read(&b->lock);
+			btree_node_lock_type(c, b, SIX_LOCK_read);
 			six_unlock_read(&b->lock);
 			goto retry;
 		}
@@ -1456,7 +1458,7 @@ static void btree_split(struct btree_update *as, struct btree *b,
 		bch2_btree_iter_node_replace(iter, n2);
 	bch2_btree_iter_node_replace(iter, n1);
 
-	bch2_time_stats_update(&c->btree_split_time, start_time);
+	bch2_time_stats_update(&c->times[BCH_TIME_btree_split], start_time);
 }
 
 static void
@@ -1795,8 +1797,8 @@ static int __btree_node_rewrite(struct bch_fs *c, struct btree_iter *iter,
 	bch2_btree_node_write(c, n, SIX_LOCK_intent);
 
 	if (parent) {
-		bch2_btree_insert_node(as, parent, iter,
-				       &keylist_single(&n->key));
+		bch2_keylist_add(&as->parent_keys, &n->key);
+		bch2_btree_insert_node(as, parent, iter, &as->parent_keys);
 	} else {
 		bch2_btree_set_root(as, n, iter);
 	}

@@ -68,9 +68,9 @@ struct closure;
 #define __flatten
 #endif
 
-#ifdef __LITTLE_ENDIAN
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 #define CPU_BIG_ENDIAN		0
-#else
+#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 #define CPU_BIG_ENDIAN		1
 #endif
 
@@ -113,14 +113,7 @@ static inline void *kvpmalloc(size_t size, gfp_t gfp_mask)
 		: vpmalloc(size, gfp_mask);
 }
 
-void mempool_free_vp(void *element, void *pool_data);
-void *mempool_alloc_vp(gfp_t gfp_mask, void *pool_data);
-
-static inline int mempool_init_vp_pool(mempool_t *pool, int min_nr, size_t size)
-{
-	return mempool_init(pool, min_nr, mempool_alloc_vp,
-			    mempool_free_vp, (void *) size);
-}
+int mempool_init_kvpmalloc_pool(mempool_t *, int, size_t);
 
 #define HEAP(type)							\
 struct {								\
@@ -610,6 +603,7 @@ static inline unsigned fract_exp_two(unsigned x, unsigned fract_bits)
 }
 
 void bch2_bio_map(struct bio *bio, void *base);
+int bch2_bio_alloc_pages(struct bio *bio, gfp_t gfp_mask);
 
 static inline sector_t bdev_sectors(struct block_device *bdev)
 {

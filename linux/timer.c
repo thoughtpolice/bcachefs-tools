@@ -273,7 +273,7 @@ static int timer_thread(void *arg)
 			BUG_ON(!timer_running());
 
 			pthread_mutex_unlock(&timer_lock);
-			timer->function(timer->data);
+			timer->function(timer);
 			pthread_mutex_lock(&timer_lock);
 
 			timer_seq++;

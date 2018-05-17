@@ -33,11 +33,11 @@
 #include "migrate.h"
 #include "movinggc.h"
 #include "quota.h"
+#include "rebalance.h"
 #include "replicas.h"
 #include "super.h"
 #include "super-io.h"
 #include "sysfs.h"
-#include "tier.h"
 
 #include <linux/backing-dev.h>
 #include <linux/blkdev.h>
@@ -398,10 +398,10 @@ err:
 
 static void bch2_fs_free(struct bch_fs *c)
 {
-#define BCH_TIME_STAT(name)				\
-	bch2_time_stats_exit(&c->name##_time);
-	BCH_TIME_STATS()
-#undef BCH_TIME_STAT
+	unsigned i;
+
+	for (i = 0; i < BCH_TIME_STAT_NR; i++)
+		bch2_time_stats_exit(&c->times[i]);
 
 	bch2_fs_quota_exit(c);
 	bch2_fs_fsio_exit(c);
@@ -565,10 +565,8 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 
 	init_rwsem(&c->gc_lock);
 
-#define BCH_TIME_STAT(name)				\
-	bch2_time_stats_init(&c->name##_time);
-	BCH_TIME_STATS()
-#undef BCH_TIME_STAT
+	for (i = 0; i < BCH_TIME_STAT_NR; i++)
+		bch2_time_stats_init(&c->times[i]);
 
 	bch2_fs_allocator_init(c);
 	bch2_fs_rebalance_init(c);
@@ -592,14 +590,13 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	seqcount_init(&c->gc_pos_lock);
 
 	c->copy_gc_enabled		= 1;
-	c->rebalance_enabled		= 1;
-	c->rebalance_percent		= 10;
+	c->rebalance.enabled		= 1;
 	c->promote_whole_extents	= true;
 
-	c->journal.write_time	= &c->journal_write_time;
-	c->journal.delay_time	= &c->journal_delay_time;
-	c->journal.blocked_time	= &c->journal_blocked_time;
-	c->journal.flush_seq_time = &c->journal_flush_seq_time;
+	c->journal.write_time	= &c->times[BCH_TIME_journal_write];
+	c->journal.delay_time	= &c->times[BCH_TIME_journal_delay];
+	c->journal.blocked_time	= &c->times[BCH_TIME_journal_blocked];
+	c->journal.flush_seq_time = &c->times[BCH_TIME_journal_flush_seq];
 
 	bch2_fs_btree_cache_init_early(&c->btree_cache);
 
@@ -647,7 +644,8 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 			BIOSET_NEED_BVECS) ||
 	    !(c->usage_percpu = alloc_percpu(struct bch_fs_usage)) ||
 	    lg_lock_init(&c->usage_lock) ||
-	    mempool_init_vp_pool(&c->btree_bounce_pool, 1, btree_bytes(c)) ||
+	    mempool_init_kvpmalloc_pool(&c->btree_bounce_pool, 1,
+					btree_bytes(c)) ||
 	    bch2_io_clock_init(&c->io_clock[READ]) ||
 	    bch2_io_clock_init(&c->io_clock[WRITE]) ||
 	    bch2_fs_journal_init(&c->journal) ||

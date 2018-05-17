@@ -6,27 +6,22 @@
 
 struct timer_list {
 	unsigned long		expires;
-	void			(*function)(unsigned long);
-	unsigned long		data;
+	void			(*function)(struct timer_list *timer);
 	bool			pending;
 };
 
-static inline void init_timer(struct timer_list *timer)
+static inline void timer_setup(struct timer_list *timer,
+			       void (*func)(struct timer_list *),
+			       unsigned int flags)
 {
 	memset(timer, 0, sizeof(*timer));
+	timer->function = func;
 }
 
-#define __init_timer(_timer, _flags)	init_timer(_timer)
+#define timer_setup_on_stack(timer, callback, flags)			\
+	timer_setup(timer, callback, flags)
 
-#define __setup_timer(_timer, _fn, _data, _flags)			\
-	do {								\
-		__init_timer((_timer), (_flags));			\
-		(_timer)->function = (_fn);				\
-		(_timer)->data = (_data);				\
-	} while (0)
-
-#define setup_timer(timer, fn, data)					\
-	__setup_timer((timer), (fn), (data), 0)
+#define destroy_timer_on_stack(timer) do {} while (0)
 
 static inline int timer_pending(const struct timer_list *timer)
 {
@@ -36,8 +31,9 @@ static inline int timer_pending(const struct timer_list *timer)
 int del_timer(struct timer_list * timer);
 int del_timer_sync(struct timer_list *timer);
 
+#define del_singleshot_timer_sync(timer) del_timer_sync(timer)
+
 int mod_timer(struct timer_list *timer, unsigned long expires);
-//extern int mod_timer_pending(struct timer_list *timer, unsigned long expires);
 
 static inline void add_timer(struct timer_list *timer)
 {

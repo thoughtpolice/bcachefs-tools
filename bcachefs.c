@@ -36,10 +36,12 @@ static void usage(void)
 	     "  fsck                 Check an existing filesystem for errors\n"
 	     "\n"
 	     "Startup/shutdown, assembly of multi device filesystems:\n"
+#if 0
 	     "  assemble             Assemble an existing multi device filesystem\n"
 	     "  incremental          Incrementally assemble an existing multi device filesystem\n"
 	     "  run                  Start a partially assembled filesystem\n"
 	     "  stop	               Stop a running filesystem\n"
+#endif
 	     "\n"
 	     "Commands for managing a running filesystem:\n"
 	     "  fs usage             Show disk usage\n"
@@ -150,6 +152,7 @@ int main(int argc, char *argv[])
 	if (!strcmp(cmd, "fsck"))
 		return cmd_fsck(argc, argv);
 
+#if 0
 	if (!strcmp(cmd, "assemble"))
 		return cmd_assemble(argc, argv);
 	if (!strcmp(cmd, "incremental"))
@@ -158,6 +161,7 @@ int main(int argc, char *argv[])
 		return cmd_run(argc, argv);
 	if (!strcmp(cmd, "stop"))
 		return cmd_stop(argc, argv);
+#endif
 
 	if (!strcmp(cmd, "fs"))
 		return fs_cmds(argc, argv);

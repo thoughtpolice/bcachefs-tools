@@ -24,9 +24,9 @@
 #include "keylist.h"
 #include "move.h"
 #include "opts.h"
+#include "rebalance.h"
 #include "replicas.h"
 #include "super-io.h"
-#include "tier.h"
 
 #include <linux/blkdev.h>
 #include <linux/sort.h>
@@ -183,8 +183,8 @@ rw_attribute(copy_gc_enabled);
 sysfs_pd_controller_attribute(copy_gc);
 
 rw_attribute(rebalance_enabled);
-rw_attribute(rebalance_percent);
 sysfs_pd_controller_attribute(rebalance);
+read_attribute(rebalance_work);
 rw_attribute(promote_whole_extents);
 
 rw_attribute(pd_controllers_update_seconds);
@@ -198,11 +198,11 @@ read_attribute(data_replicas_have);
 	BCH_DEBUG_PARAMS()
 #undef BCH_DEBUG_PARAM
 
-#define BCH_TIME_STAT(_name)						\
+#define x(_name)						\
 	static struct attribute sysfs_time_stat_##_name =		\
 		{ .name = #_name, .mode = S_IRUGO };
 	BCH_TIME_STATS()
-#undef BCH_TIME_STAT
+#undef x
 
 static struct attribute sysfs_state_rw = {
 	.name = "state",
@@ -340,9 +340,11 @@ SHOW(bch2_fs)
 	sysfs_print(pd_controllers_update_seconds,
 		    c->pd_controllers_update_seconds);
 
-	sysfs_printf(rebalance_enabled,		"%i", c->rebalance_enabled);
-	sysfs_print(rebalance_percent,		c->rebalance_percent);
-	sysfs_pd_controller_show(rebalance,	&c->rebalance_pd); /* XXX */
+	sysfs_printf(rebalance_enabled,		"%i", c->rebalance.enabled);
+	sysfs_pd_controller_show(rebalance,	&c->rebalance.pd); /* XXX */
+
+	if (attr == &sysfs_rebalance_work)
+		return bch2_rebalance_work_show(c, buf);
 
 	sysfs_print(promote_whole_extents,	c->promote_whole_extents);
 
@@ -404,7 +406,7 @@ STORE(__bch2_fs)
 	}
 
 	if (attr == &sysfs_rebalance_enabled) {
-		ssize_t ret = strtoul_safe(buf, c->rebalance_enabled)
+		ssize_t ret = strtoul_safe(buf, c->rebalance.enabled)
 			?: (ssize_t) size;
 
 		rebalance_wakeup(c);
@@ -413,9 +415,7 @@ STORE(__bch2_fs)
 
 	sysfs_strtoul(pd_controllers_update_seconds,
 		      c->pd_controllers_update_seconds);
-
-	sysfs_strtoul(rebalance_percent,	c->rebalance_percent);
-	sysfs_pd_controller_store(rebalance,	&c->rebalance_pd);
+	sysfs_pd_controller_store(rebalance,	&c->rebalance.pd);
 
 	sysfs_strtoul(promote_whole_extents,	c->promote_whole_extents);
 
@@ -474,7 +474,6 @@ struct attribute *bch2_fs_files[] = {
 	&sysfs_journal_write_delay_ms,
 	&sysfs_journal_reclaim_delay_ms,
 
-	&sysfs_rebalance_percent,
 	&sysfs_promote_whole_extents,
 
 	&sysfs_compression_stats,
@@ -513,8 +512,11 @@ struct attribute *bch2_fs_internal_files[] = {
 	&sysfs_prune_cache,
 
 	&sysfs_copy_gc_enabled,
+
 	&sysfs_rebalance_enabled,
+	&sysfs_rebalance_work,
 	sysfs_pd_controller_files(rebalance),
+
 	&sysfs_internal_uuid,
 
 #define BCH_DEBUG_PARAM(name, description) &sysfs_##name,
@@ -613,11 +615,12 @@ SHOW(bch2_fs_time_stats)
 {
 	struct bch_fs *c = container_of(kobj, struct bch_fs, time_stats);
 
-#define BCH_TIME_STAT(name)						\
+#define x(name)						\
 	if (attr == &sysfs_time_stat_##name)				\
-		return bch2_time_stats_print(&c->name##_time, buf, PAGE_SIZE);
+		return bch2_time_stats_print(&c->times[BCH_TIME_##name],\
+					     buf, PAGE_SIZE);
 	BCH_TIME_STATS()
-#undef BCH_TIME_STAT
+#undef x
 
 	return 0;
 }
@@ -629,10 +632,10 @@ STORE(bch2_fs_time_stats)
 SYSFS_OPS(bch2_fs_time_stats);
 
 struct attribute *bch2_fs_time_stats_files[] = {
-#define BCH_TIME_STAT(name)						\
+#define x(name)						\
 	&sysfs_time_stat_##name,
 	BCH_TIME_STATS()
-#undef BCH_TIME_STAT
+#undef x
 	NULL
 };
 

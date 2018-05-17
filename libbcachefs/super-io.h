@@ -73,11 +73,6 @@ static inline __u64 jset_magic(struct bch_fs *c)
 	return __le64_to_cpu(bch2_sb_magic(c) ^ JSET_MAGIC);
 }
 
-static inline __u64 pset_magic(struct bch_fs *c)
-{
-	return __le64_to_cpu(bch2_sb_magic(c) ^ PSET_MAGIC);
-}
-
 static inline __u64 bset_magic(struct bch_fs *c)
 {
 	return __le64_to_cpu(bch2_sb_magic(c) ^ BSET_MAGIC);
@@ -135,5 +130,8 @@ static inline struct bch_member_cpu bch2_mi_to_cpu(struct bch_member *mi)
 		.valid		= !bch2_is_zero(mi->uuid.b, sizeof(uuid_le)),
 	};
 }
+
+size_t bch2_sb_field_to_text(char *, size_t, struct bch_sb *,
+			     struct bch_sb_field *);
 
 #endif /* _BCACHEFS_SUPER_IO_H */

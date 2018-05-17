@@ -40,14 +40,22 @@ void schedule(void)
 		      v, NULL, NULL, 0);
 }
 
-static void process_timeout(unsigned long __data)
+struct process_timer {
+	struct timer_list timer;
+	struct task_struct *task;
+};
+
+static void process_timeout(struct timer_list *t)
 {
-	wake_up_process((struct task_struct *)__data);
+	struct process_timer *timeout =
+		container_of(t, struct process_timer, timer);
+
+	wake_up_process(timeout->task);
 }
 
 long schedule_timeout(long timeout)
 {
-	struct timer_list timer;
+	struct process_timer timer;
 	unsigned long expire;
 
 	switch (timeout)
@@ -80,10 +88,11 @@ long schedule_timeout(long timeout)
 
 	expire = timeout + jiffies;
 
-	setup_timer(&timer, process_timeout, (unsigned long)current);
-	mod_timer(&timer, expire);
+	timer.task = current;
+	timer_setup_on_stack(&timer.timer, process_timeout, 0);
+	mod_timer(&timer.timer, expire);
 	schedule();
-	del_timer_sync(&timer);
+	del_timer_sync(&timer.timer);
 
 	timeout = expire - jiffies;
 out:

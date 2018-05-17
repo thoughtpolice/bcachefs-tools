@@ -306,16 +306,16 @@ static void move_write(struct closure *cl)
 {
 	struct moving_io *io = container_of(cl, struct moving_io, cl);
 
-	if (likely(!io->rbio.bio.bi_status &&
-		   !io->rbio.hole)) {
-		bch2_migrate_read_done(&io->write, &io->rbio);
-
-		atomic_add(io->write_sectors, &io->write.ctxt->write_sectors);
-		closure_call(&io->write.op.cl, bch2_write, NULL, cl);
-		continue_at(cl, move_write_done, NULL);
+	if (unlikely(io->rbio.bio.bi_status || io->rbio.hole)) {
+		closure_return_with_destructor(cl, move_free);
+		return;
 	}
 
-	closure_return_with_destructor(cl, move_free);
+	bch2_migrate_read_done(&io->write, &io->rbio);
+
+	atomic_add(io->write_sectors, &io->write.ctxt->write_sectors);
+	closure_call(&io->write.op.cl, bch2_write, NULL, cl);
+	continue_at(cl, move_write_done, NULL);
 }
 
 static inline struct moving_io *next_pending_write(struct moving_context *ctxt)
@@ -411,7 +411,7 @@ static int bch2_move_extent(struct bch_fs *c,
 	io->write.op.wbio.bio.bi_iter.bi_size = sectors << 9;
 
 	bch2_bio_map(&io->write.op.wbio.bio, NULL);
-	if (bio_alloc_pages(&io->write.op.wbio.bio, GFP_KERNEL))
+	if (bch2_bio_alloc_pages(&io->write.op.wbio.bio, GFP_KERNEL))
 		goto err_free;
 
 	io->rbio.opts = io_opts;

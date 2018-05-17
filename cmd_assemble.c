@@ -11,6 +11,7 @@
 #include "cmds.h"
 #include "libbcachefs.h"
 
+#if 0
 int cmd_assemble(int argc, char *argv[])
 {
 	unsigned nr_devs = argc - 1;
@@ -26,7 +27,7 @@ int cmd_assemble(int argc, char *argv[])
 
 	unsigned i;
 	for (i = 0; i < nr_devs; i++)
-		assemble->devs[i] = (__u64) argv[i + 1];
+		assemble->devs[i] = (unsigned long) argv[i + 1];
 
 	xioctl(bcachectl_open(), BCH_IOCTL_ASSEMBLE, assemble);
 	return 0;
@@ -38,9 +39,10 @@ int cmd_incremental(int argc, char *argv[])
 		die("Please supply exactly one device");
 
 	struct bch_ioctl_incremental incremental = {
-		.dev = (__u64) argv[1],
+		.dev = (unsigned long) argv[1],
 	};
 
 	xioctl(bcachectl_open(), BCH_IOCTL_INCREMENTAL, &incremental);
 	return 0;
 }
+#endif

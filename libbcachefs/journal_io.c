@@ -324,7 +324,7 @@ struct jset_entry_ops {
 			struct jset_entry *, int);
 };
 
-const struct jset_entry_ops bch2_jset_entry_ops[] = {
+static const struct jset_entry_ops bch2_jset_entry_ops[] = {
 #define x(f, nr)						\
 	[BCH_JSET_ENTRY_##f]	= (struct jset_entry_ops) {	\
 		.validate	= journal_entry_validate_##f,	\
@@ -696,6 +696,7 @@ out:
 	kvpfree(buf.data, buf.size);
 	percpu_ref_put(&ca->io_ref);
 	closure_return(cl);
+	return;
 err:
 	mutex_lock(&jlist->lock);
 	jlist->ret = ret;
@@ -716,19 +717,6 @@ void bch2_journal_entries_free(struct list_head *list)
 	}
 }
 
-static inline bool journal_has_keys(struct list_head *list)
-{
-	struct journal_replay *i;
-	struct jset_entry *entry;
-	struct bkey_i *k, *_n;
-
-	list_for_each_entry(i, list, list)
-		for_each_jset_key(k, _n, entry, &i->j)
-			return true;
-
-	return false;
-}
-
 int bch2_journal_read(struct bch_fs *c, struct list_head *list)
 {
 	struct journal *j = &c->journal;
@@ -737,8 +725,9 @@ int bch2_journal_read(struct bch_fs *c, struct list_head *list)
 	struct journal_entry_pin_list *p;
 	struct bch_dev *ca;
 	u64 cur_seq, end_seq, seq;
-	unsigned iter, keys = 0, entries = 0;
-	size_t nr;
+	unsigned iter;
+	size_t entries = 0;
+	u64 nr, keys = 0;
 	bool degraded = false;
 	int ret = 0;
 
@@ -772,9 +761,6 @@ int bch2_journal_read(struct bch_fs *c, struct list_head *list)
 		return BCH_FSCK_REPAIR_IMPOSSIBLE;
 	}
 
-	fsck_err_on(c->sb.clean && journal_has_keys(list), c,
-		    "filesystem marked clean but journal has keys to replay");
-
 	list_for_each_entry(i, list, list) {
 		ret = jset_validate_entries(c, &i->j, READ);
 		if (ret)
@@ -797,15 +783,27 @@ int bch2_journal_read(struct bch_fs *c, struct list_head *list)
 		}
 	}
 
+	list_for_each_entry(i, list, list) {
+		struct jset_entry *entry;
+		struct bkey_i *k, *_n;
+
+		for_each_jset_key(k, _n, entry, &i->j)
+			keys++;
+	}
+
 	i = list_last_entry(list, struct journal_replay, list);
 
 	nr = le64_to_cpu(i->j.seq) - le64_to_cpu(i->j.last_seq) + 1;
+
+	fsck_err_on(c->sb.clean && (keys || nr > 1), c,
+		    "filesystem marked clean but journal not empty (%llu keys in %llu entries)",
+		    keys, nr);
 
 	if (nr > j->pin.size) {
 		free_fifo(&j->pin);
 		init_fifo(&j->pin, roundup_pow_of_two(nr), GFP_KERNEL);
 		if (!j->pin.data) {
-			bch_err(c, "error reallocating journal fifo (%zu open entries)", nr);
+			bch_err(c, "error reallocating journal fifo (%llu open entries)", nr);
 			return -ENOMEM;
 		}
 	}
@@ -844,8 +842,6 @@ int bch2_journal_read(struct bch_fs *c, struct list_head *list)
 				struct journal_replay, list)->j.seq);
 
 	list_for_each_entry(i, list, list) {
-		struct jset_entry *entry;
-		struct bkey_i *k, *_n;
 		bool blacklisted;
 
 		mutex_lock(&j->blacklist_lock);
@@ -867,13 +863,10 @@ int bch2_journal_read(struct bch_fs *c, struct list_head *list)
 			journal_last_seq(j), end_seq);
 
 		cur_seq = le64_to_cpu(i->j.seq) + 1;
-
-		for_each_jset_key(k, _n, entry, &i->j)
-			keys++;
 		entries++;
 	}
 
-	bch_info(c, "journal read done, %i keys in %i entries, seq %llu",
+	bch_info(c, "journal read done, %llu keys in %zu entries, seq %llu",
 		 keys, entries, journal_cur_seq(j));
 fsck_err:
 	return ret;
@@ -1361,6 +1354,7 @@ void bch2_journal_write(struct closure *cl)
 		bch_err(c, "Unable to allocate journal write");
 		bch2_fatal_error(c);
 		continue_at(cl, journal_write_done, system_highpri_wq);
+		return;
 	}
 
 	/*
@@ -1417,6 +1411,7 @@ no_io:
 		ptr->offset += sectors;
 
 	continue_at(cl, journal_write_done, system_highpri_wq);
+	return;
 err:
 	bch2_inconsistent_error(c);
 	continue_at(cl, journal_write_done, system_highpri_wq);

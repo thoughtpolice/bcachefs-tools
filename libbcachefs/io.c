@@ -21,10 +21,10 @@
 #include "journal.h"
 #include "keylist.h"
 #include "move.h"
+#include "rebalance.h"
 #include "replicas.h"
 #include "super.h"
 #include "super-io.h"
-#include "tier.h"
 
 #include <linux/blkdev.h>
 #include <linux/random.h>
@@ -269,7 +269,7 @@ static void bch2_write_done(struct closure *cl)
 	percpu_ref_put(&c->writes);
 	bch2_keylist_free(&op->insert_keys, op->inline_keys);
 
-	bch2_time_stats_update(&c->data_write_time, op->start_time);
+	bch2_time_stats_update(&c->times[BCH_TIME_data_write], op->start_time);
 
 	closure_return(cl);
 }
@@ -842,20 +842,24 @@ again:
 	} while (ret);
 
 	continue_at(cl, bch2_write_index, index_update_wq(op));
+	return;
 err:
 	op->error = ret;
 
 	continue_at(cl, !bch2_keylist_empty(&op->insert_keys)
 		    ? bch2_write_index
 		    : bch2_write_done, index_update_wq(op));
+	return;
 flush_io:
 	closure_sync(cl);
 
 	if (!bch2_keylist_empty(&op->insert_keys)) {
 		__bch2_write_index(op);
 
-		if (op->error)
+		if (op->error) {
 			continue_at_nobarrier(cl, bch2_write_done, NULL);
+			return;
+		}
 	}
 
 	goto again;
@@ -901,6 +905,7 @@ void bch2_write(struct closure *cl)
 		if (!(op->flags & BCH_WRITE_NOPUT_RESERVATION))
 			bch2_disk_reservation_put(c, &op->res);
 		closure_return(cl);
+		return;
 	}
 
 	bch2_increment_clock(c, bio_sectors(&op->wbio.bio), WRITE);
@@ -974,7 +979,8 @@ static void promote_done(struct closure *cl)
 		container_of(cl, struct promote_op, cl);
 	struct bch_fs *c = op->write.op.c;
 
-	bch2_time_stats_update(&c->data_promote_time, op->start_time);
+	bch2_time_stats_update(&c->times[BCH_TIME_data_promote],
+			       op->start_time);
 
 	bch2_bio_free_pages_pool(c, &op->write.op.wbio.bio);
 	promote_free(c, op);
@@ -1048,7 +1054,7 @@ static struct promote_op *__promote_alloc(struct bch_fs *c,
 		(*rbio)->bio.bi_iter.bi_size = rbio_sectors << 9;
 		bch2_bio_map(&(*rbio)->bio, NULL);
 
-		if (bio_alloc_pages(&(*rbio)->bio, GFP_NOIO))
+		if (bch2_bio_alloc_pages(&(*rbio)->bio, GFP_NOIO))
 			goto err;
 
 		(*rbio)->bounce		= true;
@@ -1174,7 +1180,8 @@ static inline struct bch_read_bio *bch2_rbio_free(struct bch_read_bio *rbio)
 
 static void bch2_rbio_done(struct bch_read_bio *rbio)
 {
-	bch2_time_stats_update(&rbio->c->data_read_time, rbio->start_time);
+	bch2_time_stats_update(&rbio->c->times[BCH_TIME_data_read],
+			       rbio->start_time);
 	bio_endio(&rbio->bio);
 }
 
@@ -1486,7 +1493,7 @@ csum_err:
 	}
 
 	bch2_dev_io_error(ca,
-		"data checksum error, inode %llu offset %llu: expected %0llx%0llx got %0llx%0llx (type %u)",
+		"data checksum error, inode %llu offset %llu: expected %0llx:%0llx got %0llx:%0llx (type %u)",
 		rbio->pos.inode, (u64) rbio->bvec_iter.bi_sector,
 		rbio->pick.crc.csum.hi, rbio->pick.crc.csum.lo,
 		csum.hi, csum.lo, crc.csum_type);
