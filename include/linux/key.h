@@ -2,16 +2,8 @@
 #define _LINUX_KEY_H
 
 #include <linux/types.h>
-#include <linux/list.h>
-#include <linux/rbtree.h>
-#include <linux/rcupdate.h>
-#include <linux/sysctl.h>
-#include <linux/rwsem.h>
 #include <linux/atomic.h>
-
 #include <keyutils.h>
-
-struct key;
 
 struct user_key_payload {
 	size_t		datalen;	/* length of this data */

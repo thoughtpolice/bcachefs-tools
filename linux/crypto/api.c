@@ -20,181 +20,15 @@
 #include <linux/string.h>
 
 #include <crypto/algapi.h>
-#include "internal.h"
 
 static LIST_HEAD(crypto_alg_list);
 static DECLARE_RWSEM(crypto_alg_sem);
 
-static unsigned crypto_ctxsize(struct crypto_alg *alg, u32 type, u32 mask)
-{
-	return alg->cra_type->ctxsize(alg, type, mask);
-}
-
-unsigned crypto_alg_extsize(struct crypto_alg *alg)
-{
-	return alg->cra_ctxsize;
-}
-
-struct crypto_alg *crypto_alg_mod_lookup(const char *name, u32 type, u32 mask)
-{
-	struct crypto_alg *alg;
-
-	down_read(&crypto_alg_sem);
-	list_for_each_entry(alg, &crypto_alg_list, cra_list)
-		if (!((alg->cra_flags ^ type) & mask) &&
-		    !strcmp(alg->cra_name, name))
-			goto found;
-
-	alg = ERR_PTR(-ENOENT);
-found:
-	up_read(&crypto_alg_sem);
-
-	return alg;
-}
-
-static void crypto_exit_ops(struct crypto_tfm *tfm)
-{
-	if (tfm->exit)
-		tfm->exit(tfm);
-}
-
-static struct crypto_tfm *__crypto_alloc_tfm(struct crypto_alg *alg,
-					     u32 type, u32 mask)
-{
-	struct crypto_tfm *tfm = NULL;
-	unsigned tfm_size;
-	int err = -ENOMEM;
-
-	tfm_size = sizeof(*tfm) + crypto_ctxsize(alg, type, mask);
-	tfm = kzalloc(tfm_size, GFP_KERNEL);
-	if (tfm == NULL)
-		return ERR_PTR(-ENOMEM);
-
-	tfm->__crt_alg = alg;
-
-	err = alg->cra_type->init(tfm, type, mask);
-	if (err)
-		goto out_free_tfm;
-
-	if (!tfm->exit && alg->cra_init && (err = alg->cra_init(tfm)))
-		goto cra_init_failed;
-
-	return tfm;
-
-cra_init_failed:
-	crypto_exit_ops(tfm);
-out_free_tfm:
-	kfree(tfm);
-	return ERR_PTR(err);
-}
-
-struct crypto_tfm *crypto_alloc_base(const char *alg_name, u32 type, u32 mask)
-{
-	struct crypto_alg *alg;
-	struct crypto_tfm *tfm;
-
-	alg = crypto_alg_mod_lookup(alg_name, type, mask);
-	if (IS_ERR(alg)) {
-		fprintf(stderr, "unknown cipher %s\n", alg_name);
-		return ERR_CAST(alg);
-	}
-
-	tfm = __crypto_alloc_tfm(alg, type, mask);
-	if (IS_ERR(tfm))
-		return tfm;
-
-	return tfm;
-}
-
-static void *crypto_create_tfm(struct crypto_alg *alg,
-			       const struct crypto_type *frontend)
-{
-	struct crypto_tfm *tfm = NULL;
-	unsigned tfmsize;
-	unsigned total;
-	void *mem;
-	int err = -ENOMEM;
-
-	tfmsize = frontend->tfmsize;
-	total = tfmsize + sizeof(*tfm) + frontend->extsize(alg);
-
-	mem = kzalloc(total, GFP_KERNEL);
-	if (!mem)
-		goto out_err;
-
-	tfm = mem + tfmsize;
-	tfm->__crt_alg = alg;
-
-	err = frontend->init_tfm(tfm);
-	if (err)
-		goto out_free_tfm;
-
-	if (!tfm->exit && alg->cra_init && (err = alg->cra_init(tfm)))
-		goto cra_init_failed;
-
-	goto out;
-
-cra_init_failed:
-	crypto_exit_ops(tfm);
-out_free_tfm:
-	kfree(mem);
-out_err:
-	mem = ERR_PTR(err);
-out:
-	return mem;
-}
-
-static struct crypto_alg *crypto_find_alg(const char *alg_name,
-					  const struct crypto_type *frontend,
-					  u32 type, u32 mask)
-{
-	if (frontend) {
-		type &= frontend->maskclear;
-		mask &= frontend->maskclear;
-		type |= frontend->type;
-		mask |= frontend->maskset;
-	}
-
-	return crypto_alg_mod_lookup(alg_name, type, mask);
-}
-
-void *crypto_alloc_tfm(const char *alg_name,
-		       const struct crypto_type *frontend,
-		       u32 type, u32 mask)
-{
-	struct crypto_alg *alg;
-	void *tfm;
-
-	alg = crypto_find_alg(alg_name, frontend, type, mask);
-	if (IS_ERR(alg))
-		return ERR_CAST(alg);
-
-	tfm = crypto_create_tfm(alg, frontend);
-	if (IS_ERR(tfm))
-		return tfm;
-
-	return tfm;
-}
-
-void crypto_destroy_tfm(void *mem, struct crypto_tfm *tfm)
-{
-	struct crypto_alg *alg;
-
-	if (unlikely(!mem))
-		return;
-
-	alg = tfm->__crt_alg;
-
-	if (!tfm->exit && alg->cra_exit)
-		alg->cra_exit(tfm);
-	crypto_exit_ops(tfm);
-	kzfree(mem);
-}
+struct crypto_type {
+};
 
 int crypto_register_alg(struct crypto_alg *alg)
 {
-	INIT_LIST_HEAD(&alg->cra_users);
-
 	down_write(&crypto_alg_sem);
 	list_add(&alg->cra_list, &crypto_alg_list);
 	up_write(&crypto_alg_sem);
@@ -202,35 +36,79 @@ int crypto_register_alg(struct crypto_alg *alg)
 	return 0;
 }
 
-/* skcipher: */
-
-static int crypto_skcipher_init_tfm(struct crypto_tfm *tfm)
+static void *crypto_alloc_tfm(const char *name,
+			      const struct crypto_type *type)
 {
-	struct crypto_skcipher *skcipher = __crypto_skcipher_cast(tfm);
-	struct skcipher_alg *alg = crypto_skcipher_alg(skcipher);
+	struct crypto_alg *alg;
 
-	skcipher->setkey = alg->setkey;
-	skcipher->encrypt = alg->encrypt;
-	skcipher->decrypt = alg->decrypt;
-	skcipher->ivsize = alg->ivsize;
-	skcipher->keysize = alg->max_keysize;
+	down_read(&crypto_alg_sem);
+	list_for_each_entry(alg, &crypto_alg_list, cra_list)
+		if (alg->cra_type == type && !strcmp(alg->cra_name, name))
+			goto found;
 
-	if (alg->init)
-		return alg->init(skcipher);
+	alg = ERR_PTR(-ENOENT);
+found:
+	up_read(&crypto_alg_sem);
 
-	return 0;
+	if (IS_ERR(alg))
+		return ERR_CAST(alg);
+
+	return alg->alloc_tfm() ?: ERR_PTR(-ENOMEM);
 }
 
+/* skcipher: */
+
 static const struct crypto_type crypto_skcipher_type2 = {
-	.extsize	= crypto_alg_extsize,
-	.init_tfm	= crypto_skcipher_init_tfm,
-	.maskclear	= ~CRYPTO_ALG_TYPE_MASK,
-	.maskset	= CRYPTO_ALG_TYPE_BLKCIPHER_MASK,
-	.tfmsize	= offsetof(struct crypto_skcipher, base),
 };
 
-struct crypto_skcipher *crypto_alloc_skcipher(const char *alg_name,
+struct crypto_skcipher *crypto_alloc_skcipher(const char *name,
 					      u32 type, u32 mask)
 {
-	return crypto_alloc_tfm(alg_name, &crypto_skcipher_type2, type, mask);
+	return crypto_alloc_tfm(name, &crypto_skcipher_type2);
+}
+
+int crypto_register_skcipher(struct skcipher_alg *alg)
+{
+	alg->base.cra_type = &crypto_skcipher_type2;
+
+	return crypto_register_alg(&alg->base);
+}
+
+/* shash: */
+
+#include <crypto/hash.h>
+
+static int shash_finup(struct shash_desc *desc, const u8 *data,
+		       unsigned len, u8 *out)
+{
+	return crypto_shash_update(desc, data, len) ?:
+	       crypto_shash_final(desc, out);
+}
+
+static int shash_digest(struct shash_desc *desc, const u8 *data,
+				  unsigned len, u8 *out)
+{
+	return crypto_shash_init(desc) ?:
+	       crypto_shash_finup(desc, data, len, out);
+}
+
+static const struct crypto_type crypto_shash_type = {
+};
+
+struct crypto_shash *crypto_alloc_shash(const char *name,
+					u32 type, u32 mask)
+{
+	return crypto_alloc_tfm(name, &crypto_shash_type);
+}
+
+int crypto_register_shash(struct shash_alg *alg)
+{
+	alg->base.cra_type = &crypto_shash_type;
+
+	if (!alg->finup)
+		alg->finup = shash_finup;
+	if (!alg->digest)
+		alg->digest = shash_digest;
+
+	return crypto_register_alg(&alg->base);
 }

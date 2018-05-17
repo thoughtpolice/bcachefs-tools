@@ -72,28 +72,4 @@ typedef __u64 __bitwise __be64;
 
 typedef u64 sector_t;
 
-struct list_head {
-	struct list_head *next, *prev;
-};
-
-struct hlist_head {
-	struct hlist_node *first;
-};
-
-struct hlist_node {
-	struct hlist_node *next, **pprev;
-};
-
-struct callback_head {
-	struct callback_head *next;
-	void (*func)(struct callback_head *head);
-} __attribute__((aligned(sizeof(void *))));
-
-#if 0
-#define rcu_head callback_head
-
-typedef void (*rcu_callback_t)(struct rcu_head *head);
-typedef void (*call_rcu_func_t)(struct rcu_head *head, rcu_callback_t func);
-#endif
-
 #endif /* _TOOLS_LINUX_TYPES_H_ */

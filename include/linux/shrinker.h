@@ -1,6 +1,9 @@
 #ifndef __TOOLS_LINUX_SHRINKER_H
 #define __TOOLS_LINUX_SHRINKER_H
 
+#include <linux/list.h>
+#include <linux/types.h>
+
 struct shrink_control {
 	gfp_t gfp_mask;
 	unsigned long nr_to_scan;

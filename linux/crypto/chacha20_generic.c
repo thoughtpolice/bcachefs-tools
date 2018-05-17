@@ -22,14 +22,18 @@
 
 #include <sodium/crypto_stream_chacha20.h>
 
-struct chacha20_ctx {
-	u32 key[8];
+static struct skcipher_alg alg;
+
+struct chacha20_tfm {
+	struct crypto_skcipher	tfm;
+	u32			key[8];
 };
 
 static int crypto_chacha20_setkey(struct crypto_skcipher *tfm, const u8 *key,
 				  unsigned int keysize)
 {
-	struct chacha20_ctx *ctx = crypto_skcipher_ctx(tfm);
+	struct chacha20_tfm *ctx =
+		container_of(tfm, struct chacha20_tfm, tfm);
 	int i;
 
 	if (keysize != CHACHA20_KEY_SIZE)
@@ -43,8 +47,8 @@ static int crypto_chacha20_setkey(struct crypto_skcipher *tfm, const u8 *key,
 
 static int crypto_chacha20_crypt(struct skcipher_request *req)
 {
-	struct crypto_skcipher *tfm = crypto_skcipher_reqtfm(req);
-	struct chacha20_ctx *ctx = crypto_skcipher_ctx(tfm);
+	struct chacha20_tfm *ctx =
+		container_of(req->tfm, struct chacha20_tfm, tfm.base);
 	struct scatterlist *sg = req->src;
 	unsigned nbytes = req->cryptlen;
 	u32 iv[4];
@@ -78,21 +82,30 @@ static int crypto_chacha20_crypt(struct skcipher_request *req)
 	return 0;
 }
 
+static void *crypto_chacha20_alloc_tfm(void)
+{
+	struct chacha20_tfm *tfm = kzalloc(sizeof(*tfm), GFP_KERNEL);
+
+	if (!tfm)
+		return NULL;
+
+	tfm->tfm.base.alg	= &alg.base;
+	tfm->tfm.setkey		= crypto_chacha20_setkey;
+	tfm->tfm.encrypt	= crypto_chacha20_crypt;
+	tfm->tfm.decrypt	= crypto_chacha20_crypt;
+	tfm->tfm.ivsize		= CHACHA20_IV_SIZE;
+	tfm->tfm.keysize	= CHACHA20_KEY_SIZE;
+
+	return tfm;
+}
+
 static struct skcipher_alg alg = {
 	.base.cra_name		= "chacha20",
-	.base.cra_ctxsize	= sizeof(struct chacha20_ctx),
-
-	.min_keysize		= CHACHA20_KEY_SIZE,
-	.max_keysize		= CHACHA20_KEY_SIZE,
-	.ivsize			= CHACHA20_IV_SIZE,
-	.chunksize		= CHACHA20_BLOCK_SIZE,
-	.setkey			= crypto_chacha20_setkey,
-	.encrypt		= crypto_chacha20_crypt,
-	.decrypt		= crypto_chacha20_crypt,
+	.base.alloc_tfm		= crypto_chacha20_alloc_tfm,
 };
 
 __attribute__((constructor(110)))
 static int chacha20_generic_mod_init(void)
 {
-	return crypto_register_alg(&alg.base);
+	return crypto_register_skcipher(&alg);
 }
