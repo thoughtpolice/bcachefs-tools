@@ -31,14 +31,10 @@ ifdef D
 	CFLAGS+=-DCONFIG_BCACHEFS_DEBUG=y
 endif
 
-PKGCONFIG_LIBS="blkid uuid liburcu libsodium zlib"
-PKGCONFIG_LIBS_STATIC="libzstd"
+PKGCONFIG_LIBS="blkid uuid liburcu libsodium zlib liblz4 libzstd"
 
 CFLAGS+=`pkg-config --cflags	${PKGCONFIG_LIBS}`
 LDLIBS+=`pkg-config --libs	${PKGCONFIG_LIBS}`
-
-CFLAGS+=`pkg-config --static --cflags	${PKGCONFIG_LIBS_STATIC}`
-LDLIBS+=`pkg-config --static --libs	${PKGCONFIG_LIBS_STATIC}`
 
 LDLIBS+=-lm -lpthread -lrt -lscrypt -lkeyutils -laio
 
