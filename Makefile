@@ -17,7 +17,7 @@ CFLAGS+=-std=gnu89 -O2 -g -MMD -Wall				\
 	$(EXTRA_CFLAGS)
 LDFLAGS+=$(CFLAGS)
 
-VERSION?=$(shell git describe --long --dirty 2>/dev/null || echo 0.1-nogit)
+VERSION?=$(shell git describe --dirty 2>/dev/null || echo 0.1-nogit)
 
 CC_VERSION=$(shell $(CC) -v 2>&1|grep -E '(gcc|clang) version')
 
