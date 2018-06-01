@@ -1702,6 +1702,7 @@ static int bch2_direct_IO_read(struct kiocb *req, struct iov_iter *iter)
 	struct bio *bio;
 	loff_t offset = req->ki_pos;
 	bool sync = is_sync_kiocb(req);
+	size_t shorten;
 	ssize_t ret;
 
 	if ((offset|iter->count) & (block_bytes(c) - 1))
@@ -1709,10 +1710,12 @@ static int bch2_direct_IO_read(struct kiocb *req, struct iov_iter *iter)
 
 	ret = min_t(loff_t, iter->count,
 		    max_t(loff_t, 0, i_size_read(&inode->v) - offset));
-	iov_iter_truncate(iter, round_up(ret, block_bytes(c)));
 
 	if (!ret)
 		return ret;
+
+	shorten = iov_iter_count(iter) - round_up(ret, block_bytes(c));
+	iter->count -= shorten;
 
 	bio = bio_alloc_bioset(GFP_KERNEL,
 			       iov_iter_npages(iter, BIO_MAX_PAGES),
@@ -1769,6 +1772,8 @@ start:
 		bch2_read(c, rbio_init(bio, opts), inode->v.i_ino);
 	}
 
+	iter->count += shorten;
+
 	if (sync) {
 		closure_sync(&dio->cl);
 		closure_debug_destroy(&dio->cl);
@@ -1820,6 +1825,13 @@ static long bch2_dio_write_loop(struct dio_write *dio)
 		current->pagecache_lock = NULL;
 
 		if (unlikely(ret < 0))
+			goto err;
+
+		/* gup might have faulted pages back in: */
+		ret = write_invalidate_inode_pages_range(mapping,
+				req->ki_pos + (dio->iop.op.written << 9),
+				req->ki_pos + iov_iter_count(&dio->iter) - 1);
+		if (unlikely(ret))
 			goto err;
 
 		dio->iop.op.pos = POS(inode->v.i_ino,
@@ -2280,7 +2292,7 @@ static long bch2_fcollapse(struct bch_inode_info *inode,
 	loff_t new_size;
 	int ret;
 
-	if ((offset | len) & (PAGE_SIZE - 1))
+	if ((offset | len) & (block_bytes(c) - 1))
 		return -EINVAL;
 
 	bch2_btree_iter_init(&dst, c, BTREE_ID_EXTENTS,
@@ -2354,8 +2366,11 @@ static long bch2_fcollapse(struct bch_inode_info *inode,
 btree_iter_err:
 		if (ret == -EINTR)
 			ret = 0;
-		if (ret)
+		if (ret) {
+			bch2_btree_iter_unlock(&src);
+			bch2_btree_iter_unlock(&dst);
 			goto err_put_sectors_dirty;
+		}
 		/*
 		 * XXX: if we error here we've left data with multiple
 		 * pointers... which isn't a _super_ serious problem...
@@ -2368,7 +2383,7 @@ btree_iter_err:
 	bch2_btree_iter_unlock(&dst);
 
 	ret = bch2_inode_truncate(c, inode->v.i_ino,
-				 round_up(new_size, PAGE_SIZE) >> 9,
+				 round_up(new_size, block_bytes(c)) >> 9,
 				 &i_sectors_hook.hook,
 				 &inode->ei_journal_seq);
 	if (ret)
@@ -2381,9 +2396,6 @@ err_put_sectors_dirty:
 err:
 	pagecache_block_put(&mapping->add_lock);
 	inode_unlock(&inode->v);
-
-	bch2_btree_iter_unlock(&src);
-	bch2_btree_iter_unlock(&dst);
 	return ret;
 }
 
@@ -2483,7 +2495,7 @@ static long bch2_fallocate(struct bch_inode_info *inode, int mode,
 					&i_sectors_hook.quota_res,
 					sectors, true);
 			if (unlikely(ret))
-				goto err_put_sectors_dirty;
+				goto btree_iter_err;
 		}
 
 		if (reservation.v.nr_replicas < replicas ||
@@ -2491,7 +2503,7 @@ static long bch2_fallocate(struct bch_inode_info *inode, int mode,
 			ret = bch2_disk_reservation_get(c, &disk_res, sectors,
 							replicas, 0);
 			if (unlikely(ret))
-				goto err_put_sectors_dirty;
+				goto btree_iter_err;
 
 			reservation.v.nr_replicas = disk_res.nr_replicas;
 		}
@@ -2503,8 +2515,12 @@ static long bch2_fallocate(struct bch_inode_info *inode, int mode,
 					  BTREE_INSERT_ENTRY(&iter, &reservation.k_i));
 		bch2_disk_reservation_put(c, &disk_res);
 btree_iter_err:
-		if (ret < 0 && ret != -EINTR)
+		if (ret == -EINTR)
+			ret = 0;
+		if (ret) {
+			bch2_btree_iter_unlock(&iter);
 			goto err_put_sectors_dirty;
+		}
 
 	}
 	bch2_btree_iter_unlock(&iter);
@@ -2544,7 +2560,6 @@ btree_iter_err:
 err_put_sectors_dirty:
 	ret = i_sectors_dirty_finish(c, &i_sectors_hook) ?: ret;
 err:
-	bch2_btree_iter_unlock(&iter);
 	pagecache_block_put(&mapping->add_lock);
 	inode_unlock(&inode->v);
 	return ret;

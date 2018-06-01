@@ -1564,11 +1564,15 @@ int bch2_btree_split_leaf(struct bch_fs *c, struct btree_iter *iter,
 	struct btree_update *as;
 	struct closure cl;
 	int ret = 0;
+	struct btree_iter *linked;
 
 	/*
 	 * We already have a disk reservation and open buckets pinned; this
 	 * allocation must not block:
 	 */
+	for_each_linked_btree_iter(iter, linked)
+		if (linked->btree_id == BTREE_ID_EXTENTS)
+			btree_reserve_flags |= BTREE_INSERT_USE_RESERVE;
 	if (iter->btree_id == BTREE_ID_EXTENTS)
 		btree_reserve_flags |= BTREE_INSERT_USE_RESERVE;
 
@@ -1704,14 +1708,16 @@ retry:
 	}
 
 	as = bch2_btree_update_start(c, iter->btree_id,
-				     btree_update_reserve_required(c, b),
-				     BTREE_INSERT_NOFAIL|
-				     BTREE_INSERT_USE_RESERVE,
-				     &cl);
+			 btree_update_reserve_required(c, parent) + 1,
+			 BTREE_INSERT_NOFAIL|
+			 BTREE_INSERT_USE_RESERVE,
+			 &cl);
 	if (IS_ERR(as)) {
 		ret = PTR_ERR(as);
 		goto out_unlock;
 	}
+
+	trace_btree_merge(c, b);
 
 	bch2_btree_interior_update_will_free_node(as, b);
 	bch2_btree_interior_update_will_free_node(as, m);
@@ -1778,8 +1784,10 @@ static int __btree_node_rewrite(struct bch_fs *c, struct btree_iter *iter,
 	struct btree_update *as;
 
 	as = bch2_btree_update_start(c, iter->btree_id,
-				     btree_update_reserve_required(c, b),
-				     flags, cl);
+		(parent
+		 ? btree_update_reserve_required(c, parent)
+		 : 0) + 1,
+		flags, cl);
 	if (IS_ERR(as)) {
 		trace_btree_gc_rewrite_node_fail(c, b);
 		return PTR_ERR(as);
@@ -1966,6 +1974,7 @@ static void __bch2_btree_node_update_key(struct bch_fs *c,
 int bch2_btree_node_update_key(struct bch_fs *c, struct btree_iter *iter,
 			       struct btree *b, struct bkey_i_extent *new_key)
 {
+	struct btree *parent = btree_node_parent(iter, b);
 	struct btree_update *as = NULL;
 	struct btree *new_hash = NULL;
 	struct closure cl;
@@ -2003,11 +2012,12 @@ int bch2_btree_node_update_key(struct bch_fs *c, struct btree_iter *iter,
 	}
 
 	as = bch2_btree_update_start(c, iter->btree_id,
-				     btree_update_reserve_required(c, b),
-				     BTREE_INSERT_NOFAIL|
-				     BTREE_INSERT_USE_RESERVE|
-				     BTREE_INSERT_USE_ALLOC_RESERVE,
-				     &cl);
+		parent ? btree_update_reserve_required(c, parent) : 0,
+		BTREE_INSERT_NOFAIL|
+		BTREE_INSERT_USE_RESERVE|
+		BTREE_INSERT_USE_ALLOC_RESERVE,
+		&cl);
+
 	if (IS_ERR(as)) {
 		ret = PTR_ERR(as);
 		if (ret == -EAGAIN)

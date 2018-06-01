@@ -218,7 +218,7 @@ u64 read_file_u64(int dirfd, const char *path)
 ssize_t read_string_list_or_die(const char *opt, const char * const list[],
 				const char *msg)
 {
-	ssize_t v = bch2_read_string_list(opt, list);
+	ssize_t v = match_string(list, -1, opt);
 	if (v < 0)
 		die("Bad %s %s", msg, opt);
 

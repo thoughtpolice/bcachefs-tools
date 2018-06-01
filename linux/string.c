@@ -95,3 +95,19 @@ void memzero_explicit(void *s, size_t count)
 	memset(s, 0, count);
 	barrier_data(s);
 }
+
+int match_string(const char * const *array, size_t n, const char *string)
+{
+	int index;
+	const char *item;
+
+	for (index = 0; index < n; index++) {
+		item = array[index];
+		if (!item)
+			break;
+		if (!strcmp(item, string))
+			return index;
+	}
+
+	return -EINVAL;
+}
