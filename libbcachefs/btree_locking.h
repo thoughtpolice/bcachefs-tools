@@ -75,16 +75,23 @@ static inline void mark_btree_node_intent_locked(struct btree_iter *iter,
 	mark_btree_node_locked(iter, level, SIX_LOCK_intent);
 }
 
-static inline enum six_lock_type btree_lock_want(struct btree_iter *iter, int level)
+static inline enum six_lock_type __btree_lock_want(struct btree_iter *iter, int level)
 {
 	return level < iter->locks_want
 		? SIX_LOCK_intent
 		: SIX_LOCK_read;
 }
 
-static inline bool btree_want_intent(struct btree_iter *iter, int level)
+static inline enum btree_node_locked_type
+btree_lock_want(struct btree_iter *iter, int level)
 {
-	return btree_lock_want(iter, level) == SIX_LOCK_intent;
+	if (level < iter->level)
+		return BTREE_NODE_UNLOCKED;
+	if (level < iter->locks_want)
+		return BTREE_NODE_INTENT_LOCKED;
+	if (level == iter->level)
+		return BTREE_NODE_READ_LOCKED;
+	return BTREE_NODE_UNLOCKED;
 }
 
 static inline void btree_node_unlock(struct btree_iter *iter, unsigned level)
@@ -96,6 +103,14 @@ static inline void btree_node_unlock(struct btree_iter *iter, unsigned level)
 	if (lock_type != BTREE_NODE_UNLOCKED)
 		six_unlock_type(&iter->l[level].b->lock, lock_type);
 	mark_btree_node_unlocked(iter, level);
+}
+
+static inline void __bch2_btree_iter_unlock(struct btree_iter *iter)
+{
+	btree_iter_set_dirty(iter, BTREE_ITER_NEED_RELOCK);
+
+	while (iter->nodes_locked)
+		btree_node_unlock(iter, __ffs(iter->nodes_locked));
 }
 
 static inline enum bch_time_stats lock_to_time_stat(enum six_lock_type type)
@@ -150,8 +165,11 @@ bool __bch2_btree_node_relock(struct btree_iter *, unsigned);
 static inline bool bch2_btree_node_relock(struct btree_iter *iter,
 					  unsigned level)
 {
-	return likely(btree_lock_want(iter, level) ==
-		      btree_node_locked_type(iter, level)) ||
+	EBUG_ON(btree_node_locked(iter, level) &&
+		btree_node_locked_type(iter, level) !=
+		__btree_lock_want(iter, level));
+
+	return likely(btree_node_locked(iter, level)) ||
 		__bch2_btree_node_relock(iter, level);
 }
 

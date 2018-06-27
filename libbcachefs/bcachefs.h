@@ -259,6 +259,10 @@ do {									\
 		"Reread btree nodes at various points to verify the "	\
 		"mergesort in the read path against modifications "	\
 		"done in memory")					\
+	BCH_DEBUG_PARAM(journal_seq_verify,				\
+		"Store the journal sequence number in the version "	\
+		"number of every btree key, and verify that btree "	\
+		"update ordering is preserved during recovery")
 
 #define BCH_DEBUG_PARAMS_ALL() BCH_DEBUG_PARAMS_ALWAYS() BCH_DEBUG_PARAMS_DEBUG()
 
@@ -314,7 +318,13 @@ enum bch_time_stats {
 struct btree;
 
 enum gc_phase {
-	GC_PHASE_SB		= BTREE_ID_NR + 1,
+	GC_PHASE_START,
+	GC_PHASE_SB,
+
+#define DEF_BTREE_ID(kwd, val, name) GC_PHASE_BTREE_##kwd,
+	DEFINE_BCH_BTREE_IDS()
+#undef DEF_BTREE_ID
+
 	GC_PHASE_PENDING_DELETE,
 	GC_PHASE_ALLOC,
 	GC_PHASE_DONE

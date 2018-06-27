@@ -106,6 +106,8 @@ int __must_check __bch2_write_inode(struct bch_fs *c,
 			break;
 		}
 
+		BUG_ON(inode_u.bi_size != inode->ei_inode.bi_size);
+
 		if (set) {
 			ret = set(inode, &inode_u, p);
 			if (ret)
@@ -113,6 +115,10 @@ int __must_check __bch2_write_inode(struct bch_fs *c,
 		}
 
 		BUG_ON(i_nlink < nlink_bias(inode->v.i_mode));
+
+		BUG_ON(inode_u.bi_size != inode->ei_inode.bi_size &&
+		       !(inode_u.bi_flags & BCH_INODE_I_SIZE_DIRTY) &&
+		       inode_u.bi_size > i_size_read(&inode->v));
 
 		inode_u.bi_mode	= inode->v.i_mode;
 		inode_u.bi_uid	= i_uid_read(&inode->v);
@@ -129,11 +135,17 @@ int __must_check __bch2_write_inode(struct bch_fs *c,
 		ret = bch2_btree_insert_at(c, NULL, NULL,
 				&inode->ei_journal_seq,
 				BTREE_INSERT_ATOMIC|
+				BTREE_INSERT_NOUNLOCK|
 				BTREE_INSERT_NOFAIL,
 				BTREE_INSERT_ENTRY(&iter, &inode_p.inode.k_i));
 	} while (ret == -EINTR);
 
 	if (!ret) {
+		/*
+		 * the btree node lock protects inode->ei_inode, not
+		 * ei_update_lock; this is important for inode updates via
+		 * bchfs_write_index_update
+		 */
 		inode->ei_inode = inode_u;
 		inode->ei_qid	= bch_qid(&inode_u);
 	}
@@ -1107,7 +1119,7 @@ static int bch2_statfs(struct dentry *dentry, struct kstatfs *buf)
 	       le64_to_cpup((void *) c->sb.user_uuid.b + sizeof(u64));
 	buf->f_fsid.val[0] = fsid & 0xFFFFFFFFUL;
 	buf->f_fsid.val[1] = (fsid >> 32) & 0xFFFFFFFFUL;
-	buf->f_namelen	= NAME_MAX;
+	buf->f_namelen	= BCH_NAME_MAX;
 
 	return 0;
 }

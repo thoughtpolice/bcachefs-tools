@@ -112,4 +112,14 @@ static inline void *vmap(struct page **pages, unsigned int count,
 
 #define vmalloc_to_page(addr)		((struct page *) (addr))
 
+static inline void *kmemdup(const void *src, size_t len, gfp_t gfp)
+{
+	void *p;
+
+	p = kmalloc(len, gfp);
+	if (p)
+		memcpy(p, src, len);
+	return p;
+}
+
 #endif /* __TOOLS_LINUX_SLAB_H */

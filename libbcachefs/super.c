@@ -10,7 +10,6 @@
 #include "alloc.h"
 #include "btree_cache.h"
 #include "btree_gc.h"
-#include "btree_update.h"
 #include "btree_update_interior.h"
 #include "btree_io.h"
 #include "chardev.h"
@@ -26,14 +25,13 @@
 #include "inode.h"
 #include "io.h"
 #include "journal.h"
-#include "journal_io.h"
 #include "journal_reclaim.h"
-#include "keylist.h"
 #include "move.h"
 #include "migrate.h"
 #include "movinggc.h"
 #include "quota.h"
 #include "rebalance.h"
+#include "recovery.h"
 #include "replicas.h"
 #include "super.h"
 #include "super-io.h"
@@ -201,18 +199,6 @@ int bch2_congested(void *data, int bdi_bits)
  * - allocator depends on the journal (when it rewrites prios and gens)
  */
 
-static void bch_fs_mark_clean(struct bch_fs *c)
-{
-	if (!bch2_journal_error(&c->journal) &&
-	    !test_bit(BCH_FS_ERROR, &c->flags) &&
-	    !test_bit(BCH_FS_EMERGENCY_RO, &c->flags)) {
-		mutex_lock(&c->sb_lock);
-		SET_BCH_SB_CLEAN(c->disk_sb.sb, true);
-		bch2_write_super(c);
-		mutex_unlock(&c->sb_lock);
-	}
-}
-
 static void __bch2_fs_read_only(struct bch_fs *c)
 {
 	struct bch_dev *ca;
@@ -229,7 +215,7 @@ static void __bch2_fs_read_only(struct bch_fs *c)
 	 * Flush journal before stopping allocators, because flushing journal
 	 * blacklist entries involves allocating new btree nodes:
 	 */
-	bch2_journal_flush_pins(&c->journal, U64_MAX - 1);
+	bch2_journal_flush_all_pins(&c->journal);
 
 	for_each_member_device(ca, c, i)
 		bch2_dev_allocator_stop(ca);
@@ -246,9 +232,6 @@ static void __bch2_fs_read_only(struct bch_fs *c)
 	closure_wait_event(&c->btree_interior_update_wait,
 			   !bch2_btree_interior_updates_nr_pending(c));
 
-	if (!test_bit(BCH_FS_EMERGENCY_RO, &c->flags))
-		bch2_btree_verify_flushed(c);
-
 	bch2_fs_journal_stop(&c->journal);
 
 	/*
@@ -257,6 +240,8 @@ static void __bch2_fs_read_only(struct bch_fs *c)
 	 */
 	if (test_bit(BCH_FS_EMERGENCY_RO, &c->flags))
 		bch2_btree_flush_all_writes(c);
+	else
+		bch2_btree_verify_flushed(c);
 
 	/*
 	 * After stopping journal:
@@ -275,12 +260,10 @@ static void bch2_writes_disabled(struct percpu_ref *writes)
 
 void bch2_fs_read_only(struct bch_fs *c)
 {
-	if (c->state != BCH_FS_STARTING &&
-	    c->state != BCH_FS_RW)
+	if (c->state == BCH_FS_RO)
 		return;
 
-	if (test_bit(BCH_FS_ERROR, &c->flags))
-		return;
+	BUG_ON(test_bit(BCH_FS_WRITE_DISABLE_COMPLETE, &c->flags));
 
 	/*
 	 * Block new foreground-end write operations from starting - any new
@@ -311,13 +294,18 @@ void bch2_fs_read_only(struct bch_fs *c)
 
 	__bch2_fs_read_only(c);
 
-	bch_fs_mark_clean(c);
-
 	wait_event(bch_read_only_wait,
 		   test_bit(BCH_FS_WRITE_DISABLE_COMPLETE, &c->flags));
 
 	clear_bit(BCH_FS_WRITE_DISABLE_COMPLETE, &c->flags);
-	c->state = BCH_FS_RO;
+
+	if (!bch2_journal_error(&c->journal) &&
+	    !test_bit(BCH_FS_ERROR, &c->flags) &&
+	    !test_bit(BCH_FS_EMERGENCY_RO, &c->flags))
+		bch2_fs_mark_clean(c, true);
+
+	if (c->state != BCH_FS_STOPPING)
+		c->state = BCH_FS_RO;
 }
 
 static void bch2_fs_read_only_work(struct work_struct *work)
@@ -352,9 +340,10 @@ const char *bch2_fs_read_write(struct bch_fs *c)
 	const char *err = NULL;
 	unsigned i;
 
-	if (c->state != BCH_FS_STARTING &&
-	    c->state != BCH_FS_RO)
+	if (c->state == BCH_FS_RW)
 		return NULL;
+
+	bch2_fs_mark_clean(c, false);
 
 	for_each_rw_member(ca, c, i)
 		bch2_dev_allocator_add(c, ca);
@@ -446,11 +435,6 @@ void bch2_fs_stop(struct bch_fs *c)
 	struct bch_dev *ca;
 	unsigned i;
 
-	mutex_lock(&c->state_lock);
-	BUG_ON(c->state == BCH_FS_STOPPING);
-	c->state = BCH_FS_STOPPING;
-	mutex_unlock(&c->state_lock);
-
 	for_each_member_device(ca, c, i)
 		if (ca->kobj.state_in_sysfs &&
 		    ca->disk_sb.bdev)
@@ -475,10 +459,8 @@ void bch2_fs_stop(struct bch_fs *c)
 	closure_debug_destroy(&c->cl);
 
 	mutex_lock(&c->state_lock);
-	__bch2_fs_read_only(c);
+	bch2_fs_read_only(c);
 	mutex_unlock(&c->state_lock);
-
-	bch_fs_mark_clean(c);
 
 	/* btree prefetch might have kicked off reads in the background: */
 	bch2_btree_flush_all_reads(c);
@@ -695,9 +677,7 @@ const char *bch2_fs_start(struct bch_fs *c)
 	const char *err = "cannot allocate memory";
 	struct bch_sb_field_members *mi;
 	struct bch_dev *ca;
-	LIST_HEAD(journal);
-	struct jset *j;
-	time64_t now;
+	time64_t now = ktime_get_seconds();
 	unsigned i;
 	int ret = -EINVAL;
 
@@ -706,157 +686,26 @@ const char *bch2_fs_start(struct bch_fs *c)
 	BUG_ON(c->state != BCH_FS_STARTING);
 
 	mutex_lock(&c->sb_lock);
+
 	for_each_online_member(ca, c, i)
 		bch2_sb_from_fs(c, ca);
+
+	mi = bch2_sb_get_members(c->disk_sb.sb);
+	for_each_online_member(ca, c, i)
+		mi->members[ca->dev_idx].last_mount = cpu_to_le64(now);
+
 	mutex_unlock(&c->sb_lock);
 
 	for_each_rw_member(ca, c, i)
 		bch2_dev_allocator_add(c, ca);
 	bch2_recalc_capacity(c);
 
-	if (BCH_SB_INITIALIZED(c->disk_sb.sb)) {
-		ret = bch2_journal_read(c, &journal);
-		if (ret)
-			goto err;
+	ret = BCH_SB_INITIALIZED(c->disk_sb.sb)
+		? bch2_fs_recovery(c)
+		: bch2_fs_initialize(c);
+	if (ret)
+		goto err;
 
-		j = &list_entry(journal.prev, struct journal_replay, list)->j;
-
-		c->bucket_clock[READ].hand = le16_to_cpu(j->read_clock);
-		c->bucket_clock[WRITE].hand = le16_to_cpu(j->write_clock);
-
-		for (i = 0; i < BTREE_ID_NR; i++) {
-			unsigned level;
-			struct bkey_i *k;
-
-			k = bch2_journal_find_btree_root(c, j, i, &level);
-			if (!k)
-				continue;
-
-			err = "invalid btree root pointer";
-			if (IS_ERR(k))
-				goto err;
-
-			err = "error reading btree root";
-			if (bch2_btree_root_read(c, i, k, level)) {
-				if (i != BTREE_ID_ALLOC)
-					goto err;
-
-				mustfix_fsck_err(c, "error reading btree root");
-			}
-		}
-
-		for (i = 0; i < BTREE_ID_NR; i++)
-			if (!c->btree_roots[i].b)
-				bch2_btree_root_alloc(c, i);
-
-		err = "error reading allocation information";
-		ret = bch2_alloc_read(c, &journal);
-		if (ret)
-			goto err;
-
-		set_bit(BCH_FS_ALLOC_READ_DONE, &c->flags);
-
-		bch_verbose(c, "starting mark and sweep:");
-		err = "error in recovery";
-		ret = bch2_initial_gc(c, &journal);
-		if (ret)
-			goto err;
-		bch_verbose(c, "mark and sweep done");
-
-		if (c->opts.noreplay)
-			goto recovery_done;
-
-		/*
-		 * bch2_fs_journal_start() can't happen sooner, or btree_gc_finish()
-		 * will give spurious errors about oldest_gen > bucket_gen -
-		 * this is a hack but oh well.
-		 */
-		bch2_fs_journal_start(&c->journal);
-
-		err = "error starting allocator";
-		if (bch2_fs_allocator_start(c))
-			goto err;
-
-		bch_verbose(c, "starting journal replay:");
-		err = "journal replay failed";
-		ret = bch2_journal_replay(c, &journal);
-		if (ret)
-			goto err;
-		bch_verbose(c, "journal replay done");
-
-		if (c->opts.norecovery)
-			goto recovery_done;
-
-		bch_verbose(c, "starting fsck:");
-		err = "error in fsck";
-		ret = bch2_fsck(c, !c->opts.nofsck);
-		if (ret)
-			goto err;
-		bch_verbose(c, "fsck done");
-
-		if (enabled_qtypes(c)) {
-			bch_verbose(c, "reading quotas:");
-			ret = bch2_fs_quota_read(c);
-			if (ret)
-				goto err;
-			bch_verbose(c, "quotas done");
-		}
-	} else {
-		struct bch_inode_unpacked inode;
-		struct bkey_inode_buf packed_inode;
-
-		bch_notice(c, "initializing new filesystem");
-
-		set_bit(BCH_FS_ALLOC_READ_DONE, &c->flags);
-
-		ret = bch2_initial_gc(c, &journal);
-		if (ret)
-			goto err;
-
-		err = "unable to allocate journal buckets";
-		for_each_online_member(ca, c, i)
-			if (bch2_dev_journal_alloc(ca)) {
-				percpu_ref_put(&ca->io_ref);
-				goto err;
-			}
-
-		for (i = 0; i < BTREE_ID_NR; i++)
-			bch2_btree_root_alloc(c, i);
-
-		/*
-		 * journal_res_get() will crash if called before this has
-		 * set up the journal.pin FIFO and journal.cur pointer:
-		 */
-		bch2_fs_journal_start(&c->journal);
-		bch2_journal_set_replay_done(&c->journal);
-
-		err = "error starting allocator";
-		if (bch2_fs_allocator_start(c))
-			goto err;
-
-		bch2_inode_init(c, &inode, 0, 0,
-			       S_IFDIR|S_IRWXU|S_IRUGO|S_IXUGO, 0, NULL);
-		inode.bi_inum = BCACHEFS_ROOT_INO;
-
-		bch2_inode_pack(&packed_inode, &inode);
-
-		err = "error creating root directory";
-		if (bch2_btree_insert(c, BTREE_ID_INODES,
-				     &packed_inode.inode.k_i,
-				     NULL, NULL, NULL, 0))
-			goto err;
-
-		if (enabled_qtypes(c)) {
-			ret = bch2_fs_quota_read(c);
-			if (ret)
-				goto err;
-		}
-
-		err = "error writing first journal entry";
-		if (bch2_journal_meta(&c->journal))
-			goto err;
-	}
-recovery_done:
 	err = "dynamic fault";
 	if (bch2_fs_init_fault("fs_start"))
 		goto err;
@@ -869,28 +718,13 @@ recovery_done:
 			goto err;
 	}
 
-	mutex_lock(&c->sb_lock);
-	mi = bch2_sb_get_members(c->disk_sb.sb);
-	now = ktime_get_seconds();
-
-	for_each_member_device(ca, c, i)
-		mi->members[ca->dev_idx].last_mount = cpu_to_le64(now);
-
-	SET_BCH_SB_INITIALIZED(c->disk_sb.sb, true);
-	SET_BCH_SB_CLEAN(c->disk_sb.sb, false);
-
-	bch2_write_super(c);
-	mutex_unlock(&c->sb_lock);
-
 	set_bit(BCH_FS_STARTED, &c->flags);
 
 	err = NULL;
 out:
 	mutex_unlock(&c->state_lock);
-	bch2_journal_entries_free(&journal);
 	return err;
 err:
-fsck_err:
 	switch (ret) {
 	case BCH_FSCK_ERRORS_NOT_FIXED:
 		bch_err(c, "filesystem contains errors: please report this to the developers");
@@ -1090,6 +924,9 @@ static struct bch_dev *__bch2_dev_alloc(struct bch_fs *c,
 
 	ca->mi = bch2_mi_to_cpu(member);
 	ca->uuid = member->uuid;
+
+	if (opt_defined(c->opts, discard))
+		ca->mi.discard = opt_get(c->opts, discard);
 
 	if (percpu_ref_init(&ca->ref, bch2_dev_ref_complete,
 			    0, GFP_KERNEL) ||
@@ -1454,7 +1291,8 @@ int bch2_dev_remove(struct bch_fs *c, struct bch_dev *ca, int flags)
 	 * must flush all existing journal entries, they might have
 	 * (overwritten) keys that point to the device we're removing:
 	 */
-	ret = bch2_journal_flush_all_pins(&c->journal);
+	bch2_journal_flush_all_pins(&c->journal);
+	ret = bch2_journal_error(&c->journal);
 	if (ret) {
 		bch_err(ca, "Remove failed, journal error");
 		goto err;
@@ -1615,6 +1453,7 @@ int bch2_dev_online(struct bch_fs *c, const char *path)
 {
 	struct bch_opts opts = bch2_opts_empty();
 	struct bch_sb_handle sb = { NULL };
+	struct bch_sb_field_members *mi;
 	struct bch_dev *ca;
 	unsigned dev_idx;
 	const char *err;
@@ -1645,6 +1484,15 @@ int bch2_dev_online(struct bch_fs *c, const char *path)
 		if (err)
 			goto err;
 	}
+
+	mutex_lock(&c->sb_lock);
+	mi = bch2_sb_get_members(c->disk_sb.sb);
+
+	mi->members[ca->dev_idx].last_mount =
+		cpu_to_le64(ktime_get_seconds());
+
+	bch2_write_super(c);
+	mutex_unlock(&c->sb_lock);
 
 	mutex_unlock(&c->state_lock);
 	return 0;

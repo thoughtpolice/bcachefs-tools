@@ -519,6 +519,11 @@ static void bch2_sb_print_disk_groups(struct bch_sb *sb, struct bch_sb_field *f,
 {
 }
 
+static void bch2_sb_print_clean(struct bch_sb *sb, struct bch_sb_field *f,
+				enum units units)
+{
+}
+
 typedef void (*sb_field_print_fn)(struct bch_sb *, struct bch_sb_field *, enum units);
 
 struct bch_sb_field_toolops {
