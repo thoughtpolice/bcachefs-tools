@@ -106,14 +106,18 @@ void bch2_btree_node_iter_fix(struct btree_iter *, struct btree *,
 int bch2_btree_iter_unlock(struct btree_iter *);
 
 bool __bch2_btree_iter_upgrade(struct btree_iter *, unsigned);
+bool __bch2_btree_iter_upgrade_nounlock(struct btree_iter *, unsigned);
 
 static inline bool bch2_btree_iter_upgrade(struct btree_iter *iter,
-					   unsigned new_locks_want)
+					   unsigned new_locks_want,
+					   bool may_drop_locks)
 {
 	new_locks_want = min(new_locks_want, BTREE_MAX_DEPTH);
 
 	return iter->locks_want < new_locks_want
-		?  __bch2_btree_iter_upgrade(iter, new_locks_want)
+		? (may_drop_locks
+		   ? __bch2_btree_iter_upgrade(iter, new_locks_want)
+		   : __bch2_btree_iter_upgrade_nounlock(iter, new_locks_want))
 		: iter->uptodate <= BTREE_ITER_NEED_PEEK;
 }
 
@@ -137,6 +141,7 @@ struct btree *bch2_btree_iter_next_node(struct btree_iter *, unsigned);
 
 struct bkey_s_c bch2_btree_iter_peek(struct btree_iter *);
 struct bkey_s_c bch2_btree_iter_next(struct btree_iter *);
+struct bkey_s_c bch2_btree_iter_prev(struct btree_iter *);
 
 struct bkey_s_c bch2_btree_iter_peek_slot(struct btree_iter *);
 struct bkey_s_c bch2_btree_iter_next_slot(struct btree_iter *);
@@ -175,6 +180,19 @@ static inline struct bpos btree_type_successor(enum btree_id id,
 	return pos;
 }
 
+static inline struct bpos btree_type_predecessor(enum btree_id id,
+					       struct bpos pos)
+{
+	if (id == BTREE_ID_INODES) {
+		--pos.inode;
+		pos.offset = 0;
+	} else /* if (id != BTREE_ID_EXTENTS) */ {
+		pos = bkey_predecessor(pos);
+	}
+
+	return pos;
+}
+
 static inline int __btree_iter_cmp(enum btree_id id,
 				   struct bpos pos,
 				   const struct btree_iter *r)
@@ -207,7 +225,8 @@ static inline void bch2_btree_iter_cond_resched(struct btree_iter *iter)
 #define __for_each_btree_node(_iter, _c, _btree_id, _start,		\
 			      _locks_want, _depth, _flags, _b)		\
 	for (__bch2_btree_iter_init((_iter), (_c), (_btree_id), _start,	\
-				    _locks_want, _depth, _flags),	\
+				    _locks_want, _depth,		\
+				    _flags|BTREE_ITER_NODES),		\
 	     _b = bch2_btree_iter_peek_node(_iter);			\
 	     (_b);							\
 	     (_b) = bch2_btree_iter_next_node(_iter, _depth))

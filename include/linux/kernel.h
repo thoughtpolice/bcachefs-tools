@@ -222,4 +222,23 @@ static inline int __must_check kstrtos32(const char *s, unsigned int base, s32 *
 	 BUILD_BUG_ON_ZERO((perms) & 2) +					\
 	 (perms))
 
+/* The hash is always the low bits of hash_len */
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+ #define HASH_LEN_DECLARE u32 hash; u32 len
+#else
+ #define HASH_LEN_DECLARE u32 len; u32 hash
+#endif
+
+struct qstr {
+	union {
+		struct {
+			HASH_LEN_DECLARE;
+		};
+		u64 hash_len;
+	};
+	const unsigned char *name;
+};
+
+#define QSTR_INIT(n,l) { { { .len = l } }, .name = n }
+
 #endif

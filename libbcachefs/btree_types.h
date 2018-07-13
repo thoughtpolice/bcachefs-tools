@@ -182,26 +182,32 @@ struct btree_node_iter {
 	} data[MAX_BSETS];
 };
 
-#define BTREE_ITER_SLOTS		(1 << 0)
-#define BTREE_ITER_INTENT		(1 << 1)
-#define BTREE_ITER_PREFETCH		(1 << 2)
+enum btree_iter_type {
+	BTREE_ITER_KEYS,
+	BTREE_ITER_SLOTS,
+	BTREE_ITER_NODES,
+};
+
+#define BTREE_ITER_TYPE			((1 << 2) - 1)
+
+#define BTREE_ITER_INTENT		(1 << 2)
+#define BTREE_ITER_PREFETCH		(1 << 3)
 /*
  * Used in bch2_btree_iter_traverse(), to indicate whether we're searching for
  * @pos or the first key strictly greater than @pos
  */
-#define BTREE_ITER_IS_EXTENTS		(1 << 3)
+#define BTREE_ITER_IS_EXTENTS		(1 << 4)
 /*
  * indicates we need to call bch2_btree_iter_traverse() to revalidate iterator:
  */
-#define BTREE_ITER_AT_END_OF_LEAF	(1 << 4)
-#define BTREE_ITER_ERROR		(1 << 5)
+#define BTREE_ITER_AT_END_OF_LEAF	(1 << 5)
+#define BTREE_ITER_ERROR		(1 << 6)
 
 enum btree_iter_uptodate {
 	BTREE_ITER_UPTODATE		= 0,
 	BTREE_ITER_NEED_PEEK		= 1,
 	BTREE_ITER_NEED_RELOCK		= 2,
 	BTREE_ITER_NEED_TRAVERSE	= 3,
-	BTREE_ITER_END			= 4,
 };
 
 /*
@@ -216,7 +222,7 @@ struct btree_iter {
 	struct bpos		pos;
 
 	u8			flags;
-	unsigned		uptodate:4;
+	enum btree_iter_uptodate uptodate:4;
 	enum btree_id		btree_id:4;
 	unsigned		level:4,
 				locks_want:4,

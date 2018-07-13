@@ -52,21 +52,6 @@ static inline void set_bkey_val_bytes(struct bkey *k, unsigned bytes)
 	k->u64s = BKEY_U64s + DIV_ROUND_UP(bytes, sizeof(u64));
 }
 
-/*
- * Mark a key as deleted without changing the size of the value (i.e. modifying
- * keys in the btree in place)
- */
-static inline void __set_bkey_deleted(struct bkey *k)
-{
-	k->type = KEY_TYPE_DELETED;
-}
-
-static inline void set_bkey_deleted(struct bkey *k)
-{
-	__set_bkey_deleted(k);
-	set_bkey_val_u64s(k, 0);
-}
-
 #define bkey_deleted(_k)	((_k)->type == KEY_TYPE_DELETED)
 
 #define bkey_whiteout(_k)				\
@@ -280,6 +265,16 @@ static inline struct bpos bkey_successor(struct bpos p)
 
 	if (!++ret.offset)
 		BUG_ON(!++ret.inode);
+
+	return ret;
+}
+
+static inline struct bpos bkey_predecessor(struct bpos p)
+{
+	struct bpos ret = p;
+
+	if (!ret.offset--)
+		BUG_ON(!ret.inode--);
 
 	return ret;
 }
