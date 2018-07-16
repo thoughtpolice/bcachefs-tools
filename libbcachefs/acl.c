@@ -132,7 +132,8 @@ invalid:
  * Convert from in-memory to filesystem representation.
  */
 static struct bkey_i_xattr *
-bch2_acl_to_xattr(const struct posix_acl *acl,
+bch2_acl_to_xattr(struct btree_trans *trans,
+		  const struct posix_acl *acl,
 		  int type)
 {
 	struct bkey_i_xattr *xattr;
@@ -164,7 +165,7 @@ bch2_acl_to_xattr(const struct posix_acl *acl,
 	if (u64s > U8_MAX)
 		return ERR_PTR(-E2BIG);
 
-	xattr = kmalloc(u64s * sizeof(u64), GFP_KERNEL);
+	xattr = bch2_trans_kmalloc(trans, u64s * sizeof(u64));
 	if (IS_ERR(xattr))
 		return xattr;
 
@@ -214,20 +215,29 @@ struct posix_acl *bch2_get_acl(struct inode *vinode, int type)
 {
 	struct bch_inode_info *inode = to_bch_ei(vinode);
 	struct bch_fs *c = inode->v.i_sb->s_fs_info;
-	struct btree_iter iter;
+	struct btree_trans trans;
+	struct btree_iter *iter;
 	struct bkey_s_c_xattr xattr;
-	struct bkey_s_c k;
 	struct posix_acl *acl = NULL;
-	int name_index = acl_to_xattr_type(type);
 
-	k = bch2_xattr_get_iter(c, &iter, inode, "", name_index);
-	if (IS_ERR(k.k)) {
-		if (PTR_ERR(k.k) != -ENOENT)
-			acl = ERR_CAST(k.k);
+	bch2_trans_init(&trans, c);
+retry:
+	bch2_trans_begin(&trans);
+
+	iter = bch2_hash_lookup(&trans, bch2_xattr_hash_desc,
+			&inode->ei_str_hash, inode->v.i_ino,
+			&X_SEARCH(acl_to_xattr_type(type), "", 0),
+			0);
+	if (IS_ERR(iter)) {
+		if (PTR_ERR(iter) == -EINTR)
+			goto retry;
+
+		if (PTR_ERR(iter) != -ENOENT)
+			acl = ERR_CAST(iter);
 		goto out;
 	}
 
-	xattr = bkey_s_c_to_xattr(k);
+	xattr = bkey_s_c_to_xattr(bch2_btree_iter_peek_slot(iter));
 
 	acl = bch2_acl_from_disk(xattr_val(xattr.v),
 			le16_to_cpu(xattr.v->x_val_len));
@@ -235,49 +245,59 @@ struct posix_acl *bch2_get_acl(struct inode *vinode, int type)
 	if (!IS_ERR(acl))
 		set_cached_acl(&inode->v, type, acl);
 out:
-	bch2_btree_iter_unlock(&iter);
+	bch2_trans_exit(&trans);
 	return acl;
 }
 
-int __bch2_set_acl(struct inode *vinode, struct posix_acl *acl, int type)
+int bch2_set_acl_trans(struct btree_trans *trans,
+		       struct bch_inode_unpacked *inode_u,
+		       const struct bch_hash_info *hash_info,
+		       struct posix_acl *acl, int type)
 {
-	struct bch_inode_info *inode = to_bch_ei(vinode);
-	struct bch_fs *c = inode->v.i_sb->s_fs_info;
 	int ret;
 
 	if (type == ACL_TYPE_DEFAULT &&
-	    !S_ISDIR(inode->v.i_mode))
+	    !S_ISDIR(inode_u->bi_mode))
 		return acl ? -EACCES : 0;
 
 	if (acl) {
 		struct bkey_i_xattr *xattr =
-			bch2_acl_to_xattr(acl, type);
+			bch2_acl_to_xattr(trans, acl, type);
 		if (IS_ERR(xattr))
 			return PTR_ERR(xattr);
 
-		ret = bch2_hash_set(bch2_xattr_hash_desc, &inode->ei_str_hash,
-				    c, inode->v.i_ino, &inode->ei_journal_seq,
-				    &xattr->k_i, 0);
-		kfree(xattr);
+		ret = __bch2_hash_set(trans, bch2_xattr_hash_desc, hash_info,
+				      inode_u->bi_inum, &xattr->k_i, 0);
 	} else {
 		struct xattr_search_key search =
 			X_SEARCH(acl_to_xattr_type(type), "", 0);
 
-		ret = bch2_hash_delete(bch2_xattr_hash_desc, &inode->ei_str_hash,
-				       c, inode->v.i_ino, &inode->ei_journal_seq,
-				       &search);
+		ret = bch2_hash_delete(trans, bch2_xattr_hash_desc, hash_info,
+				       inode_u->bi_inum, &search);
 	}
 
-	if (!ret)
-		set_cached_acl(&inode->v, type, acl);
+	return ret == -ENOENT ? 0 : ret;
+}
 
-	return ret;
+static int inode_update_for_set_acl_fn(struct bch_inode_info *inode,
+				       struct bch_inode_unpacked *bi,
+				       void *p)
+{
+	struct bch_fs *c = inode->v.i_sb->s_fs_info;
+	struct timespec now = current_time(&inode->v);
+	umode_t mode = (unsigned long) p;
+
+	bi->bi_ctime	= timespec_to_bch2_time(c, now);
+	bi->bi_mode	= mode;
+	return 0;
 }
 
 int bch2_set_acl(struct inode *vinode, struct posix_acl *acl, int type)
 {
 	struct bch_inode_info *inode = to_bch_ei(vinode);
 	struct bch_fs *c = inode->v.i_sb->s_fs_info;
+	struct btree_trans trans;
+	struct bch_inode_unpacked inode_u;
 	umode_t mode = inode->v.i_mode;
 	int ret;
 
@@ -287,19 +307,76 @@ int bch2_set_acl(struct inode *vinode, struct posix_acl *acl, int type)
 			return ret;
 	}
 
-	ret = __bch2_set_acl(vinode, acl, type);
+	bch2_trans_init(&trans, c);
+retry:
+	bch2_trans_begin(&trans);
+
+	ret   = bch2_set_acl_trans(&trans,
+				   &inode->ei_inode,
+				   &inode->ei_str_hash,
+				   acl, type) ?:
+		bch2_write_inode_trans(&trans, inode, &inode_u,
+				       inode_update_for_set_acl_fn,
+				       (void *)(unsigned long) mode) ?:
+		bch2_trans_commit(&trans, NULL, NULL,
+				  &inode->ei_journal_seq,
+				  BTREE_INSERT_ATOMIC|
+				  BTREE_INSERT_NOUNLOCK);
+	if (ret == -EINTR)
+		goto retry;
+	if (unlikely(ret))
+		goto err;
+
+	bch2_inode_update_after_write(c, inode, &inode_u,
+				      ATTR_CTIME|ATTR_MODE);
+
+	set_cached_acl(&inode->v, type, acl);
+err:
+	bch2_trans_exit(&trans);
+
+	return ret;
+}
+
+int bch2_acl_chmod(struct btree_trans *trans,
+		   struct bch_inode_info *inode,
+		   umode_t mode,
+		   struct posix_acl **new_acl)
+{
+	struct btree_iter *iter;
+	struct bkey_s_c_xattr xattr;
+	struct bkey_i_xattr *new;
+	struct posix_acl *acl;
+	int ret = 0;
+
+	iter = bch2_hash_lookup(trans, bch2_xattr_hash_desc,
+			&inode->ei_str_hash, inode->v.i_ino,
+			&X_SEARCH(BCH_XATTR_INDEX_POSIX_ACL_ACCESS, "", 0),
+			BTREE_ITER_INTENT);
+	if (IS_ERR(iter))
+		return PTR_ERR(iter) != -ENOENT ? PTR_ERR(iter) : 0;
+
+	xattr = bkey_s_c_to_xattr(bch2_btree_iter_peek_slot(iter));
+
+	acl = bch2_acl_from_disk(xattr_val(xattr.v),
+			le16_to_cpu(xattr.v->x_val_len));
+	if (IS_ERR_OR_NULL(acl))
+		return PTR_ERR(acl);
+
+	ret = __posix_acl_chmod(&acl, GFP_KERNEL, mode);
 	if (ret)
-		return ret;
+		goto err;
 
-	if (mode != inode->v.i_mode) {
-		mutex_lock(&inode->ei_update_lock);
-		inode->v.i_mode = mode;
-		inode->v.i_ctime = current_time(&inode->v);
-
-		ret = bch2_write_inode(c, inode);
-		mutex_unlock(&inode->ei_update_lock);
+	new = bch2_acl_to_xattr(trans, acl, ACL_TYPE_ACCESS);
+	if (IS_ERR(new)) {
+		ret = PTR_ERR(new);
+		goto err;
 	}
 
+	bch2_trans_update(trans, iter, &new->k_i, 0);
+	*new_acl = acl;
+	acl = NULL;
+err:
+	kfree(acl);
 	return ret;
 }
 

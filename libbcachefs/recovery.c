@@ -5,6 +5,7 @@
 #include "btree_update.h"
 #include "btree_update_interior.h"
 #include "btree_io.h"
+#include "dirent.h"
 #include "error.h"
 #include "fsck.h"
 #include "journal_io.h"
@@ -13,6 +14,8 @@
 #include "super-io.h"
 
 #include <linux/stat.h>
+
+#define QSTR(n) { { { .len = strlen(n) } }, .name = n }
 
 struct bkey_i *btree_root_find(struct bch_fs *c,
 			       struct bch_sb_field_clean *clean,
@@ -233,7 +236,8 @@ int bch2_fs_recovery(struct bch_fs *c)
 	bch2_fs_journal_start(&c->journal);
 
 	err = "error starting allocator";
-	if (bch2_fs_allocator_start(c))
+	ret = bch2_fs_allocator_start(c);
+	if (ret)
 		goto err;
 
 	bch_verbose(c, "starting journal replay:");
@@ -246,12 +250,16 @@ int bch2_fs_recovery(struct bch_fs *c)
 	if (c->opts.norecovery)
 		goto out;
 
-	bch_verbose(c, "starting fsck:");
 	err = "error in fsck";
-	ret = bch2_fsck(c, !c->opts.nofsck);
+	ret = bch2_fsck(c);
 	if (ret)
 		goto err;
-	bch_verbose(c, "fsck done");
+
+	if (!test_bit(BCH_FS_FSCK_UNFIXED_ERRORS, &c->flags)) {
+		mutex_lock(&c->sb_lock);
+		c->disk_sb.sb->features[0] |= 1ULL << BCH_FEATURE_ATOMIC_NLINK;
+		mutex_unlock(&c->sb_lock);
+	}
 
 	if (enabled_qtypes(c)) {
 		bch_verbose(c, "reading quotas:");
@@ -273,8 +281,10 @@ fsck_err:
 
 int bch2_fs_initialize(struct bch_fs *c)
 {
-	struct bch_inode_unpacked inode;
+	struct bch_inode_unpacked root_inode, lostfound_inode;
 	struct bkey_inode_buf packed_inode;
+	struct bch_hash_info root_hash_info;
+	struct qstr lostfound = QSTR("lost+found");
 	const char *err = "cannot allocate memory";
 	struct bch_dev *ca;
 	LIST_HEAD(journal);
@@ -307,20 +317,45 @@ int bch2_fs_initialize(struct bch_fs *c)
 	bch2_journal_set_replay_done(&c->journal);
 
 	err = "error starting allocator";
-	if (bch2_fs_allocator_start(c))
+	ret = bch2_fs_allocator_start(c);
+	if (ret)
 		goto err;
 
-	bch2_inode_init(c, &inode, 0, 0,
+	bch2_inode_init(c, &root_inode, 0, 0,
 			S_IFDIR|S_IRWXU|S_IRUGO|S_IXUGO, 0, NULL);
-	inode.bi_inum = BCACHEFS_ROOT_INO;
-
-	bch2_inode_pack(&packed_inode, &inode);
+	root_inode.bi_inum = BCACHEFS_ROOT_INO;
+	root_inode.bi_nlink++; /* lost+found */
+	bch2_inode_pack(&packed_inode, &root_inode);
 
 	err = "error creating root directory";
-	if (bch2_btree_insert(c, BTREE_ID_INODES,
-			      &packed_inode.inode.k_i,
-			      NULL, NULL, NULL, 0))
+	ret = bch2_btree_insert(c, BTREE_ID_INODES,
+				&packed_inode.inode.k_i,
+				NULL, NULL, NULL, 0);
+	if (ret)
 		goto err;
+
+	bch2_inode_init(c, &lostfound_inode, 0, 0,
+			S_IFDIR|S_IRWXU|S_IRUGO|S_IXUGO, 0,
+			&root_inode);
+	lostfound_inode.bi_inum = BCACHEFS_ROOT_INO + 1;
+	bch2_inode_pack(&packed_inode, &lostfound_inode);
+
+	err = "error creating lost+found";
+	ret = bch2_btree_insert(c, BTREE_ID_INODES,
+				&packed_inode.inode.k_i,
+				NULL, NULL, NULL, 0);
+	if (ret)
+		goto err;
+
+	root_hash_info = bch2_hash_info_init(c, &root_inode);
+
+	ret = bch2_dirent_create(c, BCACHEFS_ROOT_INO, &root_hash_info, DT_DIR,
+				 &lostfound, lostfound_inode.bi_inum, NULL,
+				 BTREE_INSERT_NOFAIL);
+	if (ret)
+		goto err;
+
+	atomic_long_set(&c->nr_inodes, 2);
 
 	if (enabled_qtypes(c)) {
 		ret = bch2_fs_quota_read(c);
@@ -329,12 +364,14 @@ int bch2_fs_initialize(struct bch_fs *c)
 	}
 
 	err = "error writing first journal entry";
-	if (bch2_journal_meta(&c->journal))
+	ret = bch2_journal_meta(&c->journal);
+	if (ret)
 		goto err;
 
 	mutex_lock(&c->sb_lock);
 	SET_BCH_SB_INITIALIZED(c->disk_sb.sb, true);
 	SET_BCH_SB_CLEAN(c->disk_sb.sb, false);
+	c->disk_sb.sb->features[0] |= 1ULL << BCH_FEATURE_ATOMIC_NLINK;
 
 	bch2_write_super(c);
 	mutex_unlock(&c->sb_lock);

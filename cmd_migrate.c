@@ -239,8 +239,9 @@ static void copy_xattrs(struct bch_fs *c, struct bch_inode_unpacked *dst,
 
 		const struct xattr_handler *h = xattr_resolve_name(&attr);
 
-		int ret = bch2_xattr_set(c, dst->bi_inum, &hash_info, attr,
-					 val, val_size, 0, h->flags, NULL);
+		int ret = bch2_trans_do(c, NULL, BTREE_INSERT_ATOMIC,
+				bch2_xattr_set(&trans, dst->bi_inum, &hash_info, attr,
+					       val, val_size, h->flags, 0));
 		if (ret < 0)
 			die("error creating xattr: %s", strerror(-ret));
 	}

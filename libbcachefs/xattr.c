@@ -74,7 +74,6 @@ const char *bch2_xattr_invalid(const struct bch_fs *c, struct bkey_s_c k)
 {
 	const struct xattr_handler *handler;
 	struct bkey_s_c_xattr xattr;
-	unsigned u64s;
 
 	switch (k.k->type) {
 	case BCH_XATTR:
@@ -82,13 +81,15 @@ const char *bch2_xattr_invalid(const struct bch_fs *c, struct bkey_s_c k)
 			return "value too small";
 
 		xattr = bkey_s_c_to_xattr(k);
-		u64s = xattr_val_u64s(xattr.v->x_name_len,
-				      le16_to_cpu(xattr.v->x_val_len));
 
-		if (bkey_val_u64s(k.k) < u64s)
+		if (bkey_val_u64s(k.k) <
+			xattr_val_u64s(xattr.v->x_name_len,
+				       le16_to_cpu(xattr.v->x_val_len)))
 			return "value too small";
 
-		if (bkey_val_u64s(k.k) > u64s)
+		if (bkey_val_u64s(k.k) >
+			xattr_val_u64s(xattr.v->x_name_len,
+				       le16_to_cpu(xattr.v->x_val_len) + 4))
 			return "value too big";
 
 		handler = bch2_xattr_type_to_handler(xattr.v->x_type);
@@ -142,32 +143,28 @@ void bch2_xattr_to_text(struct bch_fs *c, char *buf,
 	}
 }
 
-struct bkey_s_c bch2_xattr_get_iter(struct bch_fs *c,
-				    struct btree_iter *iter,
-				    struct bch_inode_info *inode,
-				    const char *name, int type)
-{
-	return bch2_hash_lookup(bch2_xattr_hash_desc,
-				&inode->ei_str_hash,
-				c, inode->v.i_ino, iter,
-				&X_SEARCH(type, name, strlen(name)));
-}
-
 int bch2_xattr_get(struct bch_fs *c, struct bch_inode_info *inode,
-		  const char *name, void *buffer, size_t size, int type)
+		   const char *name, void *buffer, size_t size, int type)
 {
-	struct btree_iter iter;
-	struct bkey_s_c k;
+	struct btree_trans trans;
+	struct btree_iter *iter;
 	struct bkey_s_c_xattr xattr;
 	int ret;
 
-	k = bch2_hash_lookup(bch2_xattr_hash_desc, &inode->ei_str_hash, c,
-			     inode->v.i_ino, &iter,
-			     &X_SEARCH(type, name, strlen(name)));
-	if (IS_ERR(k.k))
-		return bch2_btree_iter_unlock(&iter) ?: -ENODATA;
+	bch2_trans_init(&trans, c);
 
-	xattr = bkey_s_c_to_xattr(k);
+	iter = bch2_hash_lookup(&trans, bch2_xattr_hash_desc,
+				&inode->ei_str_hash, inode->v.i_ino,
+				&X_SEARCH(type, name, strlen(name)),
+				0);
+	if (IS_ERR(iter)) {
+		bch2_trans_exit(&trans);
+		BUG_ON(PTR_ERR(iter) == -EINTR);
+
+		return PTR_ERR(iter) == -ENOENT ? -ENODATA : PTR_ERR(iter);
+	}
+
+	xattr = bkey_s_c_to_xattr(bch2_btree_iter_peek_slot(iter));
 	ret = le16_to_cpu(xattr.v->x_val_len);
 	if (buffer) {
 		if (ret > size)
@@ -176,47 +173,48 @@ int bch2_xattr_get(struct bch_fs *c, struct bch_inode_info *inode,
 			memcpy(buffer, xattr_val(xattr.v), ret);
 	}
 
-	bch2_btree_iter_unlock(&iter);
+	bch2_trans_exit(&trans);
 	return ret;
 }
 
-int bch2_xattr_set(struct bch_fs *c, u64 inum,
+int bch2_xattr_set(struct btree_trans *trans, u64 inum,
 		   const struct bch_hash_info *hash_info,
 		   const char *name, const void *value, size_t size,
-		   int flags, int type, u64 *journal_seq)
+		   int type, int flags)
 {
-	struct xattr_search_key search = X_SEARCH(type, name, strlen(name));
 	int ret;
 
 	if (value) {
 		struct bkey_i_xattr *xattr;
+		unsigned namelen = strlen(name);
 		unsigned u64s = BKEY_U64s +
-			xattr_val_u64s(search.name.len, size);
+			xattr_val_u64s(namelen, size);
 
 		if (u64s > U8_MAX)
 			return -ERANGE;
 
-		xattr = kmalloc(u64s * sizeof(u64), GFP_NOFS);
-		if (!xattr)
-			return -ENOMEM;
+		xattr = bch2_trans_kmalloc(trans, u64s * sizeof(u64));
+		if (IS_ERR(xattr))
+			return PTR_ERR(xattr);
 
 		bkey_xattr_init(&xattr->k_i);
 		xattr->k.u64s		= u64s;
 		xattr->v.x_type		= type;
-		xattr->v.x_name_len	= search.name.len;
+		xattr->v.x_name_len	= namelen;
 		xattr->v.x_val_len	= cpu_to_le16(size);
-		memcpy(xattr->v.x_name, search.name.name, search.name.len);
+		memcpy(xattr->v.x_name, name, namelen);
 		memcpy(xattr_val(&xattr->v), value, size);
 
-		ret = bch2_hash_set(bch2_xattr_hash_desc, hash_info, c,
-				inum, journal_seq,
-				&xattr->k_i,
-				(flags & XATTR_CREATE ? BCH_HASH_SET_MUST_CREATE : 0)|
-				(flags & XATTR_REPLACE ? BCH_HASH_SET_MUST_REPLACE : 0));
-		kfree(xattr);
+		ret = __bch2_hash_set(trans, bch2_xattr_hash_desc, hash_info,
+			      inum, &xattr->k_i,
+			      (flags & XATTR_CREATE ? BCH_HASH_SET_MUST_CREATE : 0)|
+			      (flags & XATTR_REPLACE ? BCH_HASH_SET_MUST_REPLACE : 0));
 	} else {
-		ret = bch2_hash_delete(bch2_xattr_hash_desc, hash_info,
-				       c, inum, journal_seq, &search);
+		struct xattr_search_key search =
+			X_SEARCH(type, name, strlen(name));
+
+		ret = bch2_hash_delete(trans, bch2_xattr_hash_desc,
+				       hash_info, inum, &search);
 	}
 
 	if (ret == -ENOENT)
@@ -308,9 +306,11 @@ static int bch2_xattr_set_handler(const struct xattr_handler *handler,
 	struct bch_inode_info *inode = to_bch_ei(vinode);
 	struct bch_fs *c = inode->v.i_sb->s_fs_info;
 
-	return bch2_xattr_set(c, inode->v.i_ino, &inode->ei_str_hash,
-			      name, value, size, flags, handler->flags,
-			      &inode->ei_journal_seq);
+	return bch2_trans_do(c, &inode->ei_journal_seq, BTREE_INSERT_ATOMIC,
+			bch2_xattr_set(&trans, inode->v.i_ino,
+				       &inode->ei_str_hash,
+				       name, value, size,
+				       handler->flags, flags));
 }
 
 static const struct xattr_handler bch_xattr_user_handler = {
@@ -433,7 +433,7 @@ static int bch2_xattr_bcachefs_set(const struct xattr_handler *handler,
 	}
 
 	mutex_lock(&inode->ei_update_lock);
-	ret = __bch2_write_inode(c, inode, inode_opt_set_fn, &s);
+	ret = __bch2_write_inode(c, inode, inode_opt_set_fn, &s, 0);
 	mutex_unlock(&inode->ei_update_lock);
 
 	if (value &&

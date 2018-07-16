@@ -126,16 +126,22 @@ static int walk_inode(struct bch_fs *c, struct inode_walker *w, u64 inum)
 
 struct hash_check {
 	struct bch_hash_info	info;
-	struct btree_iter	chain;
-	struct btree_iter	iter;
+	struct btree_trans	*trans;
+
+	/* start of current chain of hash collisions: */
+	struct btree_iter	*chain;
+
+	/* next offset in current chain of hash collisions: */
 	u64			next;
 };
 
 static void hash_check_init(const struct bch_hash_desc desc,
-			    struct hash_check *h, struct bch_fs *c)
+			    struct btree_trans *trans,
+			    struct hash_check *h)
 {
-	bch2_btree_iter_init(&h->chain, c, desc.btree_id, POS_MIN, 0);
-	bch2_btree_iter_init(&h->iter, c, desc.btree_id, POS_MIN, 0);
+	h->trans = trans;
+	h->chain = bch2_trans_get_iter(trans, desc.btree_id, POS_MIN, 0);
+	h->next = -1;
 }
 
 static void hash_check_set_inode(struct hash_check *h, struct bch_fs *c,
@@ -173,6 +179,75 @@ err:
 	return ret;
 }
 
+/* fsck hasn't been converted to new transactions yet: */
+static int fsck_hash_delete_at(const struct bch_hash_desc desc,
+			       struct bch_hash_info *info,
+			       struct btree_iter *orig_iter)
+{
+	struct btree_trans trans;
+	struct btree_iter *iter;
+	int ret;
+
+	bch2_btree_iter_unlock(orig_iter);
+
+	bch2_trans_init(&trans, orig_iter->c);
+retry:
+	bch2_trans_begin(&trans);
+
+	iter = bch2_trans_copy_iter(&trans, orig_iter);
+	if (IS_ERR(iter)) {
+		ret = PTR_ERR(iter);
+		goto err;
+	}
+
+	ret   = bch2_hash_delete_at(&trans, desc, info, iter) ?:
+		bch2_trans_commit(&trans, NULL, NULL, NULL,
+				  BTREE_INSERT_ATOMIC|
+				  BTREE_INSERT_NOFAIL);
+err:
+	if (ret == -EINTR)
+		goto retry;
+
+	bch2_trans_exit(&trans);
+	return ret;
+}
+
+static int hash_check_duplicates(const struct bch_hash_desc desc,
+				 struct hash_check *h, struct bch_fs *c,
+				 struct btree_iter *k_iter, struct bkey_s_c k)
+{
+	struct btree_iter *iter;
+	struct bkey_s_c k2;
+	char buf[200];
+	int ret = 0;
+
+	if (!bkey_cmp(h->chain->pos, k_iter->pos))
+		return 0;
+
+	iter = bch2_trans_copy_iter(h->trans, h->chain);
+	BUG_ON(IS_ERR(iter));
+
+	for_each_btree_key_continue(iter, 0, k2) {
+		if (bkey_cmp(k2.k->p, k.k->p) >= 0)
+			break;
+
+		if (fsck_err_on(k2.k->type == desc.key_type &&
+				!desc.cmp_bkey(k, k2), c,
+				"duplicate hash table keys:\n%s",
+				(bch2_bkey_val_to_text(c, bkey_type(0, desc.btree_id),
+						       buf, sizeof(buf), k), buf))) {
+			ret = fsck_hash_delete_at(desc, &h->info, k_iter);
+			if (ret)
+				return ret;
+			ret = 1;
+			break;
+		}
+	}
+fsck_err:
+	bch2_trans_iter_free(h->trans, iter);
+	return ret;
+}
+
 static int hash_check_key(const struct bch_hash_desc desc,
 			  struct hash_check *h, struct bch_fs *c,
 			  struct btree_iter *k_iter, struct bkey_s_c k)
@@ -185,13 +260,8 @@ static int hash_check_key(const struct bch_hash_desc desc,
 	    k.k->type != desc.key_type)
 		return 0;
 
-	if (k.k->p.offset != h->next) {
-		if (!btree_iter_linked(&h->chain)) {
-			bch2_btree_iter_link(k_iter, &h->chain);
-			bch2_btree_iter_link(k_iter, &h->iter);
-		}
-		bch2_btree_iter_copy(&h->chain, k_iter);
-	}
+	if (k.k->p.offset != h->next)
+		bch2_btree_iter_copy(h->chain, k_iter);
 	h->next = k.k->p.offset + 1;
 
 	if (k.k->type != desc.key_type)
@@ -199,11 +269,11 @@ static int hash_check_key(const struct bch_hash_desc desc,
 
 	hashed = desc.hash_bkey(&h->info, k);
 
-	if (fsck_err_on(hashed < h->chain.pos.offset ||
+	if (fsck_err_on(hashed < h->chain->pos.offset ||
 			hashed > k.k->p.offset, c,
 			"hash table key at wrong offset: %llu, "
 			"hashed to %llu chain starts at %llu\n%s",
-			k.k->p.offset, hashed, h->chain.pos.offset,
+			k.k->p.offset, hashed, h->chain->pos.offset,
 			(bch2_bkey_val_to_text(c, bkey_type(0, desc.btree_id),
 					       buf, sizeof(buf), k), buf))) {
 		ret = hash_redo_key(desc, h, c, k_iter, k, hashed);
@@ -214,25 +284,7 @@ static int hash_check_key(const struct bch_hash_desc desc,
 		return 1;
 	}
 
-	if (!bkey_cmp(h->chain.pos, k_iter->pos))
-		return 0;
-
-	bch2_btree_iter_copy(&h->iter, &h->chain);
-	while (bkey_cmp(h->iter.pos, k_iter->pos) < 0) {
-		struct bkey_s_c k2 = bch2_btree_iter_peek(&h->iter);
-
-		if (fsck_err_on(k2.k->type == desc.key_type &&
-				!desc.cmp_bkey(k, k2), c,
-				"duplicate hash table keys:\n%s",
-				(bch2_bkey_val_to_text(c, bkey_type(0, desc.btree_id),
-						       buf, sizeof(buf), k), buf))) {
-			ret = bch2_hash_delete_at(desc, &h->info, &h->iter, NULL);
-			if (ret)
-				return ret;
-			return 1;
-		}
-		bch2_btree_iter_next(&h->iter);
-	}
+	ret = hash_check_duplicates(desc, h, c, k_iter, k);
 fsck_err:
 	return ret;
 }
@@ -249,6 +301,8 @@ static int check_extents(struct bch_fs *c)
 	struct bkey_s_c k;
 	u64 i_sectors;
 	int ret = 0;
+
+	bch_verbose(c, "checking extents");
 
 	for_each_btree_key(&iter, c, BTREE_ID_EXTENTS,
 			   POS(BCACHEFS_ROOT_INO, 0), 0, k) {
@@ -332,16 +386,25 @@ static int check_dirents(struct bch_fs *c)
 {
 	struct inode_walker w = inode_walker_init();
 	struct hash_check h;
-	struct btree_iter iter;
+	struct btree_trans trans;
+	struct btree_iter *iter;
 	struct bkey_s_c k;
 	unsigned name_len;
 	char buf[200];
 	int ret = 0;
 
-	hash_check_init(bch2_dirent_hash_desc, &h, c);
+	bch_verbose(c, "checking dirents");
 
-	for_each_btree_key(&iter, c, BTREE_ID_DIRENTS,
-			   POS(BCACHEFS_ROOT_INO, 0), 0, k) {
+	bch2_trans_init(&trans, c);
+
+	BUG_ON(bch2_trans_preload_iters(&trans));
+
+	iter = bch2_trans_get_iter(&trans, BTREE_ID_DIRENTS,
+				   POS(BCACHEFS_ROOT_INO, 0), 0);
+
+	hash_check_init(bch2_dirent_hash_desc, &trans, &h);
+
+	for_each_btree_key_continue(iter, 0, k) {
 		struct bkey_s_c_dirent d;
 		struct bch_inode_unpacked target;
 		bool have_target;
@@ -360,7 +423,7 @@ static int check_dirents(struct bch_fs *c)
 				mode_to_type(w.inode.bi_mode),
 				(bch2_bkey_val_to_text(c, BTREE_ID_DIRENTS,
 						       buf, sizeof(buf), k), buf))) {
-			ret = bch2_btree_delete_at(&iter, 0);
+			ret = bch2_btree_delete_at(iter, 0);
 			if (ret)
 				goto err;
 			continue;
@@ -369,7 +432,7 @@ static int check_dirents(struct bch_fs *c)
 		if (w.first_this_inode && w.have_inode)
 			hash_check_set_inode(&h, c, &w.inode);
 
-		ret = hash_check_key(bch2_dirent_hash_desc, &h, c, &iter, k);
+		ret = hash_check_key(bch2_dirent_hash_desc, &h, c, iter, k);
 		if (ret > 0) {
 			ret = 0;
 			continue;
@@ -393,7 +456,7 @@ static int check_dirents(struct bch_fs *c)
 		    fsck_err_on(name_len == 2 &&
 				!memcmp(d.v->d_name, "..", 2), c,
 				".. dirent")) {
-			ret = remove_dirent(c, &iter, d);
+			ret = remove_dirent(c, iter, d);
 			if (ret)
 				goto err;
 			continue;
@@ -403,7 +466,7 @@ static int check_dirents(struct bch_fs *c)
 				"dirent points to own directory:\n%s",
 				(bch2_bkey_val_to_text(c, BTREE_ID_DIRENTS,
 						       buf, sizeof(buf), k), buf))) {
-			ret = remove_dirent(c, &iter, d);
+			ret = remove_dirent(c, iter, d);
 			if (ret)
 				goto err;
 			continue;
@@ -420,7 +483,7 @@ static int check_dirents(struct bch_fs *c)
 				"dirent points to missing inode:\n%s",
 				(bch2_bkey_val_to_text(c, BTREE_ID_DIRENTS,
 						       buf, sizeof(buf), k), buf))) {
-			ret = remove_dirent(c, &iter, d);
+			ret = remove_dirent(c, iter, d);
 			if (ret)
 				goto err;
 			continue;
@@ -446,7 +509,7 @@ static int check_dirents(struct bch_fs *c)
 
 			ret = bch2_btree_insert_at(c, NULL, NULL, NULL,
 					BTREE_INSERT_NOFAIL,
-					BTREE_INSERT_ENTRY(&iter, &n->k_i));
+					BTREE_INSERT_ENTRY(iter, &n->k_i));
 			kfree(n);
 			if (ret)
 				goto err;
@@ -455,9 +518,7 @@ static int check_dirents(struct bch_fs *c)
 	}
 err:
 fsck_err:
-	bch2_btree_iter_unlock(&h.chain);
-	bch2_btree_iter_unlock(&h.iter);
-	return bch2_btree_iter_unlock(&iter) ?: ret;
+	return bch2_trans_exit(&trans) ?: ret;
 }
 
 /*
@@ -468,14 +529,23 @@ static int check_xattrs(struct bch_fs *c)
 {
 	struct inode_walker w = inode_walker_init();
 	struct hash_check h;
-	struct btree_iter iter;
+	struct btree_trans trans;
+	struct btree_iter *iter;
 	struct bkey_s_c k;
 	int ret = 0;
 
-	hash_check_init(bch2_xattr_hash_desc, &h, c);
+	bch_verbose(c, "checking xattrs");
 
-	for_each_btree_key(&iter, c, BTREE_ID_XATTRS,
-			   POS(BCACHEFS_ROOT_INO, 0), 0, k) {
+	bch2_trans_init(&trans, c);
+
+	BUG_ON(bch2_trans_preload_iters(&trans));
+
+	iter = bch2_trans_get_iter(&trans, BTREE_ID_XATTRS,
+				   POS(BCACHEFS_ROOT_INO, 0), 0);
+
+	hash_check_init(bch2_xattr_hash_desc, &trans, &h);
+
+	for_each_btree_key_continue(iter, 0, k) {
 		ret = walk_inode(c, &w, k.k->p.inode);
 		if (ret)
 			break;
@@ -483,7 +553,7 @@ static int check_xattrs(struct bch_fs *c)
 		if (fsck_err_on(!w.have_inode, c,
 				"xattr for missing inode %llu",
 				k.k->p.inode)) {
-			ret = bch2_btree_delete_at(&iter, 0);
+			ret = bch2_btree_delete_at(iter, 0);
 			if (ret)
 				goto err;
 			continue;
@@ -492,15 +562,13 @@ static int check_xattrs(struct bch_fs *c)
 		if (w.first_this_inode && w.have_inode)
 			hash_check_set_inode(&h, c, &w.inode);
 
-		ret = hash_check_key(bch2_xattr_hash_desc, &h, c, &iter, k);
+		ret = hash_check_key(bch2_xattr_hash_desc, &h, c, iter, k);
 		if (ret)
 			goto fsck_err;
 	}
 err:
 fsck_err:
-	bch2_btree_iter_unlock(&h.chain);
-	bch2_btree_iter_unlock(&h.iter);
-	return bch2_btree_iter_unlock(&iter) ?: ret;
+	return bch2_trans_exit(&trans) ?: ret;
 }
 
 /* Get root directory, create if it doesn't exist: */
@@ -508,6 +576,8 @@ static int check_root(struct bch_fs *c, struct bch_inode_unpacked *root_inode)
 {
 	struct bkey_inode_buf packed;
 	int ret;
+
+	bch_verbose(c, "checking root directory");
 
 	ret = bch2_inode_find_by_inum(c, BCACHEFS_ROOT_INO, root_inode);
 	if (ret && ret != -ENOENT)
@@ -545,6 +615,8 @@ static int check_lostfound(struct bch_fs *c,
 	struct bkey_inode_buf packed;
 	u64 inum;
 	int ret;
+
+	bch_verbose(c, "checking lost+found");
 
 	inum = bch2_dirent_lookup(c, BCACHEFS_ROOT_INO, &root_hash_info,
 				 &lostfound);
@@ -671,6 +743,8 @@ static int check_directory_structure(struct bch_fs *c,
 	bool had_unreachable;
 	u64 d_inum;
 	int ret = 0;
+
+	bch_verbose(c, "checking directory structure");
 
 	/* DFS: */
 restart_dfs:
@@ -872,15 +946,116 @@ s64 bch2_count_inode_sectors(struct bch_fs *c, u64 inum)
 	return bch2_btree_iter_unlock(&iter) ?: sectors;
 }
 
-static int bch2_gc_do_inode(struct bch_fs *c,
-			   struct bch_inode_unpacked *lostfound_inode,
-			   struct btree_iter *iter,
-			   struct bkey_s_c_inode inode, struct nlink link)
+static int check_inode_nlink(struct bch_fs *c,
+			     struct bch_inode_unpacked *lostfound_inode,
+			     struct bch_inode_unpacked *u,
+			     struct nlink *link,
+			     bool *do_update)
+{
+	u32 i_nlink = u->bi_flags & BCH_INODE_UNLINKED
+		? 0
+		: u->bi_nlink + nlink_bias(u->bi_mode);
+	u32 real_i_nlink =
+		link->count * nlink_bias(u->bi_mode) +
+		link->dir_count;
+	int ret = 0;
+
+	/*
+	 * These should have been caught/fixed by earlier passes, we don't
+	 * repair them here:
+	 */
+	if (S_ISDIR(u->bi_mode) && link->count > 1) {
+		need_fsck_err(c, "directory %llu with multiple hardlinks: %u",
+			      u->bi_inum, link->count);
+		return 0;
+	}
+
+	if (S_ISDIR(u->bi_mode) && !link->count) {
+		need_fsck_err(c, "unreachable directory found (inum %llu)",
+			      u->bi_inum);
+		return 0;
+	}
+
+	if (!S_ISDIR(u->bi_mode) && link->dir_count) {
+		need_fsck_err(c, "non directory with subdirectories",
+			      u->bi_inum);
+		return 0;
+	}
+
+	if (!link->count &&
+	    !(u->bi_flags & BCH_INODE_UNLINKED) &&
+	    (c->sb.features & (1 << BCH_FEATURE_ATOMIC_NLINK))) {
+		if (fsck_err(c, "unreachable inode %llu not marked as unlinked (type %u)",
+			     u->bi_inum, mode_to_type(u->bi_mode)) ==
+		    FSCK_ERR_IGNORE)
+			return 0;
+
+		ret = reattach_inode(c, lostfound_inode, u->bi_inum);
+		if (ret)
+			return ret;
+
+		link->count = 1;
+		real_i_nlink = nlink_bias(u->bi_mode) + link->dir_count;
+		goto set_i_nlink;
+	}
+
+	if (i_nlink < link->count) {
+		if (fsck_err(c, "inode %llu i_link too small (%u < %u, type %i)",
+			     u->bi_inum, i_nlink, link->count,
+			     mode_to_type(u->bi_mode)) == FSCK_ERR_IGNORE)
+			return 0;
+		goto set_i_nlink;
+	}
+
+	if (i_nlink != real_i_nlink &&
+	    c->sb.clean) {
+		if (fsck_err(c, "filesystem marked clean, "
+			     "but inode %llu has wrong i_nlink "
+			     "(type %u i_nlink %u, should be %u)",
+			     u->bi_inum, mode_to_type(u->bi_mode),
+			     i_nlink, real_i_nlink) == FSCK_ERR_IGNORE)
+			return 0;
+		goto set_i_nlink;
+	}
+
+	if (i_nlink != real_i_nlink &&
+	    (c->sb.features & (1 << BCH_FEATURE_ATOMIC_NLINK))) {
+		if (fsck_err(c, "inode %llu has wrong i_nlink "
+			     "(type %u i_nlink %u, should be %u)",
+			     u->bi_inum, mode_to_type(u->bi_mode),
+			     i_nlink, real_i_nlink) == FSCK_ERR_IGNORE)
+			return 0;
+		goto set_i_nlink;
+	}
+
+	if (real_i_nlink && i_nlink != real_i_nlink)
+		bch_verbose(c, "setting inode %llu nlink from %u to %u",
+			    u->bi_inum, i_nlink, real_i_nlink);
+set_i_nlink:
+	if (i_nlink != real_i_nlink) {
+		if (real_i_nlink) {
+			u->bi_nlink = real_i_nlink - nlink_bias(u->bi_mode);
+			u->bi_flags &= ~BCH_INODE_UNLINKED;
+		} else {
+			u->bi_nlink = 0;
+			u->bi_flags |= BCH_INODE_UNLINKED;
+		}
+
+		*do_update = true;
+	}
+fsck_err:
+	return ret;
+}
+
+static int check_inode(struct bch_fs *c,
+		       struct bch_inode_unpacked *lostfound_inode,
+		       struct btree_iter *iter,
+		       struct bkey_s_c_inode inode,
+		       struct nlink *link)
 {
 	struct bch_inode_unpacked u;
-	int ret = 0;
-	u32 i_nlink, real_i_nlink;
 	bool do_update = false;
+	int ret = 0;
 
 	ret = bch2_inode_unpack(inode, &u);
 	if (bch2_fs_inconsistent_on(ret, c,
@@ -888,48 +1063,17 @@ static int bch2_gc_do_inode(struct bch_fs *c,
 			 inode.k->p.inode))
 		return ret;
 
-	i_nlink = u.bi_nlink + nlink_bias(u.bi_mode);
-
-	fsck_err_on(i_nlink < link.count, c,
-		    "inode %llu i_link too small (%u < %u, type %i)",
-		    inode.k->p.inode, i_nlink,
-		    link.count, mode_to_type(u.bi_mode));
-
-	/* These should have been caught/fixed by earlier passes: */
-	if (S_ISDIR(u.bi_mode)) {
-		need_fsck_err_on(link.count > 1, c,
-			"directory %llu with multiple hardlinks: %u",
-			inode.k->p.inode, link.count);
-
-		real_i_nlink = link.count * 2 + link.dir_count;
-	} else {
-		need_fsck_err_on(link.dir_count, c,
-			"found dirents for non directory %llu",
-			inode.k->p.inode);
-
-		real_i_nlink = link.count + link.dir_count;
+	if (link) {
+		ret = check_inode_nlink(c, lostfound_inode, &u, link,
+					&do_update);
+		if (ret)
+			return ret;
 	}
 
-	if (!link.count) {
-		fsck_err_on(c->sb.clean, c,
-			    "filesystem marked clean, "
-			    "but found orphaned inode %llu",
-			    inode.k->p.inode);
+	if (u.bi_flags & BCH_INODE_UNLINKED) {
+		bch_verbose(c, "deleting inode %llu", u.bi_inum);
 
-		if (fsck_err_on(S_ISDIR(u.bi_mode) &&
-				bch2_empty_dir(c, inode.k->p.inode), c,
-				"non empty directory with link count 0, "
-				"inode nlink %u, dir links found %u",
-				i_nlink, link.dir_count)) {
-			ret = reattach_inode(c, lostfound_inode,
-					     inode.k->p.inode);
-			if (ret)
-				return ret;
-		}
-
-		bch_verbose(c, "deleting inode %llu", inode.k->p.inode);
-
-		ret = bch2_inode_rm(c, inode.k->p.inode);
+		ret = bch2_inode_rm(c, u.bi_inum);
 		if (ret)
 			bch_err(c, "error in fs gc: error %i "
 				"while deleting inode", ret);
@@ -940,16 +1084,16 @@ static int bch2_gc_do_inode(struct bch_fs *c,
 		fsck_err_on(c->sb.clean, c,
 			    "filesystem marked clean, "
 			    "but inode %llu has i_size dirty",
-			    inode.k->p.inode);
+			    u.bi_inum);
 
-		bch_verbose(c, "truncating inode %llu", inode.k->p.inode);
+		bch_verbose(c, "truncating inode %llu", u.bi_inum);
 
 		/*
 		 * XXX: need to truncate partial blocks too here - or ideally
 		 * just switch units to bytes and that issue goes away
 		 */
 
-		ret = bch2_inode_truncate(c, inode.k->p.inode,
+		ret = bch2_inode_truncate(c, u.bi_inum,
 				round_up(u.bi_size, PAGE_SIZE) >> 9,
 				NULL, NULL);
 		if (ret) {
@@ -974,12 +1118,12 @@ static int bch2_gc_do_inode(struct bch_fs *c,
 		fsck_err_on(c->sb.clean, c,
 			    "filesystem marked clean, "
 			    "but inode %llu has i_sectors dirty",
-			    inode.k->p.inode);
+			    u.bi_inum);
 
 		bch_verbose(c, "recounting sectors for inode %llu",
-			    inode.k->p.inode);
+			    u.bi_inum);
 
-		sectors = bch2_count_inode_sectors(c, inode.k->p.inode);
+		sectors = bch2_count_inode_sectors(c, u.bi_inum);
 		if (sectors < 0) {
 			bch_err(c, "error in fs gc: error %i "
 				"recounting inode sectors",
@@ -989,20 +1133,6 @@ static int bch2_gc_do_inode(struct bch_fs *c,
 
 		u.bi_sectors = sectors;
 		u.bi_flags &= ~BCH_INODE_I_SECTORS_DIRTY;
-		do_update = true;
-	}
-
-	if (i_nlink != real_i_nlink) {
-		fsck_err_on(c->sb.clean, c,
-			    "filesystem marked clean, "
-			    "but inode %llu has wrong i_nlink "
-			    "(type %u i_nlink %u, should be %u)",
-			    inode.k->p.inode, mode_to_type(u.bi_mode),
-			    i_nlink, real_i_nlink);
-
-		bch_verbose(c, "setting inode %llu nlinks from %u to %u",
-			    inode.k->p.inode, i_nlink, real_i_nlink);
-		u.bi_nlink = real_i_nlink - nlink_bias(u.bi_mode);
 		do_update = true;
 	}
 
@@ -1024,9 +1154,9 @@ fsck_err:
 
 noinline_for_stack
 static int bch2_gc_walk_inodes(struct bch_fs *c,
-			      struct bch_inode_unpacked *lostfound_inode,
-			      nlink_table *links,
-			      u64 range_start, u64 range_end)
+			       struct bch_inode_unpacked *lostfound_inode,
+			       nlink_table *links,
+			       u64 range_start, u64 range_end)
 {
 	struct btree_iter iter;
 	struct bkey_s_c k;
@@ -1065,10 +1195,9 @@ peek_nlinks:	link = genradix_iter_peek(&nlinks_iter, links);
 			 */
 			bch2_btree_iter_unlock(&iter);
 
-			ret = bch2_gc_do_inode(c, lostfound_inode, &iter,
-					      bkey_s_c_to_inode(k), *link);
-			if (ret == -EINTR)
-				continue;
+			ret = check_inode(c, lostfound_inode, &iter,
+					  bkey_s_c_to_inode(k), link);
+			BUG_ON(ret == -EINTR);
 			if (ret)
 				break;
 
@@ -1103,6 +1232,8 @@ static int check_inode_nlinks(struct bch_fs *c,
 	u64 this_iter_range_start, next_iter_range_start = 0;
 	int ret = 0;
 
+	bch_verbose(c, "checking inode nlinks");
+
 	genradix_init(&links);
 
 	do {
@@ -1129,68 +1260,103 @@ static int check_inode_nlinks(struct bch_fs *c,
 	return ret;
 }
 
+noinline_for_stack
+static int check_inodes_fast(struct bch_fs *c)
+{
+	struct btree_iter iter;
+	struct bkey_s_c k;
+	struct bkey_s_c_inode inode;
+	unsigned long nr_inodes = 0;
+	int ret = 0;
+
+	for_each_btree_key(&iter, c, BTREE_ID_INODES, POS_MIN, 0, k) {
+		if (k.k->type != BCH_INODE_FS)
+			continue;
+
+		inode = bkey_s_c_to_inode(k);
+
+		if (!(inode.v->bi_flags & BCH_INODE_UNLINKED))
+			nr_inodes++;
+
+		if (inode.v->bi_flags &
+		    (BCH_INODE_I_SIZE_DIRTY|
+		     BCH_INODE_I_SECTORS_DIRTY|
+		     BCH_INODE_UNLINKED)) {
+			fsck_err_on(c->sb.clean, c,
+				"filesystem marked clean but found inode %llu with flags %x",
+				inode.k->p.inode, inode.v->bi_flags);
+			ret = check_inode(c, NULL, &iter, inode, NULL);
+			BUG_ON(ret == -EINTR);
+			if (ret)
+				break;
+		}
+	}
+	atomic_long_set(&c->nr_inodes, nr_inodes);
+fsck_err:
+	return bch2_btree_iter_unlock(&iter) ?: ret;
+}
+
 /*
  * Checks for inconsistencies that shouldn't happen, unless we have a bug.
  * Doesn't fix them yet, mainly because they haven't yet been observed:
  */
-int bch2_fsck(struct bch_fs *c, bool full_fsck)
+static int bch2_fsck_full(struct bch_fs *c)
 {
 	struct bch_inode_unpacked root_inode, lostfound_inode;
 	int ret;
 
-	if (full_fsck) {
-		bch_verbose(c, "checking extents");
-		ret = check_extents(c);
-		if (ret)
-			return ret;
-
-		bch_verbose(c, "checking dirents");
-		ret = check_dirents(c);
-		if (ret)
-			return ret;
-
-		bch_verbose(c, "checking xattrs");
-		ret = check_xattrs(c);
-		if (ret)
-			return ret;
-
-		bch_verbose(c, "checking root directory");
-		ret = check_root(c, &root_inode);
-		if (ret)
-			return ret;
-
-		bch_verbose(c, "checking lost+found");
-		ret = check_lostfound(c, &root_inode, &lostfound_inode);
-		if (ret)
-			return ret;
-
-		bch_verbose(c, "checking directory structure");
-		ret = check_directory_structure(c, &lostfound_inode);
-		if (ret)
-			return ret;
-
-		bch_verbose(c, "checking inode nlinks");
-		ret = check_inode_nlinks(c, &lostfound_inode);
-		if (ret)
-			return ret;
-	} else {
-		bch_verbose(c, "checking root directory");
-		ret = check_root(c, &root_inode);
-		if (ret)
-			return ret;
-
-		bch_verbose(c, "checking lost+found");
-		ret = check_lostfound(c, &root_inode, &lostfound_inode);
-		if (ret)
-			return ret;
-
-		bch_verbose(c, "checking inode nlinks");
-		ret = check_inode_nlinks(c, &lostfound_inode);
-		if (ret)
-			return ret;
-	}
+	bch_verbose(c, "starting fsck:");
+	ret =   check_extents(c) ?:
+		check_dirents(c) ?:
+		check_xattrs(c) ?:
+		check_root(c, &root_inode) ?:
+		check_lostfound(c, &root_inode, &lostfound_inode) ?:
+		check_directory_structure(c, &lostfound_inode) ?:
+		check_inode_nlinks(c, &lostfound_inode);
 
 	bch2_flush_fsck_errs(c);
+	bch_verbose(c, "fsck done");
 
-	return 0;
+	return ret;
+}
+
+static int bch2_fsck_inode_nlink(struct bch_fs *c)
+{
+	struct bch_inode_unpacked root_inode, lostfound_inode;
+	int ret;
+
+	bch_verbose(c, "checking inode link counts:");
+	ret =   check_root(c, &root_inode) ?:
+		check_lostfound(c, &root_inode, &lostfound_inode) ?:
+		check_inode_nlinks(c, &lostfound_inode);
+
+	bch2_flush_fsck_errs(c);
+	bch_verbose(c, "done");
+
+	return ret;
+}
+
+static int bch2_fsck_walk_inodes_only(struct bch_fs *c)
+{
+	int ret;
+
+	bch_verbose(c, "walking inodes:");
+	ret = check_inodes_fast(c);
+
+	bch2_flush_fsck_errs(c);
+	bch_verbose(c, "done");
+
+	return ret;
+}
+
+int bch2_fsck(struct bch_fs *c)
+{
+	if (!c->opts.nofsck)
+		return bch2_fsck_full(c);
+
+	if (!c->sb.clean &&
+	    !(c->sb.features & (1 << BCH_FEATURE_ATOMIC_NLINK)))
+		return bch2_fsck_inode_nlink(c);
+
+	return bch2_fsck_walk_inodes_only(c);
 }
