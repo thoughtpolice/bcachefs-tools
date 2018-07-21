@@ -23,7 +23,7 @@ static void usage(void)
 int cmd_fsck(int argc, char *argv[])
 {
 	struct bch_opts opts = bch2_opts_empty();
-	int opt;
+	int opt, ret = 0;
 
 	opt_set(opts, degraded, true);
 	opt_set(opts, fix_errors, FSCK_OPT_ASK);
@@ -60,6 +60,11 @@ int cmd_fsck(int argc, char *argv[])
 	if (IS_ERR(c))
 		die("error opening %s: %s", argv[0], strerror(-PTR_ERR(c)));
 
+	if (test_bit(BCH_FS_FSCK_FIXED_ERRORS, &c->flags))
+		ret = 2;
+	if (test_bit(BCH_FS_FSCK_UNFIXED_ERRORS, &c->flags))
+		ret = 4;
+
 	bch2_fs_stop(c);
-	return 0;
+	return ret;
 }
