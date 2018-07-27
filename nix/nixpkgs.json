@@ -1,5 +1,5 @@
 {
-  "url":    "https://github.com/nixos/nixpkgs/archive/5ae883b8c3b04e0c4a9c92a5ab3c7c84b9942943.tar.gz",
-  "rev":    "5ae883b8c3b04e0c4a9c92a5ab3c7c84b9942943",
-  "sha256": "1s2nhax586v2fax7r5qd1s3d2gdg25isva7k7r9pf9x9ay630cmb"
+  "url":    "https://github.com/nixos/nixpkgs/archive/6d2ab189159e9438be83da4ee251e4e620f6730e.tar.gz",
+  "rev":    "6d2ab189159e9438be83da4ee251e4e620f6730e",
+  "sha256": "0p2biqnfahx96b5zy2abg4wab4ykcywq8362yjqhwdjd3k09rv48"
 }
